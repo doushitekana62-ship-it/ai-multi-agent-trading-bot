@@ -1,0 +1,886 @@
+"""
+Agent 4: Analisis Hasil Trading Sebelumnya (Reflector)
+Bertugas menganalisis performa trading yang sudah dilakukan,
+mengidentifikasi pola kesalahan dan kesuksesan, serta memberikan
+rekomendasi untuk improvement strategi trading.
+
+Agent ini adalah "pembelajaran" yang membuat sistem semakin pintar
+seiring berjalannya waktu.
+"""
+
+import os
+import logging
+import json
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, asdict
+from collections import defaultdict
+from enum import Enum
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class TradeOutcome(Enum):
+    """Hasil dari sebuah trade"""
+    WIN = "WIN"
+    LOSS = "LOSS"
+    BREAK_EVEN = "BREAK_EVEN"
+
+@dataclass
+class TradeRecord:
+    """Record dari sebuah trade"""
+    trade_id: str
+    symbol: str
+    entry_price: float
+    exit_price: float
+    entry_time: datetime
+    exit_time: datetime
+    position_size: float
+    action: str  # BUY or SELL
+    outcome: str  # WIN, LOSS, BREAK_EVEN
+    pnl: float
+    pnl_percent: float
+    holding_period_hours: float
+    decision_confidence: float
+    sentiment_score_at_entry: float
+    technical_score_at_entry: float
+    stop_loss: float
+    take_profit: float
+    reason_closed: str  # STOP_LOSS, TAKE_PROFIT, MANUAL, etc.
+
+@dataclass
+class ReflectionResult:
+    """Data class untuk hasil analisis refleksi"""
+    timestamp: datetime
+    symbol: str
+    
+    # Performance metrics
+    total_trades: int
+    win_rate: float
+    total_pnl: float
+    avg_pnl_per_trade: float
+    max_profit: float
+    max_loss: float
+    profit_factor: float
+    sharpe_ratio: float
+    
+    # Pattern analysis
+    winning_patterns: List[Dict[str, Any]]
+    losing_patterns: List[Dict[str, Any]]
+    common_mistakes: List[str]
+    success_factors: List[str]
+    
+    # Decision quality
+    avg_decision_confidence: float
+    confidence_correlation: float  # Korelasi confidence dengan hasil
+    sentiment_technical_divergence: float
+    
+    # Recommendations
+    recommendations: List[str]
+    strategy_adjustments: List[str]
+    focus_areas: List[str]
+    
+    # Improvement plan
+    improvement_plan: Dict[str, Any]
+    expected_improvement: float
+    
+    # Summary
+    summary: str
+
+class ReflectorAgent:
+    """
+    Agent Refleksi untuk analisis performa dan pembelajaran
+    """
+    
+    def __init__(self, config: Dict = None):
+        """
+        Initialize Reflector Agent
+        
+        Args:
+            config: Konfigurasi untuk agent
+        """
+        self.config = config or {}
+        
+        # History management
+        self.trade_history: List[TradeRecord] = []
+        self.decision_history: List[Dict] = []
+        self.max_history = 500
+        
+        # Performance tracking
+        self.performance_by_symbol: Dict[str, Dict] = defaultdict(lambda: {
+            'trades': 0,
+            'wins': 0,
+            'losses': 0,
+            'total_pnl': 0.0,
+            'avg_pnl': 0.0,
+            'win_rate': 0.0
+        })
+        
+        # Thresholds untuk evaluasi
+        self.thresholds = {
+            'good_win_rate': 0.55,
+            'excellent_win_rate': 0.65,
+            'good_profit_factor': 1.5,
+            'excellent_profit_factor': 2.0,
+            'min_trades_for_analysis': 10,
+            'max_drawdown_warning': 0.10
+        }
+        
+        # Pattern recognition
+        self.pattern_cache = {}
+        self.successful_patterns = []
+        self.failed_patterns = []
+        
+        logger.info("Reflector Agent initialized successfully")
+        
+        # Load historical data if available
+        self._load_history()
+    
+    def analyze(self, symbol: str = None, 
+                trades: List[TradeRecord] = None,
+                decisions: List[Dict] = None) -> ReflectionResult:
+        """
+        Main method untuk analisis refleksi
+        
+        Args:
+            symbol: Simbol spesifik (opsional)
+            trades: Daftar trade yang akan dianalisis (opsional)
+            decisions: Daftar keputusan (opsional)
+        
+        Returns:
+            ReflectionResult: Hasil analisis refleksi
+        """
+        logger.info(f"Starting reflection analysis for {symbol or 'all symbols'}")
+        
+        try:
+            # Update history jika ada data baru
+            if trades:
+                self._add_trades(trades)
+            if decisions:
+                self._add_decisions(decisions)
+            
+            # Filter trades berdasarkan symbol
+            trades_to_analyze = self.trade_history
+            if symbol:
+                trades_to_analyze = [t for t in trades_to_analyze if t.symbol == symbol]
+            
+            if not trades_to_analyze:
+                logger.warning("No trades to analyze")
+                return self._get_default_reflection(symbol or "UNKNOWN")
+            
+            # 1. Calculate performance metrics
+            metrics = self._calculate_performance_metrics(trades_to_analyze)
+            
+            # 2. Analyze patterns
+            winning_patterns, losing_patterns = self._analyze_patterns(trades_to_analyze)
+            common_mistakes, success_factors = self._identify_patterns(trades_to_analyze)
+            
+            # 3. Analyze decision quality
+            decision_quality = self._analyze_decision_quality(trades_to_analyze)
+            
+            # 4. Generate recommendations
+            recommendations = self._generate_recommendations(
+                metrics, winning_patterns, losing_patterns, decision_quality
+            )
+            
+            # 5. Create improvement plan
+            improvement_plan = self._create_improvement_plan(
+                metrics, recommendations, trades_to_analyze
+            )
+            
+            # 6. Calculate expected improvement
+            expected_improvement = self._calculate_expected_improvement(
+                improvement_plan, metrics
+            )
+            
+            # Build result
+            result = ReflectionResult(
+                timestamp=datetime.now(),
+                symbol=symbol or "ALL_SYMBOLS",
+                total_trades=metrics['total_trades'],
+                win_rate=metrics['win_rate'],
+                total_pnl=metrics['total_pnl'],
+                avg_pnl_per_trade=metrics['avg_pnl'],
+                max_profit=metrics['max_profit'],
+                max_loss=metrics['max_loss'],
+                profit_factor=metrics['profit_factor'],
+                sharpe_ratio=metrics['sharpe_ratio'],
+                winning_patterns=winning_patterns,
+                losing_patterns=losing_patterns,
+                common_mistakes=common_mistakes,
+                success_factors=success_factors,
+                avg_decision_confidence=decision_quality['avg_confidence'],
+                confidence_correlation=decision_quality['confidence_correlation'],
+                sentiment_technical_divergence=decision_quality['divergence'],
+                recommendations=recommendations,
+                strategy_adjustments=self._generate_strategy_adjustments(
+                    metrics, common_mistakes, success_factors
+                ),
+                focus_areas=self._identify_focus_areas(
+                    metrics, winning_patterns, losing_patterns
+                ),
+                improvement_plan=improvement_plan,
+                expected_improvement=expected_improvement,
+                summary=self._generate_summary(
+                    metrics, recommendations, expected_improvement
+                )
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in reflection analysis: {str(e)}")
+            return self._get_default_reflection(symbol or "UNKNOWN")
+    
+    def _add_trades(self, trades: List[TradeRecord]):
+        """Add trades to history"""
+        for trade in trades:
+            if not hasattr(trade, 'trade_id') or not trade.trade_id:
+                trade.trade_id = f"TRADE_{datetime.now().timestamp()}"
+            self.trade_history.append(trade)
+        
+        # Trim history if needed
+        if len(self.trade_history) > self.max_history:
+            self.trade_history = self.trade_history[-self.max_history:]
+        
+        self._update_performance_stats()
+        self._save_history()
+    
+    def _add_decisions(self, decisions: List[Dict]):
+        """Add decisions to history"""
+        for decision in decisions:
+            self.decision_history.append(decision)
+        
+        if len(self.decision_history) > self.max_history:
+            self.decision_history = self.decision_history[-self.max_history:]
+    
+    def _calculate_performance_metrics(self, trades: List[TradeRecord]) -> Dict:
+        """Calculate various performance metrics"""
+        if not trades:
+            return {
+                'total_trades': 0,
+                'win_rate': 0.0,
+                'total_pnl': 0.0,
+                'avg_pnl': 0.0,
+                'max_profit': 0.0,
+                'max_loss': 0.0,
+                'profit_factor': 0.0,
+                'sharpe_ratio': 0.0
+            }
+        
+        total_trades = len(trades)
+        wins = sum(1 for t in trades if t.outcome == TradeOutcome.WIN.value)
+        losses = sum(1 for t in trades if t.outcome == TradeOutcome.LOSS.value)
+        win_rate = wins / total_trades if total_trades > 0 else 0
+        
+        pnls = [t.pnl for t in trades]
+        total_pnl = sum(pnls)
+        avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
+        max_profit = max(pnls) if pnls else 0
+        max_loss = min(pnls) if pnls else 0
+        
+        # Profit factor (gross profit / gross loss)
+        gross_profit = sum(p for p in pnls if p > 0)
+        gross_loss = abs(sum(p for p in pnls if p < 0))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+        
+        # Sharpe ratio (simplified)
+        if len(pnls) > 1:
+            avg_pnl_for_sharpe = np.mean(pnls)
+            std_pnl = np.std(pnls)
+            sharpe_ratio = avg_pnl_for_sharpe / std_pnl if std_pnl > 0 else 0
+        else:
+            sharpe_ratio = 0
+        
+        return {
+            'total_trades': total_trades,
+            'win_rate': win_rate,
+            'total_pnl': total_pnl,
+            'avg_pnl': avg_pnl,
+            'max_profit': max_profit,
+            'max_loss': max_loss,
+            'profit_factor': profit_factor,
+            'sharpe_ratio': sharpe_ratio
+        }
+    
+    def _analyze_patterns(self, trades: List[TradeRecord]) -> Tuple[List, List]:
+        """
+        Analyze patterns in winning and losing trades
+        
+        Returns:
+            Tuple of (winning_patterns, losing_patterns)
+        """
+        winning_trades = [t for t in trades if t.outcome == TradeOutcome.WIN.value]
+        losing_trades = [t for t in trades if t.outcome == TradeOutcome.LOSS.value]
+        
+        # Analyze winning patterns
+        winning_patterns = []
+        if winning_trades:
+            # Check common factors in winning trades
+            avg_confidence = np.mean([t.decision_confidence for t in winning_trades])
+            avg_holding_period = np.mean([t.holding_period_hours for t in winning_trades])
+            sentiment_range = [
+                min([t.sentiment_score_at_entry for t in winning_trades]),
+                max([t.sentiment_score_at_entry for t in winning_trades])
+            ]
+            
+            winning_patterns.append({
+                'pattern_type': 'HIGH_CONFIDENCE',
+                'description': f'Trades with confidence > {avg_confidence:.2%} tend to win',
+                'success_rate': len(winning_trades) / len(trades) if trades else 0,
+                'avg_holding_period': avg_holding_period,
+                'sentiment_range': sentiment_range,
+                'recommendation': 'Focus on high confidence setups'
+            })
+            
+            # Analyze technical vs sentiment alignment
+            sentiment_score_winning = [t.sentiment_score_at_entry for t in winning_trades]
+            technical_score_winning = [t.technical_score_at_entry for t in winning_trades]
+            
+            # Check if there's a pattern in entry timing
+            entry_times = [t.entry_time.hour for t in winning_trades]
+            if entry_times:
+                common_hours = pd.Series(entry_times).value_counts().head(3)
+                if len(common_hours) > 0:
+                    winning_patterns.append({
+                        'pattern_type': 'TIMING',
+                        'description': f'Best entry times: {list(common_hours.index)}',
+                        'success_rate': len(winning_trades) / len(trades) if trades else 0,
+                        'common_hours': list(common_hours.index),
+                        'recommendation': 'Focus on these hours for entry'
+                    })
+        
+        # Analyze losing patterns
+        losing_patterns = []
+        if losing_trades:
+            # Common mistakes in losing trades
+            avg_losing_confidence = np.mean([t.decision_confidence for t in losing_trades])
+            avg_losing_period = np.mean([t.holding_period_hours for t in losing_trades])
+            
+            losing_patterns.append({
+                'pattern_type': 'LOW_CONFIDENCE',
+                'description': f'Losing trades often have lower confidence ({avg_losing_confidence:.2%})',
+                'loss_rate': len(losing_trades) / len(trades) if trades else 0,
+                'avg_holding_period': avg_losing_period,
+                'recommendation': 'Avoid trades below confidence threshold'
+            })
+            
+            # Check stop loss hits vs manual exits
+            stop_loss_hits = sum(1 for t in losing_trades if t.reason_closed == 'STOP_LOSS')
+            if stop_loss_hits > 0:
+                losing_patterns.append({
+                    'pattern_type': 'STOP_LOSS',
+                    'description': f'{stop_loss_hits} trades hit stop loss',
+                    'loss_rate': stop_loss_hits / len(losing_trades) if losing_trades else 0,
+                    'recommendation': 'Consider wider stop loss or better entry timing'
+                })
+            
+            # Check if losing trades are concentrated in certain conditions
+            # (e.g., specific symbol, time of day, etc.)
+        
+        return winning_patterns, losing_patterns
+    
+    def _identify_patterns(self, trades: List[TradeRecord]) -> Tuple[List[str], List[str]]:
+        """
+        Identify common mistakes and success factors
+        
+        Returns:
+            Tuple of (common_mistakes, success_factors)
+        """
+        common_mistakes = []
+        success_factors = []
+        
+        winning_trades = [t for t in trades if t.outcome == TradeOutcome.WIN.value]
+        losing_trades = [t for t in trades if t.outcome == TradeOutcome.LOSS.value]
+        
+        # 1. Entry timing analysis
+        winning_times = [t.entry_time.hour for t in winning_trades]
+        losing_times = [t.entry_time.hour for t in losing_trades]
+        
+        if winning_times and losing_times:
+            # Check if there's a time where trades consistently lose
+            losing_hours = pd.Series(losing_times).value_counts()
+            if not losing_hours.empty and losing_hours.iloc[0] > 2:
+                common_mistakes.append(
+                    f"Avoid trading at {losing_hours.index[0]}:00 - Multiple losses recorded"
+                )
+        
+        # 2. Confidence analysis
+        if winning_trades and losing_trades:
+            avg_win_conf = np.mean([t.decision_confidence for t in winning_trades])
+            avg_loss_conf = np.mean([t.decision_confidence for t in losing_trades])
+            
+            if avg_win_conf > avg_loss_conf + 0.1:
+                success_factors.append(
+                    f"High confidence trades ({avg_win_conf:.1%}) are more successful"
+                )
+            else:
+                common_mistakes.append(
+                    f"Low confidence trades ({avg_loss_conf:.1%}) tend to lose"
+                )
+        
+        # 3. Holding period analysis
+        if winning_trades and losing_trades:
+            avg_win_period = np.mean([t.holding_period_hours for t in winning_trades])
+            avg_loss_period = np.mean([t.holding_period_hours for t in losing_trades])
+            
+            if avg_win_period > avg_loss_period:
+                success_factors.append(
+                    f"Longer holding periods ({avg_win_period:.1f}h) show better results"
+                )
+            else:
+                common_mistakes.append(
+                    f"Trades held too long ({avg_loss_period:.1f}h) tend to lose"
+                )
+        
+        # 4. Sentiment vs Technical alignment
+        for t in trades:
+            alignment = abs(t.sentiment_score_at_entry - t.technical_score_at_entry)
+            if alignment < 0.2 and t.outcome == TradeOutcome.WIN.value:
+                success_factors.append("Sentiment and technical alignment leads to wins")
+                break
+        
+        # 5. Stop loss effectiveness
+        if losing_trades:
+            stop_loss_hits = sum(1 for t in losing_trades if t.reason_closed == 'STOP_LOSS')
+            if stop_loss_hits > len(losing_trades) * 0.5:
+                common_mistakes.append("Stop loss too tight - many trades hit SL before reversing")
+        
+        return common_mistakes[:5], success_factors[:5]
+    
+    def _analyze_decision_quality(self, trades: List[TradeRecord]) -> Dict:
+        """
+        Analyze quality of decisions
+        
+        Returns:
+            Dict with decision quality metrics
+        """
+        if not trades:
+            return {
+                'avg_confidence': 0,
+                'confidence_correlation': 0,
+                'divergence': 0
+            }
+        
+        # Average confidence
+        avg_confidence = np.mean([t.decision_confidence for t in trades])
+        
+        # Correlation between confidence and outcome
+        win_indicators = [1 if t.outcome == TradeOutcome.WIN.value else 0 for t in trades]
+        confidences = [t.decision_confidence for t in trades]
+        
+        if len(confidences) > 1:
+            correlation = np.corrcoef(win_indicators, confidences)[0, 1]
+        else:
+            correlation = 0
+        
+        # Sentiment-technical divergence
+        divergences = []
+        for t in trades:
+            divergence = abs(t.sentiment_score_at_entry - t.technical_score_at_entry)
+            divergences.append(divergence)
+        
+        avg_divergence = np.mean(divergences) if divergences else 0
+        
+        return {
+            'avg_confidence': avg_confidence,
+            'confidence_correlation': correlation,
+            'divergence': avg_divergence
+        }
+    
+    def _generate_recommendations(self, metrics: Dict, winning_patterns: List,
+                                  losing_patterns: List, decision_quality: Dict) -> List[str]:
+        """
+        Generate actionable recommendations
+        """
+        recommendations = []
+        
+        # 1. Win rate recommendations
+        if metrics['total_trades'] >= self.thresholds['min_trades_for_analysis']:
+            win_rate = metrics['win_rate']
+            if win_rate < self.thresholds['good_win_rate']:
+                recommendations.append(
+                    f"⚠️ Win rate {win_rate:.1%} below target ({self.thresholds['good_win_rate']:.1%}) - "
+                    "Review entry criteria"
+                )
+            elif win_rate > self.thresholds['excellent_win_rate']:
+                recommendations.append(
+                    f"✅ Excellent win rate {win_rate:.1%} - Continue current strategy"
+                )
+        
+        # 2. Profit factor recommendations
+        profit_factor = metrics['profit_factor']
+        if profit_factor < self.thresholds['good_profit_factor']:
+            recommendations.append(
+                f"⚠️ Profit factor {profit_factor:.2f} below target - "
+                "Improve risk-reward ratio"
+            )
+        elif profit_factor > self.thresholds['excellent_profit_factor']:
+            recommendations.append(
+                f"✅ Excellent profit factor {profit_factor:.2f} - Strong strategy"
+            )
+        
+        # 3. Confidence recommendations
+        if decision_quality['avg_confidence'] < 0.6:
+            recommendations.append(
+                f"⚠️ Low average confidence ({decision_quality['avg_confidence']:.1%}) - "
+                "Wait for stronger signals"
+            )
+        
+        # 4. Pattern-based recommendations
+        if winning_patterns:
+            best_pattern = max(winning_patterns, key=lambda x: x.get('success_rate', 0))
+            recommendations.append(
+                f"📈 Focus on: {best_pattern.get('description', 'winning pattern')}"
+            )
+        
+        if losing_patterns:
+            worst_pattern = max(losing_patterns, key=lambda x: x.get('loss_rate', 0))
+            recommendations.append(
+                f"❌ Avoid: {worst_pattern.get('description', 'losing pattern')}"
+            )
+        
+        # 5. Risk management
+        if metrics['max_loss'] < -metrics['avg_pnl'] * 3:
+            recommendations.append("⚠️ Consider tighter risk management - Large losses observed")
+        
+        # 6. Diversification
+        if metrics['total_trades'] > 20:
+            recommendations.append("Consider diversifying across different symbols/strategies")
+        
+        # Cap at 5 recommendations
+        return recommendations[:5]
+    
+    def _generate_strategy_adjustments(self, metrics: Dict, mistakes: List[str],
+                                       success_factors: List[str]) -> List[str]:
+        """Generate specific strategy adjustments"""
+        adjustments = []
+        
+        # Adjust win rate
+        if metrics['total_trades'] >= 10:
+            if metrics['win_rate'] < 0.5:
+                adjustments.append("Increase win rate: Improve entry timing, wait for confirmation")
+            elif metrics['win_rate'] > 0.7:
+                adjustments.append("Maintain high win rate: Continue current strategy")
+        
+        # Adjust position sizing
+        if metrics['avg_pnl'] < 0:
+            adjustments.append("Reduce position size until consistency improves")
+        elif metrics['avg_pnl'] > metrics['max_loss'] * 0.5:
+            adjustments.append("Consider slightly larger positions on high confidence setups")
+        
+        # Adjust risk management
+        if metrics['max_loss'] < -metrics['avg_pnl'] * 2:
+            adjustments.append("Implement stricter stop-loss rules")
+        
+        # Learn from mistakes
+        if mistakes:
+            adjustments.append(f"Avoid: {mistakes[0]}")
+        
+        return adjustments[:3]
+    
+    def _identify_focus_areas(self, metrics: Dict, winning_patterns: List,
+                             losing_patterns: List) -> List[str]:
+        """Identify areas to focus on for improvement"""
+        focus_areas = []
+        
+        # Win rate improvement
+        if metrics['win_rate'] < 0.5:
+            focus_areas.append("Improve entry selection")
+        
+        # Profit factor improvement
+        if metrics['profit_factor'] < 1.5:
+            focus_areas.append("Better risk-reward ratio")
+        
+        # Position sizing
+        if abs(metrics['max_loss']) > abs(metrics['max_profit']):
+            focus_areas.append("Tighter risk management")
+        
+        # Pattern exploitation
+        if winning_patterns:
+            focus_areas.append(f"Exploit: {winning_patterns[0].get('description', 'winning pattern')[:50]}")
+        
+        # Learning from mistakes
+        if losing_patterns:
+            focus_areas.append(f"Avoid: {losing_patterns[0].get('description', 'losing pattern')[:50]}")
+        
+        return focus_areas[:4]
+    
+    def _create_improvement_plan(self, metrics: Dict, recommendations: List[str],
+                                 trades: List[TradeRecord]) -> Dict[str, Any]:
+        """Create detailed improvement plan"""
+        plan = {
+            'immediate_actions': [],
+            'short_term_goals': [],
+            'long_term_goals': [],
+            'expected_timeline': '4 weeks'
+        }
+        
+        # Immediate actions (next 1-3 trades)
+        for rec in recommendations[:2]:
+            plan['immediate_actions'].append(f"Apply: {rec}")
+        
+        # Short term goals (next week)
+        if metrics['win_rate'] < 0.5:
+            plan['short_term_goals'].append("Increase win rate to 50%")
+        if metrics['profit_factor'] < 1.5:
+            plan['short_term_goals'].append("Achieve profit factor > 1.5")
+        
+        # Long term goals (1 month+)
+        if len(trades) < 50:
+            plan['long_term_goals'].append("Build track record of 50+ trades")
+        plan['long_term_goals'].append("Achieve consistent monthly profitability")
+        plan['long_term_goals'].append("Optimize strategy based on historical patterns")
+        
+        return plan
+    
+    def _calculate_expected_improvement(self, plan: Dict, metrics: Dict) -> float:
+        """Calculate expected improvement from implementing plan"""
+        # Simplified calculation based on planned actions
+        base_improvement = 0.05  # 5% baseline
+        
+        # Win rate improvement
+        if 'Increase win rate' in str(plan):
+            if metrics['win_rate'] < 0.5:
+                base_improvement += 0.08
+            else:
+                base_improvement += 0.03
+        
+        # Profit factor improvement
+        if metrics['profit_factor'] < 1.5:
+            base_improvement += 0.05
+        
+        # Learning from mistakes
+        if len(plan.get('immediate_actions', [])) > 0:
+            base_improvement += 0.02
+        
+        return min(base_improvement, 0.20)  # Cap at 20% improvement
+    
+    def _generate_summary(self, metrics: Dict, recommendations: List[str],
+                         expected_improvement: float) -> str:
+        """Generate overall summary"""
+        summary = f"Analisis {metrics['total_trades']} trades: "
+        
+        if metrics['total_trades'] > 0:
+            summary += f"Win rate {metrics['win_rate']:.1%}, "
+            summary += f"Total PnL ${metrics['total_pnl']:.2f}, "
+            summary += f"Avg ${metrics['avg_pnl']:.2f}/trade. "
+        
+        if recommendations:
+            summary += f"Rekomendasi utama: {recommendations[0]}. "
+        
+        if expected_improvement > 0:
+            summary += f"Potensi improvement: {expected_improvement:.1%}"
+        
+        return summary
+    
+    def _update_performance_stats(self):
+        """Update performance statistics by symbol"""
+        for trade in self.trade_history:
+            stats = self.performance_by_symbol[trade.symbol]
+            stats['trades'] += 1
+            if trade.outcome == TradeOutcome.WIN.value:
+                stats['wins'] += 1
+            elif trade.outcome == TradeOutcome.LOSS.value:
+                stats['losses'] += 1
+            stats['total_pnl'] += trade.pnl
+            stats['avg_pnl'] = stats['total_pnl'] / stats['trades']
+            stats['win_rate'] = stats['wins'] / stats['trades'] if stats['trades'] > 0 else 0
+    
+    def _save_history(self):
+        """Save trade history to file"""
+        try:
+            # Convert to serializable format
+            trades_data = []
+            for trade in self.trade_history:
+                trade_dict = {
+                    'trade_id': trade.trade_id,
+                    'symbol': trade.symbol,
+                    'entry_price': trade.entry_price,
+                    'exit_price': trade.exit_price,
+                    'entry_time': trade.entry_time.isoformat(),
+                    'exit_time': trade.exit_time.isoformat(),
+                    'position_size': trade.position_size,
+                    'action': trade.action,
+                    'outcome': trade.outcome,
+                    'pnl': trade.pnl,
+                    'pnl_percent': trade.pnl_percent,
+                    'holding_period_hours': trade.holding_period_hours,
+                    'decision_confidence': trade.decision_confidence,
+                    'sentiment_score_at_entry': trade.sentiment_score_at_entry,
+                    'technical_score_at_entry': trade.technical_score_at_entry,
+                    'stop_loss': trade.stop_loss,
+                    'take_profit': trade.take_profit,
+                    'reason_closed': trade.reason_closed
+                }
+                trades_data.append(trade_dict)
+            
+            with open('data/trade_history.json', 'w') as f:
+                json.dump(trades_data, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Error saving trade history: {e}")
+    
+    def _load_history(self):
+        """Load trade history from file"""
+        try:
+            if os.path.exists('data/trade_history.json'):
+                with open('data/trade_history.json', 'r') as f:
+                    trades_data = json.load(f)
+                
+                for trade_dict in trades_data:
+                    trade = TradeRecord(
+                        trade_id=trade_dict['trade_id'],
+                        symbol=trade_dict['symbol'],
+                        entry_price=trade_dict['entry_price'],
+                        exit_price=trade_dict['exit_price'],
+                        entry_time=datetime.fromisoformat(trade_dict['entry_time']),
+                        exit_time=datetime.fromisoformat(trade_dict['exit_time']),
+                        position_size=trade_dict['position_size'],
+                        action=trade_dict['action'],
+                        outcome=trade_dict['outcome'],
+                        pnl=trade_dict['pnl'],
+                        pnl_percent=trade_dict['pnl_percent'],
+                        holding_period_hours=trade_dict['holding_period_hours'],
+                        decision_confidence=trade_dict['decision_confidence'],
+                        sentiment_score_at_entry=trade_dict['sentiment_score_at_entry'],
+                        technical_score_at_entry=trade_dict['technical_score_at_entry'],
+                        stop_loss=trade_dict['stop_loss'],
+                        take_profit=trade_dict['take_profit'],
+                        reason_closed=trade_dict['reason_closed']
+                    )
+                    self.trade_history.append(trade)
+                
+                logger.info(f"Loaded {len(self.trade_history)} trades from history")
+                
+        except Exception as e:
+            logger.info(f"No existing trade history found: {e}")
+    
+    def get_performance_summary(self) -> Dict:
+        """Get overall performance summary"""
+        return {
+            'total_trades': len(self.trade_history),
+            'performance_by_symbol': dict(self.performance_by_symbol),
+            'current_win_rate': self.performance_by_symbol.get('ALL', {}).get('win_rate', 0)
+        }
+    
+    def _get_default_reflection(self, symbol: str) -> ReflectionResult:
+        """Return default reflection if no data"""
+        return ReflectionResult(
+            timestamp=datetime.now(),
+            symbol=symbol,
+            total_trades=0,
+            win_rate=0.0,
+            total_pnl=0.0,
+            avg_pnl_per_trade=0.0,
+            max_profit=0.0,
+            max_loss=0.0,
+            profit_factor=0.0,
+            sharpe_ratio=0.0,
+            winning_patterns=[],
+            losing_patterns=[],
+            common_mistakes=["Insufficient data for analysis"],
+            success_factors=["Collect more trading data"],
+            avg_decision_confidence=0.0,
+            confidence_correlation=0.0,
+            sentiment_technical_divergence=0.0,
+            recommendations=["Make at least 10 trades for proper analysis"],
+            strategy_adjustments=["Start trading to gather data"],
+            focus_areas=["Collect more data"],
+            improvement_plan={
+                'immediate_actions': ["Start trading"],
+                'short_term_goals': ["Build trade history"],
+                'long_term_goals': ["Achieve consistent profitability"],
+                'expected_timeline': "4 weeks"
+            },
+            expected_improvement=0.0,
+            summary="Insufficient trading data for reflection analysis"
+        )
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize reflector agent
+    reflector = ReflectorAgent()
+    
+    # Create sample trades
+    sample_trades = [
+        TradeRecord(
+            trade_id=f"TRADE_{i}",
+            symbol="BTC-USD",
+            entry_price=40000 + i * 100,
+            exit_price=41000 + i * 50 if i % 2 == 0 else 39000 + i * 50,
+            entry_time=datetime.now() - timedelta(hours=i * 12),
+            exit_time=datetime.now() - timedelta(hours=i * 12 - 6),
+            position_size=0.1,
+            action="BUY" if i % 2 == 0 else "SELL",
+            outcome=TradeOutcome.WIN.value if i % 2 == 0 else TradeOutcome.LOSS.value,
+            pnl=100 if i % 2 == 0 else -50,
+            pnl_percent=2.5 if i % 2 == 0 else -1.25,
+            holding_period_hours=6 + i * 0.5,
+            decision_confidence=0.75 if i % 2 == 0 else 0.45,
+            sentiment_score_at_entry=0.5 if i % 2 == 0 else -0.2,
+            technical_score_at_entry=0.4 if i % 2 == 0 else 0.1,
+            stop_loss=39500 if i % 2 == 0 else 40500,
+            take_profit=42000 if i % 2 == 0 else 38000,
+            reason_closed="TAKE_PROFIT" if i % 2 == 0 else "STOP_LOSS"
+        )
+        for i in range(20)
+    ]
+    
+    # Analyze
+    result = reflector.analyze(trades=sample_trades)
+    
+    print("=" * 60)
+    print(f"REFLECTION ANALYSIS - {result.symbol}")
+    print("=" * 60)
+    print(f"\n📊 PERFORMANCE METRICS:")
+    print(f"  Total Trades: {result.total_trades}")
+    print(f"  Win Rate: {result.win_rate:.1%}")
+    print(f"  Total PnL: ${result.total_pnl:.2f}")
+    print(f"  Avg PnL/Trade: ${result.avg_pnl_per_trade:.2f}")
+    print(f"  Max Profit: ${result.max_profit:.2f}")
+    print(f"  Max Loss: ${result.max_loss:.2f}")
+    print(f"  Profit Factor: {result.profit_factor:.2f}")
+    print(f"  Sharpe Ratio: {result.sharpe_ratio:.2f}")
+    
+    print(f"\n📈 DECISION QUALITY:")
+    print(f"  Avg Confidence: {result.avg_decision_confidence:.1%}")
+    print(f"  Confidence Correlation: {result.confidence_correlation:.2f}")
+    print(f"  Sentiment-Technical Divergence: {result.sentiment_technical_divergence:.2f}")
+    
+    if result.winning_patterns:
+        print(f"\n✅ WINNING PATTERNS:")
+        for pattern in result.winning_patterns[:2]:
+            print(f"  • {pattern['description']}")
+    
+    if result.losing_patterns:
+        print(f"\n❌ LOSING PATTERNS:")
+        for pattern in result.losing_patterns[:2]:
+            print(f"  • {pattern['description']}")
+    
+    if result.common_mistakes:
+        print(f"\n⚠️ COMMON MISTAKES:")
+        for mistake in result.common_mistakes[:3]:
+            print(f"  • {mistake}")
+    
+    if result.success_factors:
+        print(f"\n✅ SUCCESS FACTORS:")
+        for factor in result.success_factors[:3]:
+            print(f"  • {factor}")
+    
+    print(f"\n💡 RECOMMENDATIONS:")
+    for rec in result.recommendations:
+        print(f"  • {rec}")
+    
+    print(f"\n🎯 FOCUS AREAS:")
+    for area in result.focus_areas:
+        print(f"  • {area}")
+    
+    print(f"\n📋 IMPROVEMENT PLAN:")
+    print(f"  Immediate Actions: {', '.join(result.improvement_plan.get('immediate_actions', ['N/A'])[:2])}")
+    print(f"  Expected Improvement: {result.expected_improvement:.1%}")
+    
+    print(f"\n📝 SUMMARY: {result.summary}")
