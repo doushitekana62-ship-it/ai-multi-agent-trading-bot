@@ -1,0 +1,312 @@
+"""
+Dashboard Routes
+Real-time data for dashboard
+"""
+
+import os
+import sys
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional
+from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# Add parent directory to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+from backend.app.core.security import verify_token
+from core.orchestrator import Orchestrator
+from core.executor import Executor
+from exchange_integration.paper_trading import PaperTrading
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Router
+router = APIRouter()
+security = HTTPBearer()
+
+# Initialize components
+orchestrator = Orchestrator()
+executor = Executor()
+paper_trading = PaperTrading()
+
+@router.get("/status")
+async def get_status(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Get system status
+    """
+    try:
+        # Verify token
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        return {
+            "status": "running",
+            "timestamp": datetime.now().isoformat(),
+            "exchange_mode": executor.exchange_mode,
+            "active_positions": len(executor.active_positions),
+            "total_trades": len(executor.order_history),
+            "daily_pnl": executor.daily_pnl,
+            "daily_trades": executor.daily_trades,
+            "portfolio_value": paper_trading.get_portfolio_value(),
+            "balance": paper_trading.balance
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get status"
+        )
+
+@router.get("/agents")
+async def get_agents_status(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Get status of all agents
+    """
+    try:
+        # Verify token
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        return {
+            "agents": [
+                {
+                    "name": "Sentiment Agent",
+                    "status": "active",
+                    "description": "Analisis sentimen pasar"
+                },
+                {
+                    "name": "Technical Agent",
+                    "status": "active",
+                    "description": "Analisis candlestick & teknikal"
+                },
+                {
+                    "name": "Decision Agent",
+                    "status": "active",
+                    "description": "Pengambil keputusan trading"
+                },
+                {
+                    "name": "Reflector Agent",
+                    "status": "active",
+                    "description": "Analisis hasil trading"
+                },
+                {
+                    "name": "Forecast Agent",
+                    "status": "active",
+                    "description": "Prediksi pergerakan harga"
+                }
+            ],
+            "orchestrator": "running",
+            "executor": "running"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting agents status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get agents status"
+        )
+
+@router.get("/positions")
+async def get_positions(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Get current positions
+    """
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        positions = paper_trading.get_positions()
+        
+        return {
+            "positions": positions,
+            "total_positions": len(positions),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting positions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get positions"
+        )
+
+@router.get("/trades")
+async def get_trades(
+    limit: int = 50,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Get recent trades
+    """
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        trades = paper_trading.trade_history[-limit:]
+        
+        return {
+            "trades": trades,
+            "total_trades": len(paper_trading.trade_history),
+            "limit": limit,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting trades: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get trades"
+        )
+
+@router.get("/performance")
+async def get_performance(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Get performance metrics
+    """
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        perf = paper_trading.get_performance()
+        
+        return {
+            "performance": perf,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting performance: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get performance"
+        )
+
+@router.get("/recent-decision")
+async def get_recent_decision(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Get most recent trading decision
+    """
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        history = orchestrator.get_history(1)
+        
+        if history:
+            latest = history[-1]
+            return {
+                "decision": {
+                    "symbol": latest.symbol,
+                    "action": latest.final_action,
+                    "confidence": latest.final_confidence,
+                    "position_size": latest.position_size,
+                    "timestamp": latest.timestamp.isoformat()
+                },
+                "votes": latest.agent_votes,
+                "summary": latest.summary
+            }
+        else:
+            return {
+                "decision": None,
+                "message": "No decisions made yet"
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting recent decision: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get recent decision"
+        )
+
+@router.post("/analyze")
+async def analyze_symbol(
+    symbol: str = "BTC-USD",
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Force analyze a symbol
+    """
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        # Run orchestrator
+        import asyncio
+        result = asyncio.run(orchestrator.analyze(symbol))
+        
+        return {
+            "symbol": result.symbol,
+            "action": result.final_action,
+            "confidence": result.final_confidence,
+            "position_size": result.position_size,
+            "votes": result.agent_votes,
+            "summary": result.summary,
+            "timestamp": result.timestamp.isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error analyzing symbol: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to analyze {symbol}"
+        )
