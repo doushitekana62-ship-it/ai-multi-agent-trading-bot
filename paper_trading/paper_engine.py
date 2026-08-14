@@ -25,7 +25,7 @@ PaperTradingEngine
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime,timezone
 from typing import Dict, List, Optional, Any
 
 
@@ -275,7 +275,7 @@ def __init__(
             "confidence": float(confidence),
             "stop_loss": stop_loss,
             "take_profit": take_profit,
-            "opened_at": datetime.utcnow().isoformat(),
+            "opened_at": datetime.now(timezone.utc).isoformat(),
             "metadata": metadata or {},
             "unrealized_pnl": 0.0,
             "unrealized_pnl_percent": 0.0,
@@ -294,7 +294,7 @@ def __init__(
             "action": "OPEN",
             "price": float(price),
             "quantity": float(quantity),
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "FILLED",
         }
 
@@ -389,7 +389,7 @@ def __init__(
             "pnl_percent": float(pnl_percent),
             "reason": reason,
             "entry_time": position["opened_at"],
-            "exit_time": datetime.utcnow().isoformat(),
+            "exit_time": datetime.now(timezone.utc).isoformat(),
             "metadata": position.get("metadata", {}),
         }
 
@@ -422,7 +422,7 @@ def __init__(
             "action": "CLOSE",
             "price": float(price),
             "quantity": quantity,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "FILLED",
             "reason": reason,
         }
