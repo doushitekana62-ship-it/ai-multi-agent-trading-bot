@@ -2,90 +2,132 @@
 Decision Engine
 ===============
 
-Lapisan pengambilan keputusan akhir sebelum Executor.
+Mengubah hasil Orchestrator + Risk Engine menjadi keputusan trading.
 
-Alur:
+Prinsip:
+    BUY  = bullish evidence cukup kuat
+    SELL = bearish evidence cukup kuat
+    HOLD = edge tidak cukup / konflik terlalu besar
 
-AI Agents
-    ↓
-Orchestrator
-    ↓
-Risk Engine
-    ↓
-Decision Engine
-    ↓
-Executor
+Position state:
+    FLAT  = tidak memiliki posisi
+    LONG  = sedang memiliki posisi BUY
+    SHORT = sedang memiliki posisi SELL
 
-Decision Engine TIDAK melakukan order.
-
-Tugasnya:
-1. Membaca keputusan Orchestrator
-2. Membaca hasil Risk Engine
-3. Mengevaluasi confidence
-4. Mengevaluasi consensus
-5. Mengevaluasi risk/reward
-6. Mengevaluasi exposure
-7. Menentukan apakah keputusan boleh dieksekusi
-8. Menghasilkan reasoning yang dapat diaudit
-
-Default:
-- SAFE
-- PAPER TRADING
-- Tidak pernah memaksa BUY/SELL
+PENTING:
+- Confidence AI bukan satu-satunya alasan untuk trading.
+- Risk engine tetap menjadi gate.
+- SELL tidak dipaksakan.
+- BUY dan SELL menggunakan logika evaluasi yang simetris.
+- Live trading tetap disabled secara default.
 """
-import json
+
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from typing import Any, Dict, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# DATA MODEL
+# ENUMS
+# ============================================================
+
+class Action(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+
+
+class PositionState(str, Enum):
+    FLAT = "FLAT"
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
+class DecisionStatus(str, Enum):
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+
+
+# ============================================================
+# DATA STRUCTURES
 # ============================================================
 
 @dataclass
-class DecisionResult:
-    timestamp: datetime
+class DecisionInput:
+    """
+    Input yang diperlukan Decision Engine.
+    """
 
+    symbol: str
+
+    # Orchestrator
+    consensus_score: float
+    confidence: float
+
+    # Agent evidence
+    sentiment_score: float
+    technical_score: float
+    forecast_score: float
+    decision_score: float
+
+    # Risk
+    risk_score: float
+    risk_reward_ratio: float
+    suggested_position_size: float
+
+    # Position
+    position_state: PositionState = PositionState.FLAT
+
+    # Optional market information
+    current_price: float = 0.0
+
+
+@dataclass
+class DecisionResult:
+    """
+    Hasil akhir Decision Engine.
+    """
+
+    timestamp: str
     symbol: str
 
     decision: str
     action: str
 
     confidence: float
-
     position_size: float
 
     risk_score: float
-
     consensus_score: float
-
-    risk_reward_ratio: Optional[float]
+    risk_reward_ratio: float
 
     approved: bool
-
     execution_allowed: bool
 
-    reasoning: list
+    position_state: str
+    target_position: str
 
+    bullish_score: float
+    bearish_score: float
+    directional_edge: float
+
+    reasoning: List[str]
     checks: Dict[str, bool]
-
     metadata: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
-        data = asdict(self)
-
-        data["timestamp"] = self.timestamp.isoformat()
-
-        return data
+        return asdict(self)
 
 
 # ============================================================
-# DECISION ENGINE
+# ENGINE
 # ============================================================
 
 class DecisionEngine:
@@ -95,7 +137,7 @@ class DecisionEngine:
         self.config = config or {}
 
         # ----------------------------------------------------
-        # THRESHOLDS
+        # Confidence
         # ----------------------------------------------------
 
         self.min_confidence = self.config.get(
@@ -103,19 +145,55 @@ class DecisionEngine:
             0.60
         )
 
+        # ----------------------------------------------------
+        # Directional thresholds
+        # ----------------------------------------------------
+
+        self.min_directional_edge = self.config.get(
+            "min_directional_edge",
+            0.15
+        )
+
+        self.min_bullish_score = self.config.get(
+            "min_bullish_score",
+            0.45
+        )
+
+        self.min_bearish_score = self.config.get(
+            "min_bearish_score",
+            0.45
+        )
+
+        # ----------------------------------------------------
+        # Consensus
+        # ----------------------------------------------------
+
         self.min_consensus = self.config.get(
             "min_consensus",
-            0.10
+            0.20
         )
+
+        # ----------------------------------------------------
+        # Risk
+        # ----------------------------------------------------
 
         self.max_risk_score = self.config.get(
             "max_risk_score",
-            0.70
+            0.50
         )
 
         self.min_risk_reward = self.config.get(
             "min_risk_reward",
-            1.5
+            1.50
+        )
+
+        # ----------------------------------------------------
+        # Position sizing
+        # ----------------------------------------------------
+
+        self.min_position_size = self.config.get(
+            "min_position_size",
+            0.01
         )
 
         self.max_position_size = self.config.get(
@@ -124,11 +202,11 @@ class DecisionEngine:
         )
 
         # ----------------------------------------------------
-        # SAFETY
+        # Execution
         # ----------------------------------------------------
 
-        self.allow_live_trading = self.config.get(
-            "allow_live_trading",
+        self.live_trading_enabled = self.config.get(
+            "live_trading_enabled",
             False
         )
 
@@ -136,581 +214,667 @@ class DecisionEngine:
             "Decision Engine initialized"
         )
 
-        logger.info(
-            "Configuration: "
-            f"min_confidence={self.min_confidence}, "
-            f"min_consensus={self.min_consensus}, "
-            f"max_risk_score={self.max_risk_score}, "
-            f"min_rr={self.min_risk_reward}"
-        )
-
     # ========================================================
-    # MAIN DECISION METHOD
+    # MAIN
     # ========================================================
 
     def evaluate(
         self,
-        orchestrator_result: Any,
-        risk_result: Any
+        data: DecisionInput
     ) -> DecisionResult:
 
-        """
-        Evaluate apakah keputusan Orchestrator boleh dieksekusi.
+        logger.info(
+            f"Decision Engine evaluating {data.symbol}"
+        )
 
-        Parameters
-        ----------
-        orchestrator_result:
-            Hasil dari Orchestrator.
+        # ----------------------------------------------------
+        # Normalize inputs
+        # ----------------------------------------------------
 
-        risk_result:
-            Hasil dari Risk Engine.
+        confidence = self._clamp(
+            data.confidence,
+            0.0,
+            1.0
+        )
 
-        Returns
-        -------
-        DecisionResult
-        """
+        consensus = self._clamp(
+            data.consensus_score,
+            -1.0,
+            1.0
+        )
 
-        try:
+        risk_score = self._clamp(
+            data.risk_score,
+            0.0,
+            1.0
+        )
 
-            # ------------------------------------------------
-            # Extract orchestrator data
-            # ------------------------------------------------
+        # ----------------------------------------------------
+        # Calculate directional scores
+        # ----------------------------------------------------
 
-            symbol = self._get_value(
-                orchestrator_result,
-                "symbol",
-                "UNKNOWN"
-            )
+        bullish_score = self._calculate_bullish_score(
+            data
+        )
 
-            action = self._get_value(
-                orchestrator_result,
-                "final_action",
-                "HOLD"
-            )
+        bearish_score = self._calculate_bearish_score(
+            data
+        )
 
-            confidence = float(
-                self._get_value(
-                    orchestrator_result,
-                    "final_confidence",
-                    0.0
-                )
-            )
+        directional_edge = (
+            bullish_score - bearish_score
+        )
 
-            position_size = float(
-                self._get_value(
-                    orchestrator_result,
-                    "position_size",
-                    0.0
-                )
-            )
+        # ----------------------------------------------------
+        # Determine directional action
+        # ----------------------------------------------------
 
-            consensus_score = float(
-                self._get_value(
-                    orchestrator_result,
-                    "consensus_score",
-                    0.0
-                )
-            )
+        proposed_action = self._determine_direction(
+            bullish_score=bullish_score,
+            bearish_score=bearish_score,
+            directional_edge=directional_edge
+        )
 
-            # ------------------------------------------------
-            # Extract risk data
-            # ------------------------------------------------
+        # ----------------------------------------------------
+        # Position-aware action
+        # ----------------------------------------------------
 
-            risk_score = float(
-                self._get_value(
-                    risk_result,
-                    "risk_score",
-                    1.0
-                )
-            )
+        final_action, target_position = self._resolve_position_action(
+            proposed_action,
+            data.position_state
+        )
 
-            risk_reward_ratio = self._get_value(
-                risk_result,
-                "risk_reward_ratio",
-                None
-            )
+        # ----------------------------------------------------
+        # HOLD does not require trade approval
+        # ----------------------------------------------------
 
-            if risk_reward_ratio is not None:
+        if final_action == Action.HOLD.value:
 
-                try:
-                    risk_reward_ratio = float(
-                        risk_reward_ratio
-                    )
+            reasoning = [
+                "Directional edge is insufficient for a trade"
+            ]
 
-                except (ValueError, TypeError):
-
-                    risk_reward_ratio = None
-
-            # ------------------------------------------------
-            # Normalize action
-            # ------------------------------------------------
-
-            action = str(action).upper()
-
-            # ------------------------------------------------
-            # HOLD is always safe
-            # ------------------------------------------------
-
-            if action == "HOLD":
-
-                return self._build_hold_result(
-                    symbol=symbol,
-                    confidence=confidence,
-                    position_size=position_size,
-                    consensus_score=consensus_score,
-                    risk_score=risk_score,
-                    risk_reward_ratio=risk_reward_ratio
-                )
-
-            # ------------------------------------------------
-            # Individual checks
-            # ------------------------------------------------
-
-            checks = {}
-
-            reasoning = []
-
-            # =================================================
-            # CHECK 1 — CONFIDENCE
-            # =================================================
-
-            confidence_ok = (
-                confidence >= self.min_confidence
-            )
-
-            checks["confidence"] = confidence_ok
-
-            if confidence_ok:
-
+            if abs(directional_edge) < self.min_directional_edge:
                 reasoning.append(
-                    f"Confidence {confidence:.2%} "
-                    f">= minimum {self.min_confidence:.2%}"
+                    f"Directional edge {directional_edge:.4f} "
+                    f"is below minimum "
+                    f"{self.min_directional_edge:.4f}"
                 )
 
-            else:
-
+            if (
+                bullish_score >= self.min_bullish_score
+                and bearish_score >= self.min_bearish_score
+            ):
                 reasoning.append(
-                    f"Confidence {confidence:.2%} "
-                    f"below minimum {self.min_confidence:.2%}"
+                    "Bullish and bearish evidence are conflicting"
                 )
 
-            # =================================================
-            # CHECK 2 — CONSENSUS
-            # =================================================
+            return self._build_result(
+                data=data,
+                decision=DecisionStatus.REJECT.value,
+                action=Action.HOLD.value,
+                confidence=confidence,
+                position_size=0.0,
+                approved=False,
+                bullish_score=bullish_score,
+                bearish_score=bearish_score,
+                directional_edge=directional_edge,
+                reasoning=reasoning,
+                checks={
+                    "confidence": confidence >= self.min_confidence,
+                    "consensus": abs(consensus) >= self.min_consensus,
+                    "risk": risk_score <= self.max_risk_score,
+                    "risk_reward": (
+                        data.risk_reward_ratio
+                        >= self.min_risk_reward
+                    ),
+                    "position_size": True,
+                    "action": False
+                },
+                position_state=data.position_state.value,
+                target_position=target_position
+            )
+
+        # ----------------------------------------------------
+        # Confidence check
+        # ----------------------------------------------------
+
+        confidence_ok = (
+            confidence >= self.min_confidence
+        )
+
+        # ----------------------------------------------------
+        # Directional consensus check
+        # ----------------------------------------------------
+
+        if final_action == Action.BUY.value:
 
             consensus_ok = (
-                abs(consensus_score)
-                >= self.min_consensus
+                consensus >= self.min_consensus
             )
 
-            checks["consensus"] = consensus_ok
+        elif final_action == Action.SELL.value:
 
-            if consensus_ok:
-
-                reasoning.append(
-                    f"Consensus score "
-                    f"{consensus_score:.4f} "
-                    f"passes threshold"
-                )
-
-            else:
-
-                reasoning.append(
-                    f"Consensus score "
-                    f"{consensus_score:.4f} "
-                    f"is too weak"
-                )
-
-            # =================================================
-            # CHECK 3 — RISK SCORE
-            # =================================================
-
-            risk_ok = (
-                risk_score <= self.max_risk_score
+            consensus_ok = (
+                consensus <= -self.min_consensus
             )
 
-            checks["risk"] = risk_ok
+        else:
 
-            if risk_ok:
+            consensus_ok = False
 
-                reasoning.append(
-                    f"Risk score "
-                    f"{risk_score:.4f} "
-                    f"is within allowed limit"
-                )
+        # ----------------------------------------------------
+        # Risk checks
+        # ----------------------------------------------------
 
-            else:
+        risk_ok = (
+            risk_score <= self.max_risk_score
+        )
 
-                reasoning.append(
-                    f"Risk score "
-                    f"{risk_score:.4f} "
-                    f"exceeds maximum "
-                    f"{self.max_risk_score:.4f}"
-                )
+        risk_reward_ok = (
+            data.risk_reward_ratio
+            >= self.min_risk_reward
+        )
 
-            # =================================================
-            # CHECK 4 — RISK / REWARD
-            # =================================================
+        # ----------------------------------------------------
+        # Position size
+        # ----------------------------------------------------
 
-            if risk_reward_ratio is None:
+        requested_size = self._clamp(
+            data.suggested_position_size,
+            0.0,
+            self.max_position_size
+        )
 
-                rr_ok = False
+        position_size_ok = (
+            requested_size >= self.min_position_size
+            and requested_size <= self.max_position_size
+        )
 
-                reasoning.append(
-                    "Risk/reward ratio unavailable"
-                )
+        # ----------------------------------------------------
+        # Action check
+        # ----------------------------------------------------
 
-            else:
+        action_ok = final_action in [
+            Action.BUY.value,
+            Action.SELL.value
+        ]
 
-                rr_ok = (
-                    risk_reward_ratio
-                    >= self.min_risk_reward
-                )
+        # ----------------------------------------------------
+        # Final approval
+        # ----------------------------------------------------
 
-                if rr_ok:
+        approved = all([
+            confidence_ok,
+            consensus_ok,
+            risk_ok,
+            risk_reward_ok,
+            position_size_ok,
+            action_ok
+        ])
 
-                    reasoning.append(
-                        f"Risk/reward "
-                        f"{risk_reward_ratio:.2f} "
-                        f"passes minimum "
-                        f"{self.min_risk_reward:.2f}"
-                    )
+        # ----------------------------------------------------
+        # Reasoning
+        # ----------------------------------------------------
 
-                else:
+        reasoning = self._build_reasoning(
+            action=final_action,
+            confidence=confidence,
+            consensus=consensus,
+            risk_score=risk_score,
+            risk_reward=data.risk_reward_ratio,
+            position_size=requested_size,
+            bullish_score=bullish_score,
+            bearish_score=bearish_score,
+            directional_edge=directional_edge,
+            confidence_ok=confidence_ok,
+            consensus_ok=consensus_ok,
+            risk_ok=risk_ok,
+            risk_reward_ok=risk_reward_ok,
+            position_size_ok=position_size_ok,
+            approved=approved
+        )
 
-                    reasoning.append(
-                        f"Risk/reward "
-                        f"{risk_reward_ratio:.2f} "
-                        f"is below minimum "
-                        f"{self.min_risk_reward:.2f}"
-                    )
+        # ----------------------------------------------------
+        # Execution permission
+        # ----------------------------------------------------
 
-            checks["risk_reward"] = rr_ok
+        execution_allowed = (
+            approved
+            and self.live_trading_enabled
+        )
 
-            # =================================================
-            # CHECK 5 — POSITION SIZE
-            # =================================================
-
-            position_ok = (
-                0.0 < position_size
-                <= self.max_position_size
+        if not self.live_trading_enabled:
+            reasoning.append(
+                "Live execution disabled by configuration"
             )
 
-            checks["position_size"] = position_ok
-
-            if position_ok:
-
-                reasoning.append(
-                    f"Position size "
-                    f"{position_size:.2%} "
-                    f"is within allowed range"
-                )
-
-            else:
-
-                reasoning.append(
-                    f"Position size "
-                    f"{position_size:.2%} "
-                    f"is invalid or exceeds "
-                    f"maximum "
-                    f"{self.max_position_size:.2%}"
-                )
-
-            # =================================================
-            # CHECK 6 — ACTION
-            # =================================================
-
-            valid_actions = {
-                "BUY",
-                "STRONG_BUY",
-                "SELL",
-                "STRONG_SELL"
-            }
-
-            action_ok = action in valid_actions
-
-            checks["action"] = action_ok
-
-            if not action_ok:
-
-                reasoning.append(
-                    f"Invalid action: {action}"
-                )
-
-            # =================================================
-            # FINAL APPROVAL
-            # =================================================
-
-            approved = all(checks.values())
-
-            # ------------------------------------------------
-            # Execution safety
-            # ------------------------------------------------
-
-            execution_allowed = (
-                approved
-                and self.allow_live_trading
-            )
-
-            # ------------------------------------------------
-            # IMPORTANT:
-            #
-            # approved != execution_allowed
-            #
-            # approved means:
-            # "decision mathematically passes"
-            #
-            # execution_allowed means:
-            # "system is permitted to execute"
-            #
-            # Default live trading = FALSE
-            # ------------------------------------------------
-
-            if approved:
-
-                reasoning.append(
-                    "Decision passed all "
-                    "decision-engine checks"
-                )
-
-            else:
-
-                reasoning.append(
-                    "Decision BLOCKED because "
-                    "one or more checks failed"
-                )
-
-            if not self.allow_live_trading:
-
-                reasoning.append(
-                    "Live execution disabled by configuration"
-                )
-
-            decision = (
-                "APPROVE"
+        return self._build_result(
+            data=data,
+            decision=(
+                DecisionStatus.APPROVE.value
                 if approved
-                else "REJECT"
-            )
-
-            # ------------------------------------------------
-            # Safety override
-            # ------------------------------------------------
-
-            if not approved:
-
-                final_action = "HOLD"
-                final_position_size = 0.0
-
-            else:
-
-                final_action = action
-                final_position_size = min(
-                    position_size,
-                    self.max_position_size
-                )
-
-            return DecisionResult(
-
-                timestamp=datetime.now(),
-
-                symbol=symbol,
-
-                decision=decision,
-
-                action=final_action,
-
-                confidence=confidence,
-
-                position_size=final_position_size,
-
-                risk_score=risk_score,
-
-                consensus_score=consensus_score,
-
-                risk_reward_ratio=risk_reward_ratio,
-
-                approved=approved,
-
-                execution_allowed=execution_allowed,
-
-                reasoning=reasoning,
-
-                checks=checks,
-
-                metadata={
-                    "requested_action": action,
-                    "requested_position_size": position_size,
-                    "live_trading_enabled":
-                        self.allow_live_trading
-                }
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                "Decision Engine error"
-            )
-
-            return self._fail_safe_result(
-                symbol=self._get_value(
-                    orchestrator_result,
-                    "symbol",
-                    "UNKNOWN"
-                ),
-                error=str(e)
-            )
+                else DecisionStatus.REJECT.value
+            ),
+            action=final_action,
+            confidence=confidence,
+            position_size=(
+                requested_size
+                if approved
+                else 0.0
+            ),
+            approved=approved,
+            bullish_score=bullish_score,
+            bearish_score=bearish_score,
+            directional_edge=directional_edge,
+            reasoning=reasoning,
+            checks={
+                "confidence": confidence_ok,
+                "consensus": consensus_ok,
+                "risk": risk_ok,
+                "risk_reward": risk_reward_ok,
+                "position_size": position_size_ok,
+                "action": action_ok
+            },
+            position_state=data.position_state.value,
+            target_position=target_position,
+            execution_allowed=execution_allowed
+        )
 
     # ========================================================
-    # HOLD RESULT
+    # BULLISH SCORE
     # ========================================================
 
-    def _build_hold_result(
+    def _calculate_bullish_score(
         self,
-        symbol: str,
+        data: DecisionInput
+    ) -> float:
+
+        sentiment = max(
+            0.0,
+            data.sentiment_score
+        )
+
+        technical = max(
+            0.0,
+            data.technical_score
+        )
+
+        forecast = max(
+            0.0,
+            data.forecast_score
+        )
+
+        decision = max(
+            0.0,
+            data.decision_score
+        )
+
+        consensus = max(
+            0.0,
+            data.consensus_score
+        )
+
+        score = (
+            sentiment * 0.20
+            + technical * 0.30
+            + forecast * 0.20
+            + decision * 0.20
+            + consensus * 0.10
+        )
+
+        return self._clamp(
+            score,
+            0.0,
+            1.0
+        )
+
+    # ========================================================
+    # BEARISH SCORE
+    # ========================================================
+
+    def _calculate_bearish_score(
+        self,
+        data: DecisionInput
+    ) -> float:
+
+        sentiment = max(
+            0.0,
+            -data.sentiment_score
+        )
+
+        technical = max(
+            0.0,
+            -data.technical_score
+        )
+
+        forecast = max(
+            0.0,
+            -data.forecast_score
+        )
+
+        decision = max(
+            0.0,
+            -data.decision_score
+        )
+
+        consensus = max(
+            0.0,
+            -data.consensus_score
+        )
+
+        score = (
+            sentiment * 0.20
+            + technical * 0.30
+            + forecast * 0.20
+            + decision * 0.20
+            + consensus * 0.10
+        )
+
+        return self._clamp(
+            score,
+            0.0,
+            1.0
+        )
+
+    # ========================================================
+    # DIRECTION
+    # ========================================================
+
+    def _determine_direction(
+        self,
+        bullish_score: float,
+        bearish_score: float,
+        directional_edge: float
+    ) -> str:
+
+        # ----------------------------------------------------
+        # Strong bullish
+        # ----------------------------------------------------
+
+        if (
+            bullish_score >= self.min_bullish_score
+            and directional_edge
+            >= self.min_directional_edge
+        ):
+            return Action.BUY.value
+
+        # ----------------------------------------------------
+        # Strong bearish
+        # ----------------------------------------------------
+
+        if (
+            bearish_score >= self.min_bearish_score
+            and directional_edge
+            <= -self.min_directional_edge
+        ):
+            return Action.SELL.value
+
+        # ----------------------------------------------------
+        # No sufficient edge
+        # ----------------------------------------------------
+
+        return Action.HOLD.value
+
+    # ========================================================
+    # POSITION RESOLUTION
+    # ========================================================
+
+    def _resolve_position_action(
+        self,
+        proposed_action: str,
+        position_state: PositionState
+    ):
+
+        # ----------------------------------------------------
+        # FLAT
+        # ----------------------------------------------------
+
+        if position_state == PositionState.FLAT:
+
+            if proposed_action == Action.BUY.value:
+                return Action.BUY.value, PositionState.LONG.value
+
+            if proposed_action == Action.SELL.value:
+                return Action.SELL.value, PositionState.SHORT.value
+
+            return Action.HOLD.value, PositionState.FLAT.value
+
+        # ----------------------------------------------------
+        # LONG
+        # ----------------------------------------------------
+
+        if position_state == PositionState.LONG:
+
+            if proposed_action == Action.SELL.value:
+                return Action.SELL.value, PositionState.FLAT.value
+
+            return Action.HOLD.value, PositionState.LONG.value
+
+        # ----------------------------------------------------
+        # SHORT
+        # ----------------------------------------------------
+
+        if position_state == PositionState.SHORT:
+
+            if proposed_action == Action.BUY.value:
+                return Action.BUY.value, PositionState.FLAT.value
+
+            return Action.HOLD.value, PositionState.SHORT.value
+
+        return Action.HOLD.value, PositionState.FLAT.value
+
+    # ========================================================
+    # REASONING
+    # ========================================================
+
+    def _build_reasoning(
+        self,
+        action: str,
+        confidence: float,
+        consensus: float,
+        risk_score: float,
+        risk_reward: float,
+        position_size: float,
+        bullish_score: float,
+        bearish_score: float,
+        directional_edge: float,
+        confidence_ok: bool,
+        consensus_ok: bool,
+        risk_ok: bool,
+        risk_reward_ok: bool,
+        position_size_ok: bool,
+        approved: bool
+    ) -> List[str]:
+
+        reasoning = []
+
+        if action == Action.BUY.value:
+
+            reasoning.append(
+                f"Bullish score {bullish_score:.4f} "
+                f"exceeds bearish score {bearish_score:.4f}"
+            )
+
+            reasoning.append(
+                f"Directional edge {directional_edge:.4f} "
+                f"favors BUY"
+            )
+
+        elif action == Action.SELL.value:
+
+            reasoning.append(
+                f"Bearish score {bearish_score:.4f} "
+                f"exceeds bullish score {bullish_score:.4f}"
+            )
+
+            reasoning.append(
+                f"Directional edge {directional_edge:.4f} "
+                f"favors SELL"
+            )
+
+        # ----------------------------------------------------
+        # Checks
+        # ----------------------------------------------------
+
+        if confidence_ok:
+
+            reasoning.append(
+                f"Confidence {confidence:.2%} "
+                f">= minimum {self.min_confidence:.2%}"
+            )
+
+        else:
+
+            reasoning.append(
+                f"Confidence {confidence:.2%} "
+                f"is below minimum {self.min_confidence:.2%}"
+            )
+
+        if consensus_ok:
+
+            reasoning.append(
+                f"Consensus {consensus:.4f} "
+                f"supports {action}"
+            )
+
+        else:
+
+            reasoning.append(
+                f"Consensus {consensus:.4f} "
+                f"does not sufficiently support {action}"
+            )
+
+        if risk_ok:
+
+            reasoning.append(
+                f"Risk score {risk_score:.4f} "
+                f"is within allowed limit"
+            )
+
+        else:
+
+            reasoning.append(
+                f"Risk score {risk_score:.4f} "
+                f"exceeds allowed limit"
+            )
+
+        if risk_reward_ok:
+
+            reasoning.append(
+                f"Risk/reward {risk_reward:.2f} "
+                f"passes minimum {self.min_risk_reward:.2f}"
+            )
+
+        else:
+
+            reasoning.append(
+                f"Risk/reward {risk_reward:.2f} "
+                f"fails minimum {self.min_risk_reward:.2f}"
+            )
+
+        if position_size_ok:
+
+            reasoning.append(
+                f"Position size {position_size:.2%} "
+                f"is within allowed range"
+            )
+
+        else:
+
+            reasoning.append(
+                "Position size is outside allowed range"
+            )
+
+        if approved:
+
+            reasoning.append(
+                "Decision passed all decision-engine checks"
+            )
+
+        else:
+
+            reasoning.append(
+                "Decision rejected by decision-engine checks"
+            )
+
+        return reasoning
+
+    # ========================================================
+    # RESULT BUILDER
+    # ========================================================
+
+    def _build_result(
+        self,
+        data: DecisionInput,
+        decision: str,
+        action: str,
         confidence: float,
         position_size: float,
-        consensus_score: float,
-        risk_score: float,
-        risk_reward_ratio: Optional[float]
+        approved: bool,
+        bullish_score: float,
+        bearish_score: float,
+        directional_edge: float,
+        reasoning: List[str],
+        checks: Dict[str, bool],
+        position_state: str,
+        target_position: str,
+        execution_allowed: bool = False
     ) -> DecisionResult:
 
         return DecisionResult(
+            timestamp=datetime.now().isoformat(),
+            symbol=data.symbol,
 
-            timestamp=datetime.now(),
-
-            symbol=symbol,
-
-            decision="HOLD",
-
-            action="HOLD",
+            decision=decision,
+            action=action,
 
             confidence=confidence,
+            position_size=position_size,
 
-            position_size=0.0,
+            risk_score=data.risk_score,
+            consensus_score=data.consensus_score,
+            risk_reward_ratio=data.risk_reward_ratio,
 
-            risk_score=risk_score,
+            approved=approved,
+            execution_allowed=execution_allowed,
 
-            consensus_score=consensus_score,
+            position_state=position_state,
+            target_position=target_position,
 
-            risk_reward_ratio=risk_reward_ratio,
+            bullish_score=bullish_score,
+            bearish_score=bearish_score,
+            directional_edge=directional_edge,
 
-            approved=True,
-
-            execution_allowed=False,
-
-            reasoning=[
-                "Orchestrator action is HOLD",
-                "No order should be created",
-                "Decision Engine confirms HOLD"
-            ],
-
-            checks={
-                "confidence": True,
-                "consensus": True,
-                "risk": True,
-                "risk_reward": True,
-                "position_size": True,
-                "action": True
-            },
+            reasoning=reasoning,
+            checks=checks,
 
             metadata={
-                "requested_action": "HOLD",
-                "requested_position_size": position_size,
-                "live_trading_enabled":
-                    self.allow_live_trading
+                "requested_action": action,
+                "requested_position_size": data.suggested_position_size,
+                "current_price": data.current_price,
+                "live_trading_enabled": self.live_trading_enabled
             }
         )
 
     # ========================================================
-    # FAIL SAFE
-    # ========================================================
-
-    def _fail_safe_result(
-        self,
-        symbol: str,
-        error: str
-    ) -> DecisionResult:
-
-        return DecisionResult(
-
-            timestamp=datetime.now(),
-
-            symbol=symbol,
-
-            decision="ERROR",
-
-            action="HOLD",
-
-            confidence=0.0,
-
-            position_size=0.0,
-
-            risk_score=1.0,
-
-            consensus_score=0.0,
-
-            risk_reward_ratio=None,
-
-            approved=False,
-
-            execution_allowed=False,
-
-            reasoning=[
-                "Decision Engine encountered an error",
-                "System switched to HOLD",
-                f"Error: {error}"
-            ],
-
-            checks={
-                "confidence": False,
-                "consensus": False,
-                "risk": False,
-                "risk_reward": False,
-                "position_size": False,
-                "action": False
-            },
-
-            metadata={
-                "error": error
-            }
-        )
-
-    # ========================================================
-    # VALUE HELPER
+    # UTILITY
     # ========================================================
 
     @staticmethod
-    def _get_value(
-        obj: Any,
-        key: str,
-        default: Any = None
-    ) -> Any:
+    def _clamp(
+        value: float,
+        minimum: float,
+        maximum: float
+    ) -> float:
 
-        if obj is None:
-            return default
-
-        # Dictionary
-        if isinstance(obj, dict):
-
-            return obj.get(key, default)
-
-        # Dataclass / object
-        return getattr(
-            obj,
-            key,
-            default
+        return max(
+            minimum,
+            min(
+                maximum,
+                float(value)
+            )
         )
-
-
-# ============================================================
-# FACTORY
-# ============================================================
-
-def create_decision_engine(
-    config: Optional[Dict[str, Any]] = None
-) -> DecisionEngine:
-
-    return DecisionEngine(config)
 
 
 # ============================================================
@@ -719,72 +883,141 @@ def create_decision_engine(
 
 if __name__ == "__main__":
 
+    import json
+
     logging.basicConfig(
         level=logging.INFO
     )
 
-    # --------------------------------------------------------
-    # Fake orchestrator result
-    # --------------------------------------------------------
-
-    orchestrator = {
-
-        "symbol": "BTC-USD",
-
-        "final_action": "BUY",
-
-        "final_confidence": 0.78,
-
-        "position_size": 0.08,
-
-        "consensus_score": 0.42
-    }
-
-    # --------------------------------------------------------
-    # Fake risk engine result
-    # --------------------------------------------------------
-
-    risk = {
-
-        "risk_score": 0.25,
-
-        "risk_reward_ratio": 2.4
-    }
-
-    # --------------------------------------------------------
-    # Engine
-    # --------------------------------------------------------
-
     engine = DecisionEngine({
-
         "min_confidence": 0.60,
-
-        "min_consensus": 0.10,
-
-        "max_risk_score": 0.70,
-
-        "min_risk_reward": 1.5,
-
+        "min_consensus": 0.20,
+        "min_directional_edge": 0.15,
+        "min_bullish_score": 0.45,
+        "min_bearish_score": 0.45,
+        "max_risk_score": 0.50,
+        "min_risk_reward": 1.50,
+        "min_position_size": 0.01,
         "max_position_size": 0.20,
-
-        # IMPORTANT:
-        # Keep FALSE while testing.
-        "allow_live_trading": False
+        "live_trading_enabled": False
     })
 
-    result = engine.evaluate(
-        orchestrator,
-        risk
+    # ========================================================
+    # TEST 1 — BUY
+    # ========================================================
+
+    buy_input = DecisionInput(
+        symbol="BTC-USD",
+
+        consensus_score=0.42,
+        confidence=0.78,
+
+        sentiment_score=0.65,
+        technical_score=0.72,
+        forecast_score=0.68,
+        decision_score=0.70,
+
+        risk_score=0.25,
+        risk_reward_ratio=2.40,
+        suggested_position_size=0.08,
+
+        position_state=PositionState.FLAT,
+
+        current_price=62760.21
+    )
+
+    buy_result = engine.evaluate(
+        buy_input
     )
 
     print("\n")
-    print("=" * 60)
-    print("DECISION ENGINE RESULT")
-    print("=" * 60)
+    print("=" * 70)
+    print("TEST 1 — BULLISH")
+    print("=" * 70)
 
     print(
         json.dumps(
-            result.to_dict(),
+            buy_result.to_dict(),
+            indent=2
+        )
+    )
+
+    # ========================================================
+    # TEST 2 — SELL
+    # ========================================================
+
+    sell_input = DecisionInput(
+        symbol="BTC-USD",
+
+        consensus_score=-0.46,
+        confidence=0.81,
+
+        sentiment_score=-0.65,
+        technical_score=-0.74,
+        forecast_score=-0.69,
+        decision_score=-0.71,
+
+        risk_score=0.22,
+        risk_reward_ratio=2.20,
+        suggested_position_size=0.07,
+
+        position_state=PositionState.FLAT,
+
+        current_price=62760.21
+    )
+
+    sell_result = engine.evaluate(
+        sell_input
+    )
+
+    print("\n")
+    print("=" * 70)
+    print("TEST 2 — BEARISH")
+    print("=" * 70)
+
+    print(
+        json.dumps(
+            sell_result.to_dict(),
+            indent=2
+        )
+    )
+
+    # ========================================================
+    # TEST 3 — CONFLICT → HOLD
+    # ========================================================
+
+    hold_input = DecisionInput(
+        symbol="BTC-USD",
+
+        consensus_score=0.03,
+        confidence=0.64,
+
+        sentiment_score=0.40,
+        technical_score=-0.42,
+        forecast_score=0.15,
+        decision_score=-0.10,
+
+        risk_score=0.35,
+        risk_reward_ratio=1.20,
+        suggested_position_size=0.08,
+
+        position_state=PositionState.FLAT,
+
+        current_price=62760.21
+    )
+
+    hold_result = engine.evaluate(
+        hold_input
+    )
+
+    print("\n")
+    print("=" * 70)
+    print("TEST 3 — CONFLICT")
+    print("=" * 70)
+
+    print(
+        json.dumps(
+            hold_result.to_dict(),
             indent=2
         )
     )
