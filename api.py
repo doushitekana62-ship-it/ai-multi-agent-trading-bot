@@ -12,6 +12,10 @@ app = FastAPI(
 )
 
 
+# =========================
+# CORS
+# =========================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,17 +25,31 @@ app.add_middleware(
 )
 
 
+# =========================
+# Authentication
+# =========================
+
 app.include_router(
     auth_router,
     prefix="/api/auth",
     tags=["Authentication"]
 )
 
+
+# =========================
+# Dashboard
+# =========================
+
 app.include_router(
     dashboard_router,
     prefix="/api/dashboard",
     tags=["Dashboard"]
 )
+
+
+# =========================
+# Reports
+# =========================
 
 app.include_router(
     reports_router,
@@ -40,9 +58,12 @@ app.include_router(
 )
 
 
+# =========================
+# Root
+# =========================
+
 @app.get("/")
 async def root():
-
     return {
         "status": "online",
         "service": "AI Multi-Agent Trading Bot API"
@@ -51,7 +72,6 @@ async def root():
 
 @app.get("/health")
 async def health():
-
     return {
         "status": "healthy"
     }
