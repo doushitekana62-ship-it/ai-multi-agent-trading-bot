@@ -38,8 +38,14 @@
   "react-hook-form": "^7.47.0",
   "date-fns": "^2.30.0",
   "ajv": "8.17.1",
-  "ajv-keywords": "5.1.0"
-  },
+  "ajv-keywords": "5.1.0",
+  "react-scripts": "5.0.1"
+},
+"devDependencies": {
+  "@types/react": "^18.2.0",
+  "@types/react-dom": "^18.2.0",
+  "typescript": "^5.2.0"
+},
   "browserslist": {
     "production": [
       ">0.2%",
