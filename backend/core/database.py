@@ -2,48 +2,56 @@ import os
 import logging
 from typing import Optional, Dict, Any, List
 
+from dotenv import load_dotenv
 from supabase import create_client, Client
+
+# ============================================================
+# LOAD ENVIRONMENT VARIABLES
+# ============================================================
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 
 class SupabaseDatabase:
-    """
-    Supabase database connection and helper methods.
-    """
 
     def __init__(self):
+
         self.client: Optional[Client] = None
 
-        # Ambil dari environment variable
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_KEY")
 
         if not url or not key:
+
             logger.warning(
                 "Supabase environment variables are missing. "
-                "Set SUPABASE_URL and SUPABASE_KEY."
+                "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
             )
+
             return
 
         try:
-            self.client = create_client(url, key)
+
+            self.client = create_client(
+                url,
+                key
+            )
 
             logger.info(
                 "Supabase connection initialized successfully"
             )
 
         except Exception as e:
+
             logger.error(
                 f"Failed to initialize Supabase: {e}"
             )
 
     def is_connected(self) -> bool:
-        """
-        Check whether Supabase client is initialized.
-        """
-        return self.client is not None
 
+        return self.client is not None
     # ==================================================
     # DECISIONS
     # ==================================================
