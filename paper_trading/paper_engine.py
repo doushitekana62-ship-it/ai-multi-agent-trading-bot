@@ -34,50 +34,102 @@ logger = logging.getLogger(__name__)
 
 class PaperTradingEngine:
 
-    def __init__(
-        self,
-        initial_balance: float = 10000.0,
-        max_position_size: float = 0.20,
-    ):
-        """
-        Initialize paper trading engine.
+def __init__(
+    self,
+    initial_balance: float = 10000.0,
+    max_position_size: float = 0.20,
+):
+    """
+    Initialize Paper Trading Engine.
 
-        Args:
-            initial_balance:
-                Modal awal simulasi.
+    Supports:
 
-            max_position_size:
-                Maksimum persentase portfolio yang boleh
-                digunakan dalam satu posisi.
-        """
+    Direct arguments:
 
-        self.initial_balance = float(initial_balance)
-
-        self.balance = float(initial_balance)
-
-        self.max_position_size = float(max_position_size)
-
-        # Posisi aktif:
-        # symbol -> position
-        self.positions: Dict[str, Dict[str, Any]] = {}
-
-        # Semua transaksi yang sudah ditutup
-        self.trade_history: List[Dict[str, Any]] = []
-
-        # Semua order
-        self.order_history: List[Dict[str, Any]] = []
-
-        # Statistik
-        self.total_realized_pnl = 0.0
-        self.total_trades = 0
-        self.winning_trades = 0
-        self.losing_trades = 0
-
-        logger.info(
-            f"Paper Trading Engine initialized | "
-            f"Balance=${self.balance:.2f}"
+        PaperTradingEngine(
+            initial_balance=10000,
+            max_position_size=0.20
         )
 
+    Configuration dictionary:
+
+        PaperTradingEngine({
+            "initial_balance": 10000,
+            "max_position_size": 0.20
+        })
+    """
+
+    # ------------------------------------------------------
+    # SUPPORT CONFIG DICTIONARY
+    # ------------------------------------------------------
+
+    if isinstance(initial_balance, dict):
+
+        config = initial_balance
+
+        initial_balance = config.get(
+            "initial_balance",
+            10000.0
+        )
+
+        max_position_size = config.get(
+            "max_position_size",
+            0.20
+        )
+
+    # ------------------------------------------------------
+    # NORMALIZE VALUES
+    # ------------------------------------------------------
+
+    self.initial_balance = float(
+        initial_balance
+    )
+
+    self.balance = float(
+        initial_balance
+    )
+
+    self.max_position_size = float(
+        max_position_size
+    )
+
+    # ------------------------------------------------------
+    # POSITIONS
+    # ------------------------------------------------------
+
+    self.positions: Dict[str, Dict[str, Any]] = {}
+
+    # ------------------------------------------------------
+    # TRADE HISTORY
+    # ------------------------------------------------------
+
+    self.trade_history: List[Dict[str, Any]] = []
+
+    # ------------------------------------------------------
+    # ORDER HISTORY
+    # ------------------------------------------------------
+
+    self.order_history: List[Dict[str, Any]] = []
+
+    # ------------------------------------------------------
+    # STATISTICS
+    # ------------------------------------------------------
+
+    self.total_realized_pnl = 0.0
+
+    self.total_trades = 0
+
+    self.winning_trades = 0
+
+    self.losing_trades = 0
+
+    logger.info(
+        "Paper Trading Engine initialized | "
+        "Balance=$%.2f | "
+        "Max Position=%.2f%%",
+        self.balance,
+        self.max_position_size * 100,
+    )
     # ==========================================================
     # PORTFOLIO
     # ==========================================================
