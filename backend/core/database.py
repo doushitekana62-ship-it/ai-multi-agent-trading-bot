@@ -8,16 +8,21 @@ logger = logging.getLogger(__name__)
 
 
 class SupabaseDatabase:
+    """
+    Supabase database connection and helper methods.
+    """
 
     def __init__(self):
         self.client: Optional[Client] = None
 
-        url = os.getenv("https://opclkckfdlkqzunzmwym.supabase.co")
-        key = os.getenv("sb_publishable_uoNDfyIKNCkA7hEWgemVsw_uae5Q6gN")
+        # Ambil dari environment variable
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
 
         if not url or not key:
             logger.warning(
-                "Supabase environment variables are missing"
+                "Supabase environment variables are missing. "
+                "Set SUPABASE_URL and SUPABASE_KEY."
             )
             return
 
@@ -34,11 +39,14 @@ class SupabaseDatabase:
             )
 
     def is_connected(self) -> bool:
+        """
+        Check whether Supabase client is initialized.
+        """
         return self.client is not None
 
-    # --------------------------------------------------
+    # ==================================================
     # DECISIONS
-    # --------------------------------------------------
+    # ==================================================
 
     def save_decision(
         self,
@@ -48,6 +56,9 @@ class SupabaseDatabase:
         reasoning: str,
         agent_votes: Dict[str, Any]
     ):
+        """
+        Save AI trading decision to Supabase.
+        """
 
         if not self.client:
             logger.warning(
@@ -84,9 +95,9 @@ class SupabaseDatabase:
 
             return None
 
-    # --------------------------------------------------
+    # ==================================================
     # TRADES
-    # --------------------------------------------------
+    # ==================================================
 
     def save_trade(
         self,
@@ -97,6 +108,9 @@ class SupabaseDatabase:
         pnl: float = 0.0,
         confidence: float = 0.0
     ):
+        """
+        Save trade to Supabase.
+        """
 
         if not self.client:
             logger.warning(
@@ -134,9 +148,9 @@ class SupabaseDatabase:
 
             return None
 
-    # --------------------------------------------------
+    # ==================================================
     # GET TRADES
-    # --------------------------------------------------
+    # ==================================================
 
     def get_trades(
         self,
@@ -168,9 +182,9 @@ class SupabaseDatabase:
 
             return []
 
-    # --------------------------------------------------
+    # ==================================================
     # GET DECISIONS
-    # --------------------------------------------------
+    # ==================================================
 
     def get_decisions(
         self,
@@ -203,5 +217,15 @@ class SupabaseDatabase:
             return []
 
 
-# Singleton
+# ======================================================
+# SINGLETON
+# ======================================================
+
 db = SupabaseDatabase()
+
+
+def get_supabase() -> SupabaseDatabase:
+    """
+    Return the shared Supabase database instance.
+    """
+    return db
