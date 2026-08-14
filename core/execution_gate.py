@@ -72,31 +72,102 @@ class ExecutionGate:
         "SELL",
     }
 
-    def __init__(
-        self,
-        min_confidence: float = 0.60,
-        min_risk_reward: float = 1.50,
-        max_position_size: float = 0.20,
-        require_approved: bool = True,
-        require_execution_allowed: bool = True,
-    ):
-        self.min_confidence = min_confidence
-        self.min_risk_reward = min_risk_reward
-        self.max_position_size = max_position_size
+def __init__(
+    self,
+    min_confidence: float = 0.60,
+    min_risk_reward: float = 1.50,
+    max_position_size: float = 0.20,
+    require_approved: bool = True,
+    require_execution_allowed: bool = True,
+):
+    """
+    Initialize Execution Gate.
 
-        self.require_approved = require_approved
-        self.require_execution_allowed = require_execution_allowed
+    Supports two formats:
 
-        logger.info(
-            "Execution Gate initialized | "
-            "min_confidence=%.2f | "
-            "min_rr=%.2f | "
-            "max_position=%.2f",
-            self.min_confidence,
-            self.min_risk_reward,
-            self.max_position_size,
+    1. Direct arguments:
+
+        ExecutionGate(
+            min_confidence=0.60,
+            min_risk_reward=1.50,
+            max_position_size=0.20
         )
 
+    2. Configuration dictionary:
+
+        ExecutionGate({
+            "min_confidence": 0.60,
+            "min_risk_reward": 1.50,
+            "max_position_size": 0.20
+        })
+    """
+
+    # ------------------------------------------------------
+    # SUPPORT CONFIG DICTIONARY
+    # ------------------------------------------------------
+
+    if isinstance(min_confidence, dict):
+
+        config = min_confidence
+
+        min_confidence = config.get(
+            "min_confidence",
+            0.60
+        )
+
+        min_risk_reward = config.get(
+            "min_risk_reward",
+            1.50
+        )
+
+        max_position_size = config.get(
+            "max_position_size",
+            0.20
+        )
+
+        require_approved = config.get(
+            "require_approved",
+            True
+        )
+
+        require_execution_allowed = config.get(
+            "require_execution_allowed",
+            True
+        )
+
+    # ------------------------------------------------------
+    # NORMALIZE VALUES
+    # ------------------------------------------------------
+
+    self.min_confidence = float(
+        min_confidence
+    )
+
+    self.min_risk_reward = float(
+        min_risk_reward
+    )
+
+    self.max_position_size = float(
+        max_position_size
+    )
+
+    self.require_approved = bool(
+        require_approved
+    )
+
+    self.require_execution_allowed = bool(
+        require_execution_allowed
+    )
+
+    logger.info(
+        "Execution Gate initialized | "
+        "min_confidence=%.2f | "
+        "min_rr=%.2f | "
+        "max_position=%.2f",
+        self.min_confidence,
+        self.min_risk_reward,
+        self.max_position_size,
+    )
     # ==========================================================
     # MAIN GATE
     # ==========================================================
