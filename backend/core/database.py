@@ -6,166 +6,201 @@ from supabase import create_client, Client
 
 logger = logging.getLogger(__name__)
 
-SUPABASE_URL = os.getenv("https://opclkckfdlkqzunzmwym.supabase.co")
-SUPABASE_KEY = os.getenv("sb_publishable_uoNDfyIKNCkA7hEWgemVsw_uae5Q6gN")
-
 
 class SupabaseDatabase:
-    """
-    Centralized Supabase database client.
-
-    Semua operasi database backend diarahkan melalui class ini.
-    """
 
     def __init__(self):
         self.client: Optional[Client] = None
 
-        if SUPABASE_URL and SUPABASE_KEY:
-            try:
-                self.client = create_client(
-                    SUPABASE_URL,
-                    SUPABASE_KEY
-                )
+        url = os.getenv("https://opclkckfdlkqzunzmwym.supabase.co")
+        key = os.getenv("sb_publishable_uoNDfyIKNCkA7hEWgemVsw_uae5Q6gN")
 
-                logger.info("Supabase connection initialized")
-
-            except Exception as e:
-                logger.error(
-                    f"Failed to initialize Supabase: {e}"
-                )
-        else:
+        if not url or not key:
             logger.warning(
-                "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY "
-                "is not configured"
+                "Supabase environment variables are missing"
+            )
+            return
+
+        try:
+            self.client = create_client(url, key)
+
+            logger.info(
+                "Supabase connection initialized successfully"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to initialize Supabase: {e}"
             )
 
     def is_connected(self) -> bool:
         return self.client is not None
 
-    # ---------------------------------------------------------
-    # GENERIC SELECT
-    # ---------------------------------------------------------
+    # --------------------------------------------------
+    # DECISIONS
+    # --------------------------------------------------
 
-    def select(
+    def save_decision(
         self,
-        table: str,
-        columns: str = "*",
-        filters: Optional[Dict[str, Any]] = None
+        symbol: str,
+        action: str,
+        confidence: float,
+        reasoning: str,
+        agent_votes: Dict[str, Any]
+    ):
+
+        if not self.client:
+            logger.warning(
+                "Supabase not connected. Decision not saved."
+            )
+            return None
+
+        data = {
+            "symbol": symbol,
+            "action": action,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "agent_votes": agent_votes
+        }
+
+        try:
+            response = (
+                self.client
+                .table("decisions")
+                .insert(data)
+                .execute()
+            )
+
+            logger.info(
+                f"Decision saved: {symbol} / {action}"
+            )
+
+            return response.data
+
+        except Exception as e:
+            logger.error(
+                f"Failed to save decision: {e}"
+            )
+
+            return None
+
+    # --------------------------------------------------
+    # TRADES
+    # --------------------------------------------------
+
+    def save_trade(
+        self,
+        symbol: str,
+        action: str,
+        price: float,
+        quantity: float,
+        pnl: float = 0.0,
+        confidence: float = 0.0
+    ):
+
+        if not self.client:
+            logger.warning(
+                "Supabase not connected. Trade not saved."
+            )
+            return None
+
+        data = {
+            "symbol": symbol,
+            "action": action,
+            "price": price,
+            "quantity": quantity,
+            "pnl": pnl,
+            "confidence": confidence
+        }
+
+        try:
+            response = (
+                self.client
+                .table("trades")
+                .insert(data)
+                .execute()
+            )
+
+            logger.info(
+                f"Trade saved: {symbol} / {action}"
+            )
+
+            return response.data
+
+        except Exception as e:
+            logger.error(
+                f"Failed to save trade: {e}"
+            )
+
+            return None
+
+    # --------------------------------------------------
+    # GET TRADES
+    # --------------------------------------------------
+
+    def get_trades(
+        self,
+        limit: int = 50
     ) -> List[Dict[str, Any]]:
 
         if not self.client:
             return []
 
         try:
-            query = self.client.table(table).select(columns)
-
-            if filters:
-                for key, value in filters.items():
-                    query = query.eq(key, value)
-
-            response = query.execute()
+            response = (
+                self.client
+                .table("trades")
+                .select("*")
+                .order(
+                    "created_at",
+                    desc=True
+                )
+                .limit(limit)
+                .execute()
+            )
 
             return response.data or []
 
         except Exception as e:
             logger.error(
-                f"Supabase SELECT error [{table}]: {e}"
+                f"Failed to get trades: {e}"
             )
+
             return []
 
-    # ---------------------------------------------------------
-    # INSERT
-    # ---------------------------------------------------------
+    # --------------------------------------------------
+    # GET DECISIONS
+    # --------------------------------------------------
 
-    def insert(
+    def get_decisions(
         self,
-        table: str,
-        data: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
 
         if not self.client:
-            return None
+            return []
 
         try:
             response = (
                 self.client
-                .table(table)
-                .insert(data)
+                .table("decisions")
+                .select("*")
+                .order(
+                    "created_at",
+                    desc=True
+                )
+                .limit(limit)
                 .execute()
             )
 
-            if response.data:
-                return response.data[0]
-
-            return None
+            return response.data or []
 
         except Exception as e:
             logger.error(
-                f"Supabase INSERT error [{table}]: {e}"
+                f"Failed to get decisions: {e}"
             )
-            return None
 
-    # ---------------------------------------------------------
-    # UPDATE
-    # ---------------------------------------------------------
-
-    def update(
-        self,
-        table: str,
-        data: Dict[str, Any],
-        filters: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-
-        if not self.client:
-            return None
-
-        try:
-            query = self.client.table(table).update(data)
-
-            for key, value in filters.items():
-                query = query.eq(key, value)
-
-            response = query.execute()
-
-            if response.data:
-                return response.data[0]
-
-            return None
-
-        except Exception as e:
-            logger.error(
-                f"Supabase UPDATE error [{table}]: {e}"
-            )
-            return None
-
-    # ---------------------------------------------------------
-    # DELETE
-    # ---------------------------------------------------------
-
-    def delete(
-        self,
-        table: str,
-        filters: Dict[str, Any]
-    ) -> bool:
-
-        if not self.client:
-            return False
-
-        try:
-            query = self.client.table(table).delete()
-
-            for key, value in filters.items():
-                query = query.eq(key, value)
-
-            query.execute()
-
-            return True
-
-        except Exception as e:
-            logger.error(
-                f"Supabase DELETE error [{table}]: {e}"
-            )
-            return False
+            return []
 
 
 # Singleton
