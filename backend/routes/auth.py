@@ -15,7 +15,7 @@ from pydantic import BaseModel
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from backend.app.core.security import (
+from backend.core.security import (
     Security, create_access_token, verify_token,
     authenticate_user, DEFAULT_USERS
 )
