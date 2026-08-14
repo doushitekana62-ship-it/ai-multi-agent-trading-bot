@@ -2,6 +2,8 @@ import React, { createContext, useState, useContext, useEffect } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
+const API_URL = 'https://nascar-chelsea-publication-procurement.trycloudflare.com';
+
 const AuthContext = createContext();
 
 export const useAuth = () => {
