@@ -14,7 +14,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from backend.app.core.security import verify_token
+from backend.core.security import verify_token
 from core.orchestrator import Orchestrator
 from core.executor import Executor
 from exchange_integration.paper_trading import PaperTrading
