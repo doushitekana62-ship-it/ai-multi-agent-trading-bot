@@ -7,8 +7,10 @@ Trading Integration Engine - Menghubungkan semua komponen trading.
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+import random
+import math
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, Optional, List
 
 from core.orchestrator import Orchestrator, OrchestratorResult
 from core.risk_engine import RiskEngine
@@ -564,9 +566,42 @@ class TradingIntegrationEngine:
         """Stop engine."""
         self.running = False
         logger.info("Trading Integration Engine STOPPED")
-        # ============================================================
+
+
+# ============================================================
 # TEST RUNNER
 # ============================================================
+
+def _generate_test_ohlcv(base_price: float, count: int) -> List[Dict[str, Any]]:
+    """Generate test OHLCV data."""
+    ohlcv = []
+    now = datetime.now(timezone.utc)
+    price = base_price
+    
+    for i in range(count):
+        # Random walk
+        change = random.gauss(0, 0.002)
+        open_price = price * (1 + change * 0.5)
+        close_price = price * (1 + change)
+        high_price = max(open_price, close_price) * (1 + abs(random.gauss(0, 0.001)))
+        low_price = min(open_price, close_price) * (1 - abs(random.gauss(0, 0.001)))
+        volume = 1000 + 500 * (1 + math.sin(i / 10))
+        
+        candle_time = now - timedelta(minutes=(count - i) * 60)
+        
+        ohlcv.append({
+            "timestamp": candle_time,
+            "open": round(open_price, 2),
+            "high": round(high_price, 2),
+            "low": round(low_price, 2),
+            "close": round(close_price, 2),
+            "volume": round(volume, 2)
+        })
+        
+        price = close_price
+    
+    return ohlcv
+
 
 async def test_engine():
     """Test function untuk menjalankan trading engine."""
@@ -681,44 +716,7 @@ async def test_engine():
         print("=" * 70)
 
 
-def _generate_test_ohlcv(base_price: float, count: int) -> List[Dict[str, Any]]:
-    """Generate test OHLCV data."""
-    import random
-    import math
-    
-    ohlcv = []
-    now = datetime.now(timezone.utc)
-    price = base_price
-    
-    for i in range(count):
-        # Random walk
-        change = random.gauss(0, 0.002)
-        open_price = price * (1 + change * 0.5)
-        close_price = price * (1 + change)
-        high_price = max(open_price, close_price) * (1 + abs(random.gauss(0, 0.001)))
-        low_price = min(open_price, close_price) * (1 - abs(random.gauss(0, 0.001)))
-        volume = 1000 + 500 * (1 + math.sin(i / 10))
-        
-        candle_time = now - timedelta(minutes=(count - i) * 60)
-        
-        ohlcv.append({
-            "timestamp": candle_time,
-            "open": round(open_price, 2),
-            "high": round(high_price, 2),
-            "low": round(low_price, 2),
-            "close": round(close_price, 2),
-            "volume": round(volume, 2)
-        })
-        
-        price = close_price
-    
-    return ohlcv
-
-
 if __name__ == "__main__":
-    import asyncio
-    from datetime import timedelta
-    
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
