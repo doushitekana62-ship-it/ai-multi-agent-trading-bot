@@ -34,11 +34,24 @@ logger = logging.getLogger(__name__)
 
 class PaperTradingEngine:
 
-def __init__(
-    self,
-    initial_balance: float = 10000.0,
-    max_position_size: float = 0.20,
-):
+class PaperTradingEngine:
+
+    def __init__(
+        self,
+        initial_balance: float = 10000.0,
+        max_position_size: float = 0.20,
+    ):
+        self.initial_balance = float(initial_balance)
+
+        self.balance = float(initial_balance)
+
+        self.max_position_size = float(max_position_size)
+
+        self.positions: Dict[str, Dict[str, Any]] = {}
+
+        self.trade_history: List[Dict[str, Any]] = []
+
+        self.order_history: List[Dict[str, Any]] = []
     """
     Initialize Paper Trading Engine.
 
