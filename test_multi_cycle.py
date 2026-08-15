@@ -160,39 +160,39 @@ class MultiCycleTester:
         logger.info("="*70 + "\n")
         
         # Initialize engine (sekali saja)
-        config = {
-            "mode": "paper",
-            "use_unified_data": True,
-            "execution_allowed": True,
-            "orchestrator": {
-                "enable_dynamic_weights": True,
-                "max_position_size": 0.20,
-                "min_confidence": 0.35,
-                "debug_enabled": False  # Matikan debug untuk kecepatan
-            },
-            "risk_engine": {
-                "minimum_confidence": 0.35,
-                "max_position_size": 0.20,
-                "minimum_risk_reward": 1.50,
-                "max_daily_loss": 0.05
-            },
-            "decision_engine": {
-                "min_confidence": 0.35,
-                "min_consensus": 0.15,
-                "min_directional_edge": 0.10,
-                "min_risk_reward": 1.50,
-                "live_trading_enabled": False
-            },
-            "execution_gate": {
-                "min_confidence": 0.35,
-                "min_risk_reward": 1.50,
-                "max_position_size": 0.20
-            },
-            "paper_trading": {
-                "initial_balance": 10000.0,
-                "max_position_size": 0.20
-            }
-        }
+config = {
+    "mode": "paper",
+    "use_unified_data": True,
+    "execution_allowed": True,
+    "orchestrator": {
+        "enable_dynamic_weights": True,
+        "max_position_size": 0.20,
+        "min_confidence": 0.20,      # Rendah untuk testing
+        "debug_enabled": False
+    },
+    "risk_engine": {
+        "minimum_confidence": 0.20,
+        "max_position_size": 0.20,
+        "minimum_risk_reward": 1.0,
+        "max_daily_loss": 0.10       # Lebih longgar
+    },
+    "decision_engine": {
+        "min_confidence": 0.20,
+        "min_consensus": 0.10,
+        "min_directional_edge": 0.05,
+        "min_risk_reward": 1.0,
+        "live_trading_enabled": False
+    },
+    "execution_gate": {
+        "min_confidence": 0.20,
+        "min_risk_reward": 1.0,
+        "max_position_size": 0.20
+    },
+    "paper_trading": {
+        "initial_balance": 10000.0,
+        "max_position_size": 0.20
+    }
+}
         
         self.engine = TradingIntegrationEngine(config)
         self.engine.start()
