@@ -2,19 +2,14 @@
 core/market_data_adapter.py
 
 Market Data Adapter - Bridge antara exchange API dan UnifiedMarketData.
-
-Tujuan:
-1. Menyediakan interface tunggal untuk semua exchange API calls
-2. Memudahkan migrasi dari Alpaca ke exchange lokal Indonesia
-3. Menyimpan data dalam format yang konsisten untuk UnifiedMarketData
-4. Menangani error, retry, dan fallback dengan aman
-5. Tidak membuat data palsu ketika API gagal - selalu return None
 """
 
 import logging
 import time
+import random
+import math
+from datetime import datetime, timezone, timedelta  # ← TAMBAHKAN timedelta
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timezone
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -38,11 +33,8 @@ class MarketDataResponse:
 class MarketDataAdapter:
     """
     Market Data Adapter - Single interface untuk semua exchange API.
-    
-    Saat ini mendukung Alpaca, tapi dirancang untuk mudah beralih
-    ke exchange lokal Indonesia (seperti INDODAX, Tokocrypto, dll).
     """
-    
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
         self.exchange_type = self.config.get("exchange_type", "paper")
@@ -50,7 +42,6 @@ class MarketDataAdapter:
         self.max_retries = self.config.get("max_retries", 3)
         self.retry_delay = self.config.get("retry_delay", 1.0)
         
-        # Exchange clients (lazy loaded)
         self._alpaca_client = None
         self._local_exchange_client = None
         
@@ -62,20 +53,9 @@ class MarketDataAdapter:
         timeframe: str = "1h",
         limit: int = 100
     ) -> MarketDataResponse:
-        """
-        Get market data from configured exchange.
-        
-        Args:
-            symbol: Trading symbol (e.g., "BTC-USD", "BTC/IDR")
-            timeframe: Timeframe for OHLCV data
-            limit: Number of candles to fetch
-        
-        Returns:
-            MarketDataResponse dengan data atau error
-        """
+        """Get market data from configured exchange."""
         symbol = symbol.upper()
         
-        # Try to get data with retry
         if self.enable_retry:
             for attempt in range(self.max_retries):
                 try:
@@ -89,7 +69,6 @@ class MarketDataAdapter:
                     logger.error("Error fetching market data: %s", e)
                     time.sleep(self.retry_delay * (attempt + 1))
         
-        # All retries failed
         return self._create_error_response(
             symbol,
             f"Failed to fetch market data after {self.max_retries} attempts"
@@ -101,9 +80,7 @@ class MarketDataAdapter:
         timeframe: str,
         limit: int
     ) -> MarketDataResponse:
-        """
-        Internal method to fetch data from actual exchange.
-        """
+        """Internal method to fetch data from actual exchange."""
         if self.exchange_type == "paper":
             return self._fetch_from_paper(symbol, timeframe, limit)
         elif self.exchange_type == "alpaca":
@@ -132,7 +109,6 @@ class MarketDataAdapter:
             if price is None or price <= 0:
                 return self._create_error_response(symbol, "Invalid price from paper trading")
             
-            # Generate synthetic OHLCV for paper trading (for testing)
             ohlcv = self._generate_synthetic_ohlcv(symbol, price, timeframe, limit)
             
             return MarketDataResponse(
@@ -140,7 +116,7 @@ class MarketDataAdapter:
                 symbol=symbol,
                 current_price=price,
                 ohlcv=ohlcv,
-                volume_24h=1000000.0,  # Simulated
+                volume_24h=1000000.0,
                 high_24h=price * 1.02,
                 low_24h=price * 0.98,
                 timestamp=datetime.now(timezone.utc),
@@ -162,13 +138,11 @@ class MarketDataAdapter:
             if self._alpaca_client is None:
                 self._alpaca_client = AlpacaBridge()
             
-            # Get current price
             price = self._alpaca_client.get_current_price(symbol)
             
             if price is None or price <= 0:
                 return self._create_error_response(symbol, "Invalid price from Alpaca")
             
-            # Get OHLCV data
             ohlcv = self._alpaca_client.get_historical_data(
                 symbol=symbol,
                 timeframe=timeframe,
@@ -178,7 +152,6 @@ class MarketDataAdapter:
             if ohlcv is None:
                 ohlcv = []
             
-            # Calculate 24h metrics
             if ohlcv and len(ohlcv) >= 24:
                 high_24h = max(c.get("high", 0) for c in ohlcv[-24:])
                 low_24h = min(c.get("low", 0) for c in ohlcv[-24:])
@@ -208,43 +181,8 @@ class MarketDataAdapter:
         timeframe: str,
         limit: int
     ) -> MarketDataResponse:
-        """
-        Fetch data from local Indonesian exchange.
-        
-        PLACEHOLDER - Implementasi untuk exchange lokal Indonesia.
-        
-        Saat ini support untuk:
-        - INDODAX
-        - Tokocrypto
-        - Pintu
-        - Reku (sudah tidak aktif)
-        
-        TODO: Implementasi API untuk exchange lokal
-        """
-        # ============================================================
-        # PERINGATAN: Ini adalah placeholder!
-        # ============================================================
-        # Saat ini belum ada implementasi exchange lokal.
-        # 
-        # Saat Anda menemukan exchange lokal yang tepat,
-        # implementasikan di sini dengan API client yang sesuai.
-        # 
-        # Contoh implementasi:
-        #
-        # if symbol.endswith("/IDR"):
-        #     # INDODAX atau Tokocrypto API
-        #     response = requests.get(
-        #         f"https://api.indodax.com/...",
-        #         params={"pair": symbol, "limit": limit}
-        #     )
-        #     # Parse response...
-        # 
-        # Kembalikan MarketDataResponse dengan data yang valid.
-        # ============================================================
-        
+        """Fetch data from local Indonesian exchange (placeholder)."""
         logger.warning("Local exchange not implemented yet for %s", symbol)
-        
-        # Fallback to paper trading untuk testing
         return self._fetch_from_paper(symbol, timeframe, limit)
     
     def _generate_synthetic_ohlcv(
@@ -255,13 +193,9 @@ class MarketDataAdapter:
         limit: int
     ) -> List[Dict[str, Any]]:
         """Generate synthetic OHLCV for paper trading/testing."""
-        import random
-        import math
-        
         ohlcv = []
         now = datetime.now(timezone.utc)
         
-        # Determine candle duration in minutes
         duration_map = {
             "1m": 1,
             "5m": 5,
@@ -274,8 +208,7 @@ class MarketDataAdapter:
         
         base_price = current_price
         for i in range(limit):
-            # Generate realistic price movement with random walk
-            change = random.gauss(0, 0.002)  # 0.2% standard deviation
+            change = random.gauss(0, 0.002)
             open_price = base_price * (1 + change * 0.5)
             close_price = base_price * (1 + change)
             high_price = max(open_price, close_price) * (1 + abs(random.gauss(0, 0.001)))
@@ -318,8 +251,6 @@ class MarketDataAdapter:
     
     def get_fear_greed_index(self) -> Optional[float]:
         """Get Fear & Greed Index."""
-        # TODO: Implement API call to Alternative.me or similar
-        # https://alternative.me/crypto/fear-and-greed-index/api/
         try:
             import requests
             response = requests.get(
