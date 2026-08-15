@@ -3,6 +3,7 @@ core/orchestrator.py
 
 Orchestrator - AI Decision Coordination Layer
 Central coordinator untuk seluruh AI agents dengan Unified Market Data.
+Dilengkapi dengan MimicTrader untuk meniru gaya trading trader profesional.
 """
 
 import asyncio
@@ -24,6 +25,8 @@ from core.unified_market_data import (
     get_market_data_for_agent,
     create_snapshot_from_market_data
 )
+
+from core.mimic_trader import MimicTrader, BullBearAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +57,11 @@ class OrchestratorResult:
     summary: str
     execution_reason: Optional[str] = None
     hold_reason: Optional[str] = None
+    mimic_analysis: Optional[BullBearAnalysis] = None  # NEW: MimicTrader analysis
 
 
 class Orchestrator:
-    """Central coordinator untuk seluruh AI agents dengan Unified Market Data."""
+    """Central coordinator untuk seluruh AI agents dengan Unified Market Data dan MimicTrader."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
@@ -80,6 +84,14 @@ class Orchestrator:
         self.use_unified_data = config.get("use_unified_data", True)
 
         # ============================================================
+        # MIMIC TRADER - Referensi trader profesional
+        # ============================================================
+
+        self.mimic_trader = MimicTrader(config.get("mimic_trader", {}))
+        self.use_mimic_trader = config.get("use_mimic_trader", True)
+        self.mimic_weight = config.get("mimic_weight", 0.25)  # Bobot MimicTrader dalam voting
+
+        # ============================================================
         # VOTING THRESHOLDS
         # ============================================================
 
@@ -95,10 +107,11 @@ class Orchestrator:
         # ============================================================
 
         self.agent_weights = {
-            "sentiment": 0.20,
-            "technical": 0.35,
-            "decision": 0.30,
-            "forecast": 0.15,
+            "sentiment": 0.18,
+            "technical": 0.30,
+            "decision": 0.25,
+            "forecast": 0.12,
+            "mimic_trader": 0.15,  # NEW: MimicTrader weight
         }
 
         # ============================================================
@@ -132,10 +145,10 @@ class Orchestrator:
         self.max_history = int(config.get("max_history", 100))
         self.debug_enabled = config.get("debug_enabled", True)
 
-        logger.info("Orchestrator initialized with Unified Market Data")
+        logger.info("Orchestrator initialized with Unified Market Data and MimicTrader")
 
     # ============================================================
-    # PUBLIC ANALYZE - DENGAN FORCE SIGNAL
+    # PUBLIC ANALYZE
     # ============================================================
 
     async def analyze(
@@ -144,7 +157,7 @@ class Orchestrator:
         market_data: Optional[Dict[str, Any]] = None
     ) -> OrchestratorResult:
         """
-        Menjalankan seluruh pipeline dengan Unified Market Snapshot.
+        Menjalankan seluruh pipeline dengan Unified Market Snapshot dan MimicTrader.
         """
         logger.info("Starting analysis for %s", symbol)
         symbol = symbol.upper()
@@ -229,29 +242,83 @@ class Orchestrator:
             current_price = self._get_current_price(market_data, technical_result, forecast_result)
 
             # ============================================================
-            # STEP 4: PERFORM VOTING
+            # STEP 4: MIMIC TRADER ANALYSIS
+            # ============================================================
+            
+            mimic_analysis = None
+            mimic_score = 0.0
+            mimic_action = "HOLD"
+            mimic_confidence = 0.0
+            
+            if self.use_mimic_trader:
+                # Build market data for MimicTrader
+                mimic_market_data = {
+                    "current_price": current_price,
+                    "technical_score": self._extract_technical_score(technical_result),
+                    "sentiment_score": self._extract_sentiment_score(sentiment_result),
+                    "momentum_score": self._calculate_momentum_score(technical_result, current_price),
+                    "support_levels": self._extract_support_levels(technical_result),
+                    "resistance_levels": self._extract_resistance_levels(technical_result),
+                    "detected_patterns": self._extract_patterns(technical_result),
+                    "volatility": market_data.get("volatility", 0.02),
+                    "data_quality": unified_snapshot.data_quality_score if unified_snapshot else 0.7,
+                }
+                
+                mimic_analysis = self.mimic_trader.analyze(symbol, mimic_market_data)
+                
+                # Convert to score
+                if mimic_analysis.recommendation == "STRONG_BUY":
+                    mimic_score = 0.85
+                    mimic_action = "STRONG_BUY"
+                elif mimic_analysis.recommendation == "BUY":
+                    mimic_score = 0.50
+                    mimic_action = "BUY"
+                elif mimic_analysis.recommendation == "STRONG_SELL":
+                    mimic_score = -0.85
+                    mimic_action = "STRONG_SELL"
+                elif mimic_analysis.recommendation == "SELL":
+                    mimic_score = -0.50
+                    mimic_action = "SELL"
+                else:
+                    mimic_score = 0.0
+                    mimic_action = "HOLD"
+                
+                mimic_confidence = mimic_analysis.confidence
+                
+                logger.info("MimicTrader: %s (bull=%.2f, bear=%.2f, net=%.2f, conf=%.2f)",
+                           mimic_action, 
+                           mimic_analysis.bull_score if mimic_analysis else 0,
+                           mimic_analysis.bear_score if mimic_analysis else 0,
+                           mimic_analysis.net_score if mimic_analysis else 0,
+                           mimic_confidence)
+
+            # ============================================================
+            # STEP 5: PERFORM VOTING (dengan MimicTrader)
             # ============================================================
 
             consensus_action, consensus_score = self._perform_voting(
                 sentiment=sentiment_result,
                 technical=technical_result,
                 decision=decision_result,
-                forecast=forecast_result
+                forecast=forecast_result,
+                mimic_score=mimic_score,
+                mimic_confidence=mimic_confidence
             )
 
             # ============================================================
-            # STEP 5: AGENT VOTES
+            # STEP 6: AGENT VOTES (dengan MimicTrader)
             # ============================================================
 
             agent_votes = self._get_agent_votes(
                 sentiment=sentiment_result,
                 technical=technical_result,
                 decision=decision_result,
-                forecast=forecast_result
+                forecast=forecast_result,
+                mimic_action=mimic_action
             )
 
             # ============================================================
-            # STEP 6: FINAL DECISION
+            # STEP 7: FINAL DECISION
             # ============================================================
 
             final_action, final_confidence, decision_score, confidence_components, hold_reason = \
@@ -262,11 +329,12 @@ class Orchestrator:
                     sentiment=sentiment_result,
                     technical=technical_result,
                     forecast=forecast_result,
-                    agent_votes=agent_votes
+                    agent_votes=agent_votes,
+                    mimic_analysis=mimic_analysis
                 )
 
             # ============================================================
-            # STEP 7: POSITION SIZE
+            # STEP 8: POSITION SIZE
             # ============================================================
 
             position_size = self._calculate_position_size(
@@ -276,7 +344,7 @@ class Orchestrator:
             )
 
             # ============================================================
-            # STEP 8: SL / TP
+            # STEP 9: SL / TP
             # ============================================================
 
             stop_loss, take_profit = None, None
@@ -284,11 +352,12 @@ class Orchestrator:
                 stop_loss, take_profit = self._calculate_sl_tp(
                     technical=technical_result,
                     action=final_action,
-                    current_price=current_price
+                    current_price=current_price,
+                    mimic_analysis=mimic_analysis
                 )
 
             # ============================================================
-            # STEP 9: MARKET SCORES
+            # STEP 10: MARKET SCORES
             # ============================================================
 
             market_scores = self._build_market_scores(
@@ -296,22 +365,24 @@ class Orchestrator:
                 technical=technical_result,
                 decision=decision_result,
                 forecast=forecast_result,
-                consensus_score=consensus_score
+                consensus_score=consensus_score,
+                mimic_score=mimic_score
             )
 
             # ============================================================
-            # STEP 10: EXECUTION REASON
+            # STEP 11: EXECUTION REASON
             # ============================================================
 
             execution_reason = self._build_execution_reason(
                 final_action=final_action,
                 final_confidence=final_confidence,
                 consensus_score=consensus_score,
-                hold_reason=hold_reason
+                hold_reason=hold_reason,
+                mimic_analysis=mimic_analysis
             )
 
             # ============================================================
-            # STEP 11: SUMMARY
+            # STEP 12: SUMMARY
             # ============================================================
 
             summary = self._generate_summary(
@@ -326,11 +397,12 @@ class Orchestrator:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 execution_reason=execution_reason,
-                hold_reason=hold_reason
+                hold_reason=hold_reason,
+                mimic_analysis=mimic_analysis
             )
 
             # ============================================================
-            # STEP 12: BUILD RESULT
+            # STEP 13: BUILD RESULT
             # ============================================================
 
             result = OrchestratorResult(
@@ -356,11 +428,12 @@ class Orchestrator:
                 market_scores=market_scores,
                 summary=summary,
                 execution_reason=execution_reason,
-                hold_reason=hold_reason
+                hold_reason=hold_reason,
+                mimic_analysis=mimic_analysis
             )
 
             # ============================================================
-            # STEP 13: SAVE HISTORY
+            # STEP 14: SAVE HISTORY
             # ============================================================
 
             self.history.append(result)
@@ -461,7 +534,8 @@ class Orchestrator:
             },
             summary=summary,
             execution_reason=f"FORCED SIGNAL: {action}",
-            hold_reason=None
+            hold_reason=None,
+            mimic_analysis=None
         )
 
     # ============================================================
@@ -580,9 +654,11 @@ class Orchestrator:
         sentiment: Optional[SentimentResult],
         technical: Optional[TechnicalResult],
         decision: Optional[DecisionResult],
-        forecast: Optional[ForecastResult]
+        forecast: Optional[ForecastResult],
+        mimic_score: float = 0.0,
+        mimic_confidence: float = 0.0
     ) -> Tuple[str, float]:
-        """Weighted consensus."""
+        """Weighted consensus with MimicTrader."""
         weighted_total = 0.0
         available_weight = 0.0
 
@@ -610,6 +686,14 @@ class Orchestrator:
             weighted_total += score * weight
             available_weight += weight
 
+        # MimicTrader
+        if self.use_mimic_trader and abs(mimic_score) > 0.01:
+            # Weight adjusted by confidence
+            weight = self.agent_weights["mimic_trader"] * (0.3 + 0.7 * mimic_confidence)
+            weighted_total += mimic_score * weight
+            available_weight += weight
+            logger.debug("MimicTrader vote: score=%.3f, weight=%.3f", mimic_score, weight)
+
         if available_weight <= 0:
             return ("HOLD", 0.0)
 
@@ -630,9 +714,10 @@ class Orchestrator:
         sentiment: Optional[SentimentResult],
         technical: Optional[TechnicalResult],
         forecast: Optional[ForecastResult],
-        agent_votes: Dict[str, str]
+        agent_votes: Dict[str, str],
+        mimic_analysis: Optional[BullBearAnalysis] = None
     ) -> Tuple[str, float, float, Dict[str, float], Optional[str]]:
-        """Enhanced final decision with reasoning."""
+        """Enhanced final decision with MimicTrader integration."""
         reasoning = []
         hold_reason = None
 
@@ -658,17 +743,33 @@ class Orchestrator:
         if sentiment is not None:
             sentiment_score = self._safe_score(getattr(sentiment, "overall_score", 0.0))
 
+        # ============================================================
+        # MIMIC TRADER INTEGRATION
+        # ============================================================
+        
+        mimic_boost = 0.0
+        if mimic_analysis and self.use_mimic_trader:
+            # If MimicTrader agrees with consensus, boost confidence
+            if mimic_analysis.recommendation == consensus_action:
+                mimic_boost = 0.10 * mimic_analysis.confidence
+                reasoning.append(f"MimicTrader agrees with {consensus_action} (conf={mimic_analysis.confidence:.2%})")
+            # If MimicTrader strongly disagrees, apply small penalty
+            elif mimic_analysis.recommendation in ["STRONG_BUY", "STRONG_SELL"]:
+                mimic_boost = -0.05 * mimic_analysis.confidence
+                reasoning.append(f"MimicTrader strong disagreement: {mimic_analysis.recommendation}")
+
         # Combined score
         if decision is not None and consensus_action != "HOLD":
             combined_score = (
                 decision_score * 0.35 +
-                consensus_score * 0.30 +
+                consensus_score * 0.25 +
                 agreement_direction * 0.20 +
                 technical_score * 0.10 +
-                sentiment_score * 0.05
+                sentiment_score * 0.05 +
+                mimic_boost * 0.05
             )
         else:
-            combined_score = consensus_score
+            combined_score = consensus_score + mimic_boost * 0.1
 
         combined_score = self._safe_score(combined_score)
         final_action = self._score_to_action(combined_score)
@@ -676,18 +777,20 @@ class Orchestrator:
         # Confidence
         if decision is not None:
             raw_confidence = (
-                decision_confidence * 0.30 +
-                consensus_strength * 0.25 +
+                decision_confidence * 0.25 +
+                consensus_strength * 0.20 +
                 agreement * 0.20 +
                 abs(agreement_direction) * 0.15 +
-                min(1.0, abs(combined_score) * 2.0) * 0.10
+                min(1.0, abs(combined_score) * 2.0) * 0.10 +
+                mimic_boost * 0.10
             )
         else:
             raw_confidence = (
-                consensus_strength * 0.35 +
-                agreement * 0.30 +
+                consensus_strength * 0.30 +
+                agreement * 0.25 +
                 abs(agreement_direction) * 0.20 +
-                min(1.0, abs(combined_score) * 2.0) * 0.15
+                min(1.0, abs(combined_score) * 2.0) * 0.15 +
+                mimic_boost * 0.10
             )
 
         # Conflict penalty
@@ -718,6 +821,7 @@ class Orchestrator:
             "agent_agreement": round(agreement, 4),
             "agreement_direction": round(agreement_direction, 4),
             "combined_score": round(combined_score, 4),
+            "mimic_boost": round(mimic_boost, 4),
         }
 
         return (final_action, final_confidence, combined_score, confidence_components, hold_reason)
@@ -726,12 +830,72 @@ class Orchestrator:
     # HELPER METHODS
     # ============================================================
 
+    def _extract_technical_score(self, technical: Optional[TechnicalResult]) -> float:
+        """Extract technical score for MimicTrader."""
+        if technical is None:
+            return 0.0
+        return self._safe_score(getattr(technical, "overall_score", 0.0))
+
+    def _extract_sentiment_score(self, sentiment: Optional[SentimentResult]) -> float:
+        """Extract sentiment score for MimicTrader."""
+        if sentiment is None:
+            return 0.0
+        return self._safe_score(getattr(sentiment, "overall_score", 0.0))
+
+    def _calculate_momentum_score(self, technical: Optional[TechnicalResult], current_price: float) -> float:
+        """Calculate momentum score for MimicTrader."""
+        if technical is None or current_price <= 0:
+            return 0.0
+        
+        # Try to get from technical indicators
+        moving_averages = getattr(technical, "moving_averages", {})
+        if moving_averages and "MA20" in moving_averages:
+            ma20 = moving_averages["MA20"]
+            if ma20 > 0:
+                momentum = (current_price - ma20) / ma20
+                return self._safe_score(momentum * 5)  # Scale to -1 to 1
+        
+        # Try RSI
+        rsi = getattr(technical, "rsi", 50.0)
+        if rsi:
+            return (rsi - 50) / 50  # -1 to 1
+        
+        return 0.0
+
+    def _extract_support_levels(self, technical: Optional[TechnicalResult]) -> List[float]:
+        """Extract support levels for MimicTrader."""
+        if technical is None:
+            return []
+        levels = getattr(technical, "support_levels", [])
+        if isinstance(levels, list):
+            return levels
+        return []
+
+    def _extract_resistance_levels(self, technical: Optional[TechnicalResult]) -> List[float]:
+        """Extract resistance levels for MimicTrader."""
+        if technical is None:
+            return []
+        levels = getattr(technical, "resistance_levels", [])
+        if isinstance(levels, list):
+            return levels
+        return []
+
+    def _extract_patterns(self, technical: Optional[TechnicalResult]) -> List[Dict]:
+        """Extract detected patterns for MimicTrader."""
+        if technical is None:
+            return []
+        patterns = getattr(technical, "detected_patterns", [])
+        if isinstance(patterns, list):
+            return patterns
+        return []
+
     def _get_agent_votes(
         self,
         sentiment: Optional[SentimentResult],
         technical: Optional[TechnicalResult],
         decision: Optional[DecisionResult],
-        forecast: Optional[ForecastResult]
+        forecast: Optional[ForecastResult],
+        mimic_action: str = "HOLD"
     ) -> Dict[str, str]:
         votes = {}
 
@@ -753,6 +917,10 @@ class Orchestrator:
             votes["decision"] = decision_action
         if forecast is not None:
             votes["forecast"] = self._score_to_action(self._forecast_to_score(forecast))
+        
+        # MimicTrader vote
+        if self.use_mimic_trader and mimic_action != "HOLD":
+            votes["mimic_trader"] = mimic_action
 
         return votes
 
@@ -924,7 +1092,8 @@ class Orchestrator:
         technical: Optional[TechnicalResult],
         decision: Optional[DecisionResult],
         forecast: Optional[ForecastResult],
-        consensus_score: float
+        consensus_score: float,
+        mimic_score: float = 0.0
     ) -> Dict[str, float]:
         scores = {}
         if sentiment is not None:
@@ -935,6 +1104,8 @@ class Orchestrator:
             scores["decision"] = round(self._safe_score(getattr(decision, "action_score", 0.0)), 4)
         if forecast is not None:
             scores["forecast"] = round(self._forecast_to_score(forecast), 4)
+        if self.use_mimic_trader:
+            scores["mimic_trader"] = round(mimic_score, 4)
         scores["consensus"] = round(self._safe_score(consensus_score), 4)
         return scores
 
@@ -977,8 +1148,25 @@ class Orchestrator:
         self,
         technical: Optional[TechnicalResult],
         action: str,
-        current_price: float
+        current_price: float,
+        mimic_analysis: Optional[BullBearAnalysis] = None
     ) -> Tuple[Optional[float], Optional[float]]:
+        """Calculate SL/TP dengan MimicTrader multi-target jika tersedia."""
+        # Gunakan MimicTrader TP levels jika tersedia
+        if mimic_analysis and mimic_analysis.take_profit_levels and len(mimic_analysis.take_profit_levels) > 0:
+            # Gunakan TP level pertama dari MimicTrader
+            tp_levels = mimic_analysis.take_profit_levels
+            if action in {"BUY", "STRONG_BUY"}:
+                stop_loss = mimic_analysis.stop_loss if mimic_analysis.stop_loss else current_price * 0.95
+                # Ambil TP level pertama sebagai TP utama (bisa di-expand nanti)
+                take_profit = tp_levels[0] if tp_levels else current_price * 1.05
+                return stop_loss, take_profit
+            elif action in {"SELL", "STRONG_SELL"}:
+                stop_loss = mimic_analysis.stop_loss if mimic_analysis.stop_loss else current_price * 1.05
+                take_profit = tp_levels[0] if tp_levels else current_price * 0.95
+                return stop_loss, take_profit
+
+        # Fallback ke existing logic
         if technical is None or current_price <= 0 or action == "HOLD":
             return None, None
 
@@ -1021,12 +1209,14 @@ class Orchestrator:
         final_action: str,
         final_confidence: float,
         consensus_score: float,
-        hold_reason: Optional[str]
+        hold_reason: Optional[str],
+        mimic_analysis: Optional[BullBearAnalysis] = None
     ) -> str:
+        reasons = []
+        
         if final_action == "HOLD":
             if hold_reason:
                 return hold_reason
-            reasons = []
             if final_confidence < self.min_confidence_threshold:
                 reasons.append(f"Confidence {final_confidence:.1%} below threshold")
             if abs(consensus_score) < 0.15:
@@ -1034,8 +1224,14 @@ class Orchestrator:
             if not reasons:
                 reasons.append("No clear directional signal")
             return "; ".join(reasons)
-        else:
-            return f"Executing {final_action} with {final_confidence:.1%} confidence"
+        
+        # BUY/SELL reason
+        reasons.append(f"Executing {final_action} with {final_confidence:.1%} confidence")
+        
+        if mimic_analysis and self.use_mimic_trader:
+            reasons.append(f"MimicTrader: {mimic_analysis.recommendation} (bull={mimic_analysis.bull_score:.2f}, bear={mimic_analysis.bear_score:.2f})")
+        
+        return " | ".join(reasons)
 
     def _generate_summary(
         self,
@@ -1050,7 +1246,8 @@ class Orchestrator:
         stop_loss: Optional[float],
         take_profit: Optional[float],
         execution_reason: Optional[str],
-        hold_reason: Optional[str]
+        hold_reason: Optional[str],
+        mimic_analysis: Optional[BullBearAnalysis] = None
     ) -> str:
         lines = [
             "=== ORCHESTRATOR SUMMARY ===",
@@ -1086,6 +1283,28 @@ class Orchestrator:
                 lines.append(f"  {agent}: {vote}")
         else:
             lines.append("  No valid agent votes")
+
+        # MimicTrader analysis
+        if mimic_analysis and self.use_mimic_trader:
+            lines.append("")
+            lines.append("--- MIMIC TRADER ANALYSIS ---")
+            lines.append(f"Bull Case: {mimic_analysis.bull_score:.2%}")
+            lines.append(f"Bear Case: {mimic_analysis.bear_score:.2%}")
+            lines.append(f"Net Score: {mimic_analysis.net_score:.2f}")
+            lines.append(f"Recommendation: {mimic_analysis.recommendation}")
+            lines.append(f"Confidence: {mimic_analysis.confidence:.2%}")
+            if mimic_analysis.suggested_position:
+                lines.append(f"Suggested Position: {mimic_analysis.suggested_position:.2%}")
+            if mimic_analysis.bull_factors:
+                lines.append("Bull Factors:")
+                for factor in mimic_analysis.bull_factors[:3]:
+                    lines.append(f"  + {factor}")
+            if mimic_analysis.bear_factors:
+                lines.append("Bear Factors:")
+                for factor in mimic_analysis.bear_factors[:3]:
+                    lines.append(f"  - {factor}")
+            if mimic_analysis.take_profit_levels:
+                lines.append(f"TP Levels: {', '.join([f'{tp:.2f}' for tp in mimic_analysis.take_profit_levels[:3]])}")
 
         lines.append("")
         lines.append("NOTE: Position size and SL/TP are preliminary only.")
@@ -1127,7 +1346,8 @@ class Orchestrator:
             market_scores={},
             summary=summary,
             execution_reason="Error during analysis",
-            hold_reason="Analysis error"
+            hold_reason="Analysis error",
+            mimic_analysis=None
         )
 
     def get_history(self, n: int = 10) -> List[OrchestratorResult]:
