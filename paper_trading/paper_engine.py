@@ -31,9 +31,6 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
-
-class PaperTradingEngine:
-
 class PaperTradingEngine:
 
     def __init__(
