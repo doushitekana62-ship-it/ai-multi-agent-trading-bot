@@ -2,35 +2,46 @@
 Execution Gate
 ==============
 
-Gerbang terakhir sebelum keputusan trading diteruskan
-ke Executor.
+Security gate terakhir sebelum keputusan trading
+diteruskan ke Paper Trading Engine.
 
-Prinsip:
-    Decision Engine = otak keputusan
-    Execution Gate  = security gate
-    Executor        = tangan yang melakukan order
+Flow:
 
-Order hanya boleh diteruskan jika:
-    1. Decision APPROVE
-    2. approved == True
-    3. execution_allowed == True
-    4. action valid
-    5. position_size > 0
-    6. confidence memenuhi minimum
-    7. risk/reward memenuhi minimum
+    Decision Engine
+          ↓
+    Execution Gate
+          ↓
+    Paper Trading Engine
+
+Execution Gate TIDAK membuat keputusan BUY/SELL.
+Ia hanya memeriksa apakah keputusan yang sudah dibuat
+boleh diteruskan untuk eksekusi.
+
+Safety:
+    - Default tidak mengizinkan execution jika flag tidak diberikan.
+    - Gate hanya mendukung BUY / SELL.
+    - HOLD selalu diblokir.
+    - Position size dibatasi.
+    - Confidence harus memenuhi minimum.
+    - Risk/reward harus memenuhi minimum.
 """
 
 import logging
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 
 logger = logging.getLogger(__name__)
 
 
+# ==============================================================
+# RESULT
+# ==============================================================
+
 @dataclass
 class ExecutionGateResult:
+
     timestamp: datetime
 
     symbol: str
@@ -50,6 +61,7 @@ class ExecutionGateResult:
     metadata: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
+
         data = asdict(self)
 
         data["timestamp"] = self.timestamp.isoformat()
@@ -57,13 +69,19 @@ class ExecutionGateResult:
         return data
 
 
+# ==============================================================
+# EXECUTION GATE
+# ==============================================================
+
 class ExecutionGate:
+
     """
-    Security layer sebelum Executor.
+    Security layer sebelum executor.
 
-    Gate ini TIDAK membuat keputusan BUY/SELL.
+    Gate tidak menentukan arah pasar.
 
-    Gate hanya menentukan:
+    Gate hanya menjawab:
+
         "Boleh dieksekusi atau tidak?"
     """
 
@@ -72,135 +90,262 @@ class ExecutionGate:
         "SELL",
     }
 
-def __init__(
-    self,
-    min_confidence: float = 0.60,
-    min_risk_reward: float = 1.50,
-    max_position_size: float = 0.20,
-    require_approved: bool = True,
-    require_execution_allowed: bool = True,
-):
-    """
-    Initialize Execution Gate.
-
-    Supports two formats:
-
-    1. Direct arguments:
-
-        ExecutionGate(
-            min_confidence=0.60,
-            min_risk_reward=1.50,
-            max_position_size=0.20
-        )
-
-    2. Configuration dictionary:
-
-        ExecutionGate({
-            "min_confidence": 0.60,
-            "min_risk_reward": 1.50,
-            "max_position_size": 0.20
-        })
-    """
-
-    # ------------------------------------------------------
-    # SUPPORT CONFIG DICTIONARY
-    # ------------------------------------------------------
-
-    if isinstance(min_confidence, dict):
-
-        config = min_confidence
-
-        min_confidence = config.get(
-            "min_confidence",
-            0.60
-        )
-
-        min_risk_reward = config.get(
-            "min_risk_reward",
-            1.50
-        )
-
-        max_position_size = config.get(
-            "max_position_size",
-            0.20
-        )
-
-        require_approved = config.get(
-            "require_approved",
-            True
-        )
-
-        require_execution_allowed = config.get(
-            "require_execution_allowed",
-            True
-        )
-
-    # ------------------------------------------------------
-    # NORMALIZE VALUES
-    # ------------------------------------------------------
-
-    self.min_confidence = float(
-        min_confidence
-    )
-
-    self.min_risk_reward = float(
-        min_risk_reward
-    )
-
-    self.max_position_size = float(
-        max_position_size
-    )
-
-    self.require_approved = bool(
-        require_approved
-    )
-
-    self.require_execution_allowed = bool(
-        require_execution_allowed
-    )
-
-    logger.info(
-        "Execution Gate initialized | "
-        "min_confidence=%.2f | "
-        "min_rr=%.2f | "
-        "max_position=%.2f",
-        self.min_confidence,
-        self.min_risk_reward,
-        self.max_position_size,
-    )
     # ==========================================================
-    # MAIN GATE
+    # INITIALIZATION
+    # ==========================================================
+
+    def __init__(
+        self,
+        min_confidence: float = 0.60,
+        min_risk_reward: float = 1.50,
+        max_position_size: float = 0.20,
+        require_approved: bool = True,
+        require_execution_allowed: bool = True,
+    ):
+        """
+        Initialize Execution Gate.
+
+        Bisa dipanggil dengan:
+
+        1. Dictionary
+
+            ExecutionGate({
+                "min_confidence": 0.60,
+                "min_risk_reward": 1.50,
+                "max_position_size": 0.20
+            })
+
+        2. Parameter langsung
+
+            ExecutionGate(
+                min_confidence=0.60,
+                min_risk_reward=1.50,
+                max_position_size=0.20
+            )
+        """
+
+        # ------------------------------------------------------
+        # SUPPORT CONFIG DICTIONARY
+        # ------------------------------------------------------
+
+        if isinstance(min_confidence, dict):
+
+            config = min_confidence
+
+            min_confidence = config.get(
+                "min_confidence",
+                0.60
+            )
+
+            min_risk_reward = config.get(
+                "min_risk_reward",
+                1.50
+            )
+
+            max_position_size = config.get(
+                "max_position_size",
+                0.20
+            )
+
+            require_approved = config.get(
+                "require_approved",
+                True
+            )
+
+            require_execution_allowed = config.get(
+                "require_execution_allowed",
+                True
+            )
+
+        # ------------------------------------------------------
+        # NORMALIZE
+        # ------------------------------------------------------
+
+        self.min_confidence = float(
+            min_confidence
+        )
+
+        self.min_risk_reward = float(
+            min_risk_reward
+        )
+
+        self.max_position_size = float(
+            max_position_size
+        )
+
+        self.require_approved = bool(
+            require_approved
+        )
+
+        self.require_execution_allowed = bool(
+            require_execution_allowed
+        )
+
+        logger.info(
+            "Execution Gate initialized | "
+            "min_confidence=%.2f | "
+            "min_rr=%.2f | "
+            "max_position=%.2f",
+            self.min_confidence,
+            self.min_risk_reward,
+            self.max_position_size,
+        )
+
+    # ==========================================================
+    # MAIN EVALUATE
     # ==========================================================
 
     def evaluate(
         self,
-        decision: Dict[str, Any]
+        decision: Optional[Dict[str, Any]] = None,
+        *,
+        symbol: Optional[str] = None,
+        action: Optional[str] = None,
+        confidence: Optional[float] = None,
+        position_size: Optional[float] = None,
+        risk_reward_ratio: Optional[float] = None,
+        approved: Optional[bool] = None,
+        execution_allowed: Optional[bool] = None,
     ) -> ExecutionGateResult:
+        """
+        Evaluate execution permission.
 
-        symbol = decision.get("symbol", "UNKNOWN")
+        Mendukung dua interface.
 
-        action = str(
-            decision.get("action", "HOLD")
+        ----------------------------------------------------------
+        FORMAT 1 — DICTIONARY
+        ----------------------------------------------------------
+
+        gate.evaluate({
+            "symbol": "BTC-USD",
+            "action": "BUY",
+            "confidence": 0.78,
+            "position_size": 0.08,
+            "risk_reward_ratio": 2.4,
+            "approved": True,
+            "execution_allowed": True
+        })
+
+        ----------------------------------------------------------
+        FORMAT 2 — KEYWORD ARGUMENTS
+        ----------------------------------------------------------
+
+        gate.evaluate(
+            symbol="BTC-USD",
+            action="BUY",
+            confidence=0.78,
+            position_size=0.08,
+            risk_reward_ratio=2.4,
+            approved=True,
+            execution_allowed=True
+        )
+        """
+
+        # ======================================================
+        # NORMALIZE INPUT
+        # ======================================================
+
+        if decision is not None:
+
+            if not isinstance(decision, dict):
+
+                raise TypeError(
+                    "decision harus berupa dictionary."
+                )
+
+            symbol = decision.get(
+                "symbol",
+                symbol or "UNKNOWN"
+            )
+
+            action = decision.get(
+                "action",
+                action or "HOLD"
+            )
+
+            confidence = decision.get(
+                "confidence",
+                confidence if confidence is not None else 0.0
+            )
+
+            position_size = decision.get(
+                "position_size",
+                position_size if position_size is not None else 0.0
+            )
+
+            risk_reward_ratio = decision.get(
+                "risk_reward_ratio",
+                (
+                    risk_reward_ratio
+                    if risk_reward_ratio is not None
+                    else 0.0
+                )
+            )
+
+            approved = decision.get(
+                "approved",
+                approved if approved is not None else False
+            )
+
+            execution_allowed = decision.get(
+                "execution_allowed",
+                (
+                    execution_allowed
+                    if execution_allowed is not None
+                    else False
+                )
+            )
+
+        # ======================================================
+        # SAFE DEFAULTS
+        # ======================================================
+
+        symbol = str(
+            symbol or "UNKNOWN"
         ).upper()
 
+        action = str(
+            action or "HOLD"
+        ).upper()
+
+        try:
+            confidence = float(
+                confidence if confidence is not None else 0.0
+            )
+        except (TypeError, ValueError):
+
+            confidence = 0.0
+
+        try:
+            position_size = float(
+                position_size
+                if position_size is not None
+                else 0.0
+            )
+        except (TypeError, ValueError):
+
+            position_size = 0.0
+
+        try:
+            risk_reward_ratio = float(
+                risk_reward_ratio
+                if risk_reward_ratio is not None
+                else 0.0
+            )
+        except (TypeError, ValueError):
+
+            risk_reward_ratio = 0.0
+
         approved = bool(
-            decision.get("approved", False)
+            approved
+            if approved is not None
+            else False
         )
 
         execution_allowed = bool(
-            decision.get("execution_allowed", False)
-        )
-
-        confidence = float(
-            decision.get("confidence", 0.0)
-        )
-
-        position_size = float(
-            decision.get("position_size", 0.0)
-        )
-
-        risk_reward_ratio = float(
-            decision.get("risk_reward_ratio", 0.0)
+            execution_allowed
+            if execution_allowed is not None
+            else False
         )
 
         logger.info(
@@ -209,9 +354,9 @@ def __init__(
             action
         )
 
-        # ------------------------------------------------------
+        # ======================================================
         # HOLD
-        # ------------------------------------------------------
+        # ======================================================
 
         if action == "HOLD":
 
@@ -222,20 +367,37 @@ def __init__(
                 confidence=confidence,
                 reason="HOLD action cannot be executed.",
                 checks={
-                    "approved": approved,
-                    "execution_allowed": execution_allowed,
+                    "approved": (
+                        approved
+                        if self.require_approved
+                        else True
+                    ),
+
+                    "execution_allowed": (
+                        execution_allowed
+                        if self.require_execution_allowed
+                        else True
+                    ),
+
                     "valid_action": False,
-                    "confidence": confidence >= self.min_confidence,
+
+                    "confidence": (
+                        confidence >= self.min_confidence
+                    ),
+
                     "risk_reward": False,
+
                     "position_size": False,
                 }
             )
 
-        # ------------------------------------------------------
+        # ======================================================
         # VALID ACTION
-        # ------------------------------------------------------
+        # ======================================================
 
-        valid_action = action in self.VALID_ACTIONS
+        valid_action = (
+            action in self.VALID_ACTIONS
+        )
 
         if not valid_action:
 
@@ -244,20 +406,35 @@ def __init__(
                 action=action,
                 position_size=position_size,
                 confidence=confidence,
-                reason=f"Invalid execution action: {action}",
+                reason=(
+                    f"Invalid execution action: {action}"
+                ),
                 checks={
-                    "approved": approved,
-                    "execution_allowed": execution_allowed,
+                    "approved": (
+                        approved
+                        if self.require_approved
+                        else True
+                    ),
+
+                    "execution_allowed": (
+                        execution_allowed
+                        if self.require_execution_allowed
+                        else True
+                    ),
+
                     "valid_action": False,
+
                     "confidence": False,
+
                     "risk_reward": False,
+
                     "position_size": False,
                 }
             )
 
-        # ------------------------------------------------------
-        # APPROVAL CHECK
-        # ------------------------------------------------------
+        # ======================================================
+        # APPROVED CHECK
+        # ======================================================
 
         approved_check = (
             approved
@@ -265,9 +442,9 @@ def __init__(
             else True
         )
 
-        # ------------------------------------------------------
+        # ======================================================
         # EXECUTION PERMISSION
-        # ------------------------------------------------------
+        # ======================================================
 
         execution_check = (
             execution_allowed
@@ -275,45 +452,63 @@ def __init__(
             else True
         )
 
-        # ------------------------------------------------------
-        # CONFIDENCE
-        # ------------------------------------------------------
+        # ======================================================
+        # CONFIDENCE CHECK
+        # ======================================================
 
         confidence_check = (
             confidence >= self.min_confidence
         )
 
-        # ------------------------------------------------------
-        # RISK / REWARD
-        # ------------------------------------------------------
+        # ======================================================
+        # RISK / REWARD CHECK
+        # ======================================================
 
         risk_reward_check = (
             risk_reward_ratio >= self.min_risk_reward
         )
 
-        # ------------------------------------------------------
-        # POSITION SIZE
-        # ------------------------------------------------------
+        # ======================================================
+        # POSITION SIZE CHECK
+        # ======================================================
 
         position_size_check = (
             position_size > 0
             and position_size <= self.max_position_size
         )
 
+        # ======================================================
+        # ALL CHECKS
+        # ======================================================
+
         checks = {
-            "approved": approved_check,
-            "execution_allowed": execution_check,
-            "valid_action": valid_action,
-            "confidence": confidence_check,
-            "risk_reward": risk_reward_check,
-            "position_size": position_size_check,
+
+            "approved":
+                approved_check,
+
+            "execution_allowed":
+                execution_check,
+
+            "valid_action":
+                valid_action,
+
+            "confidence":
+                confidence_check,
+
+            "risk_reward":
+                risk_reward_check,
+
+            "position_size":
+                position_size_check,
         }
 
-        # ------------------------------------------------------
-        # FINAL DECISION
-        # ------------------------------------------------------
+        # ======================================================
+        # FINAL GATE
+        # ======================================================
 
-        allowed = all(checks.values())
+        allowed = all(
+            checks.values()
+        )
 
         if not allowed:
 
@@ -324,7 +519,8 @@ def __init__(
             ]
 
             reason = (
-                "Execution blocked. Failed checks: "
+                "Execution blocked. "
+                "Failed checks: "
                 + ", ".join(failed_checks)
             )
 
@@ -340,12 +536,25 @@ def __init__(
                 position_size=position_size,
                 confidence=confidence,
                 reason=reason,
-                checks=checks
+                checks=checks,
+                metadata={
+                    "risk_reward_ratio":
+                        risk_reward_ratio,
+
+                    "max_position_size":
+                        self.max_position_size,
+
+                    "min_confidence":
+                        self.min_confidence,
+
+                    "min_risk_reward":
+                        self.min_risk_reward,
+                }
             )
 
-        # ------------------------------------------------------
-        # ALLOWED
-        # ------------------------------------------------------
+        # ======================================================
+        # APPROVED
+        # ======================================================
 
         reason = (
             "Execution approved. "
@@ -360,19 +569,44 @@ def __init__(
         )
 
         return ExecutionGateResult(
-            timestamp=datetime.now(),
+
+            timestamp=datetime.now(
+                timezone.utc
+            ),
+
             symbol=symbol,
+
             allowed=True,
+
             action=action,
+
             position_size=position_size,
+
             confidence=confidence,
+
             reason=reason,
+
             checks=checks,
+
             metadata={
-                "risk_reward_ratio": risk_reward_ratio,
-                "max_position_size": self.max_position_size,
-                "min_confidence": self.min_confidence,
-                "min_risk_reward": self.min_risk_reward,
+
+                "risk_reward_ratio":
+                    risk_reward_ratio,
+
+                "max_position_size":
+                    self.max_position_size,
+
+                "min_confidence":
+                    self.min_confidence,
+
+                "min_risk_reward":
+                    self.min_risk_reward,
+
+                "require_approved":
+                    self.require_approved,
+
+                "require_execution_allowed":
+                    self.require_execution_allowed,
             }
         )
 
@@ -388,6 +622,7 @@ def __init__(
         confidence: float,
         reason: str,
         checks: Dict[str, bool],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> ExecutionGateResult:
 
         logger.warning(
@@ -397,19 +632,37 @@ def __init__(
             reason
         )
 
+        base_metadata = {
+            "original_action": action,
+            "blocked": True,
+        }
+
+        if metadata:
+            base_metadata.update(
+                metadata
+            )
+
         return ExecutionGateResult(
-            timestamp=datetime.now(),
+
+            timestamp=datetime.now(
+                timezone.utc
+            ),
+
             symbol=symbol,
+
             allowed=False,
+
             action="HOLD",
+
             position_size=0.0,
+
             confidence=confidence,
+
             reason=reason,
+
             checks=checks,
-            metadata={
-                "original_action": action,
-                "blocked": True,
-            }
+
+            metadata=base_metadata,
         )
 
 
@@ -422,94 +675,243 @@ if __name__ == "__main__":
     import json
 
     logging.basicConfig(
-        level=logging.INFO
+        level=logging.INFO,
+        format="%(levelname)s:%(name)s:%(message)s"
     )
 
     gate = ExecutionGate()
 
-    # ----------------------------------------------------------
+    # ==========================================================
     # TEST 1 — VALID BUY
-    # ----------------------------------------------------------
+    # ==========================================================
 
-    print("\n")
+    print()
     print("=" * 70)
     print("TEST 1 — VALID BUY")
     print("=" * 70)
 
     buy_decision = {
-        "symbol": "BTC-USD",
-        "decision": "APPROVE",
-        "action": "BUY",
-        "confidence": 0.78,
-        "position_size": 0.08,
-        "risk_reward_ratio": 2.4,
-        "approved": True,
-        "execution_allowed": True,
+
+        "symbol":
+            "BTC-USD",
+
+        "decision":
+            "APPROVE",
+
+        "action":
+            "BUY",
+
+        "confidence":
+            0.78,
+
+        "position_size":
+            0.08,
+
+        "risk_reward_ratio":
+            2.4,
+
+        "approved":
+            True,
+
+        "execution_allowed":
+            True,
     }
 
-    result = gate.evaluate(buy_decision)
+    result = gate.evaluate(
+        buy_decision
+    )
 
     print(
         json.dumps(
             result.to_dict(),
-            indent=2
+            indent=2,
+            default=str
         )
     )
 
-    # ----------------------------------------------------------
-    # TEST 2 — BLOCKED
-    # ----------------------------------------------------------
+    # ==========================================================
+    # TEST 2 — EXECUTION DISABLED
+    # ==========================================================
 
-    print("\n")
+    print()
     print("=" * 70)
     print("TEST 2 — EXECUTION DISABLED")
     print("=" * 70)
 
     blocked_decision = {
-        "symbol": "BTC-USD",
-        "decision": "APPROVE",
-        "action": "BUY",
-        "confidence": 0.78,
-        "position_size": 0.08,
-        "risk_reward_ratio": 2.4,
-        "approved": True,
-        "execution_allowed": False,
+
+        "symbol":
+            "BTC-USD",
+
+        "decision":
+            "APPROVE",
+
+        "action":
+            "BUY",
+
+        "confidence":
+            0.78,
+
+        "position_size":
+            0.08,
+
+        "risk_reward_ratio":
+            2.4,
+
+        "approved":
+            True,
+
+        "execution_allowed":
+            False,
     }
 
-    result = gate.evaluate(blocked_decision)
+    result = gate.evaluate(
+        blocked_decision
+    )
 
     print(
         json.dumps(
             result.to_dict(),
-            indent=2
+            indent=2,
+            default=str
         )
     )
 
-    # ----------------------------------------------------------
+    # ==========================================================
     # TEST 3 — HOLD
-    # ----------------------------------------------------------
+    # ==========================================================
 
-    print("\n")
+    print()
     print("=" * 70)
     print("TEST 3 — HOLD")
     print("=" * 70)
 
     hold_decision = {
-        "symbol": "BTC-USD",
-        "decision": "REJECT",
-        "action": "HOLD",
-        "confidence": 0.52,
-        "position_size": 0.0,
-        "risk_reward_ratio": 0.0,
-        "approved": False,
-        "execution_allowed": False,
+
+        "symbol":
+            "BTC-USD",
+
+        "decision":
+            "REJECT",
+
+        "action":
+            "HOLD",
+
+        "confidence":
+            0.52,
+
+        "position_size":
+            0.0,
+
+        "risk_reward_ratio":
+            0.0,
+
+        "approved":
+            False,
+
+        "execution_allowed":
+            False,
     }
 
-    result = gate.evaluate(hold_decision)
+    result = gate.evaluate(
+        hold_decision
+    )
 
     print(
         json.dumps(
             result.to_dict(),
-            indent=2
+            indent=2,
+            default=str
         )
     )
+
+    # ==========================================================
+    # TEST 4 — DIRECT KEYWORD INTERFACE
+    # ==========================================================
+
+    print()
+    print("=" * 70)
+    print("TEST 4 — KEYWORD INTERFACE")
+    print("=" * 70)
+
+    result = gate.evaluate(
+
+        symbol="BTC-USD",
+
+        action="SELL",
+
+        confidence=0.81,
+
+        position_size=0.07,
+
+        risk_reward_ratio=2.2,
+
+        approved=True,
+
+        execution_allowed=True,
+    )
+
+    print(
+        json.dumps(
+            result.to_dict(),
+            indent=2,
+            default=str
+        )
+    )
+
+    # ==========================================================
+    # TEST 5 — CONFIG DICTIONARY
+    # ==========================================================
+
+    print()
+    print("=" * 70)
+    print("TEST 5 — CONFIG DICTIONARY")
+    print("=" * 70)
+
+    config_gate = ExecutionGate({
+
+        "min_confidence":
+            0.60,
+
+        "min_risk_reward":
+            1.50,
+
+        "max_position_size":
+            0.20,
+
+        "require_approved":
+            True,
+
+        "require_execution_allowed":
+            True,
+    })
+
+    result = config_gate.evaluate(
+
+        symbol="BTC-USD",
+
+        action="BUY",
+
+        confidence=0.75,
+
+        position_size=0.10,
+
+        risk_reward_ratio=2.0,
+
+        approved=True,
+
+        execution_allowed=True,
+    )
+
+    print(
+        json.dumps(
+            result.to_dict(),
+            indent=2,
+            default=str
+        )
+    )
+
+    print()
+    print("=" * 70)
+    print("EXECUTION GATE TEST COMPLETED")
+    print("=" * 70)
