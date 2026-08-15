@@ -1,29 +1,67 @@
 """
 Orchestrator - AI Decision Coordination Layer
 
-Tugas utama:
-1. Menjalankan seluruh AI agents.
+Tanggung jawab:
+1. Menjalankan AI agents.
 2. Menghindari pemanggilan agent yang sama secara berulang.
 3. Mengumpulkan hasil agent.
 4. Menghitung weighted consensus.
-5. Menghitung confidence berdasarkan kualitas hasil agent.
-6. Menentukan final action.
-7. Menghitung preliminary position size.
-8. Menghitung preliminary Stop Loss / Take Profit.
-9. Menyediakan data yang nantinya digunakan oleh Risk Engine.
-10. TIDAK melakukan eksekusi trading.
+5. Mengukur agent agreement.
+6. Menghitung final confidence.
+7. Menentukan final action.
+8. Menghasilkan preliminary position size.
+9. Menghasilkan preliminary Stop Loss / Take Profit.
+10. Menyediakan data untuk Risk Engine.
+11. TIDAK melakukan order execution.
+
+Arsitektur:
+
+    Market Data
+         |
+         +--> Sentiment Agent
+         |
+         +--> Technical Agent
+                    |
+                    +--> Decision Agent
+                    |
+                    +--> Forecast Agent
+                    |
+                    +--> Reflector Agent
+                              |
+                              v
+                       Weighted Consensus
+                              |
+                              v
+                       Final Decision
+                              |
+                              v
+                    Preliminary SL / TP
+                              |
+                              v
+                         Risk Engine
+                              |
+                              v
+                          Executor
 
 PENTING:
-Orchestrator hanya mengambil keputusan.
-Executor akan menangani eksekusi.
-Risk Engine akan menangani validasi risiko pada tahap berikutnya.
+Orchestrator bukan Risk Engine.
+Orchestrator bukan Executor.
+Orchestrator hanya menghasilkan preliminary decision.
 """
 
 import asyncio
 import logging
+
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime, timezone
+
+from typing import (
+    Dict,
+    List,
+    Optional,
+    Any,
+    Tuple,
+)
 
 
 # ============================================================
@@ -144,24 +182,30 @@ class Orchestrator:
     """
     Central coordinator untuk seluruh AI agents.
 
-    Flow:
+    TIDAK melakukan:
+        - order placement
+        - exchange execution
+        - portfolio mutation
+        - final risk approval
 
-        Market Data
-             ↓
-        Agent Analysis
-             ↓
-        Weighted Consensus
-             ↓
-        Final Decision
-             ↓
-        Preliminary Position Size
-             ↓
-        Preliminary SL / TP
-
-    Orchestrator TIDAK melakukan order execution.
+    Tugasnya hanya:
+        Analysis
+            ->
+        Consensus
+            ->
+        Decision
+            ->
+        Preliminary Risk Parameters
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    # ========================================================
+    # INITIALIZATION
+    # ========================================================
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None
+    ):
 
         self.config = config or {}
 
@@ -180,14 +224,17 @@ class Orchestrator:
         self.forecast_agent = ForecastAgent()
 
         # ----------------------------------------------------
-        # Score thresholds
+        # Voting thresholds
         # ----------------------------------------------------
 
         self.voting_thresholds = {
+
             "strong_buy": 0.70,
+
             "buy": 0.30,
-            "hold": 0.30,
+
             "sell": -0.30,
+
             "strong_sell": -0.70,
         }
 
@@ -195,38 +242,61 @@ class Orchestrator:
         # Agent weights
         #
         # Total = 1.0
+        #
+        # Reflector sengaja tidak dimasukkan ke voting.
+        #
+        # Reflector bertugas melakukan historical reflection,
+        # bukan memberikan direct market direction.
         # ----------------------------------------------------
 
         self.agent_weights = {
+
             "sentiment": 0.25,
+
             "technical": 0.30,
+
             "decision": 0.30,
+
             "forecast": 0.15,
         }
 
         # ----------------------------------------------------
-        # Position size configuration
+        # Position size
+        #
+        # Ini BUKAN final risk sizing.
+        # Risk Engine akan override nilai ini.
         # ----------------------------------------------------
 
-        self.max_position_size = self.config.get(
-            "max_position_size",
-            0.20
+        self.max_position_size = float(
+            self.config.get(
+                "max_position_size",
+                0.20
+            )
         )
 
-        self.default_position_size = self.config.get(
-            "default_position_size",
-            0.05
+        self.default_position_size = float(
+            self.config.get(
+                "default_position_size",
+                0.05
+            )
         )
 
         # ----------------------------------------------------
         # History
+        #
+        # History hanya menyimpan ANALYSIS RESULT.
+        # Tidak dianggap sebagai executed trade.
         # ----------------------------------------------------
 
-        self.history: List[OrchestratorResult] = []
+        self.history: List[
+            OrchestratorResult
+        ] = []
 
-        self.max_history = self.config.get(
-            "max_history",
-            100
+        self.max_history = int(
+            self.config.get(
+                "max_history",
+                100
+            )
         )
 
         logger.info(
@@ -240,69 +310,81 @@ class Orchestrator:
     async def analyze(
         self,
         symbol: str,
-        market_data: Optional[Dict[str, Any]] = None
+        market_data: Optional[
+            Dict[str, Any]
+        ] = None
     ) -> OrchestratorResult:
 
         """
-        Menjalankan seluruh proses analisis.
+        Menjalankan seluruh pipeline analisis.
 
         Tidak melakukan trading execution.
         """
 
         logger.info(
-            f"Starting analysis for {symbol}"
+            "Starting analysis for %s",
+            symbol
         )
 
-        market_data = market_data or {}
+        market_data = (
+            market_data.copy()
+            if isinstance(market_data, dict)
+            else {}
+        )
 
         try:
 
             # ------------------------------------------------
             # STEP 1
-            # Jalankan base agents sekali saja
+            # Base agents
             # ------------------------------------------------
 
-            sentiment_result, technical_result = (
-                await self._run_base_agents(
+            (
+                sentiment_result,
+                technical_result
+            ) = await self._run_base_agents(
+                symbol,
+                market_data
+            )
+
+            # ------------------------------------------------
+            # STEP 2
+            # Decision
+            # ------------------------------------------------
+
+            decision_result = (
+                await self._run_decision(
                     symbol,
+                    sentiment_result,
+                    technical_result,
                     market_data
                 )
             )
 
             # ------------------------------------------------
-            # STEP 2
-            # Decision agent
-            # Menggunakan hasil sentiment + technical
-            # ------------------------------------------------
-
-            decision_result = await self._run_decision(
-                symbol,
-                sentiment_result,
-                technical_result,
-                market_data
-            )
-
-            # ------------------------------------------------
             # STEP 3
-            # Forecast agent
-            # Menggunakan hasil sentiment + technical
+            # Forecast
             # ------------------------------------------------
 
-            forecast_result = await self._run_forecast(
-                symbol,
-                sentiment_result,
-                technical_result,
-                market_data
+            forecast_result = (
+                await self._run_forecast(
+                    symbol,
+                    sentiment_result,
+                    technical_result,
+                    market_data
+                )
             )
 
             # ------------------------------------------------
             # STEP 4
-            # Reflection agent
+            # Reflection
             # ------------------------------------------------
 
-            reflection_result = await self._run_reflection(
-                symbol,
-                market_data
+            reflection_result = (
+                await self._run_reflection(
+                    symbol,
+                    market_data
+                )
             )
 
             # ------------------------------------------------
@@ -310,23 +392,27 @@ class Orchestrator:
             # Current price
             # ------------------------------------------------
 
-            current_price = self._get_current_price(
-                market_data,
-                technical_result
+            current_price = (
+                self._get_current_price(
+                    market_data,
+                    technical_result,
+                    forecast_result
+                )
             )
 
             # ------------------------------------------------
             # STEP 6
-            # Consensus
+            # Weighted consensus
             # ------------------------------------------------
 
-            consensus_action, consensus_score = (
-                self._perform_voting(
-                    sentiment=sentiment_result,
-                    technical=technical_result,
-                    decision=decision_result,
-                    forecast=forecast_result
-                )
+            (
+                consensus_action,
+                consensus_score
+            ) = self._perform_voting(
+                sentiment=sentiment_result,
+                technical=technical_result,
+                decision=decision_result,
+                forecast=forecast_result
             )
 
             # ------------------------------------------------
@@ -334,11 +420,13 @@ class Orchestrator:
             # Agent votes
             # ------------------------------------------------
 
-            agent_votes = self._get_agent_votes(
-                sentiment=sentiment_result,
-                technical=technical_result,
-                decision=decision_result,
-                forecast=forecast_result
+            agent_votes = (
+                self._get_agent_votes(
+                    sentiment=sentiment_result,
+                    technical=technical_result,
+                    decision=decision_result,
+                    forecast=forecast_result
+                )
             )
 
             # ------------------------------------------------
@@ -365,10 +453,12 @@ class Orchestrator:
             # Preliminary position size
             # ------------------------------------------------
 
-            position_size = self._calculate_position_size(
-                confidence=final_confidence,
-                decision=decision_result,
-                action=final_action
+            position_size = (
+                self._calculate_position_size(
+                    confidence=final_confidence,
+                    decision=decision_result,
+                    action=final_action
+                )
             )
 
             # ------------------------------------------------
@@ -376,12 +466,13 @@ class Orchestrator:
             # Preliminary SL / TP
             # ------------------------------------------------
 
-            stop_loss, take_profit = (
-                self._calculate_sl_tp(
-                    technical=technical_result,
-                    action=final_action,
-                    current_price=current_price
-                )
+            (
+                stop_loss,
+                take_profit
+            ) = self._calculate_sl_tp(
+                technical=technical_result,
+                action=final_action,
+                current_price=current_price
             )
 
             # ------------------------------------------------
@@ -389,12 +480,14 @@ class Orchestrator:
             # Market scores
             # ------------------------------------------------
 
-            market_scores = self._build_market_scores(
-                sentiment=sentiment_result,
-                technical=technical_result,
-                decision=decision_result,
-                forecast=forecast_result,
-                consensus_score=consensus_score
+            market_scores = (
+                self._build_market_scores(
+                    sentiment=sentiment_result,
+                    technical=technical_result,
+                    decision=decision_result,
+                    forecast=forecast_result,
+                    consensus_score=consensus_score
+                )
             )
 
             # ------------------------------------------------
@@ -422,7 +515,9 @@ class Orchestrator:
 
             result = OrchestratorResult(
 
-                timestamp=datetime.now(),
+                timestamp=datetime.now(
+                    timezone.utc
+                ),
 
                 symbol=symbol,
 
@@ -456,7 +551,9 @@ class Orchestrator:
 
                 decision_score=decision_score,
 
-                confidence_components=confidence_components,
+                confidence_components=(
+                    confidence_components
+                ),
 
                 market_scores=market_scores,
 
@@ -465,7 +562,7 @@ class Orchestrator:
 
             # ------------------------------------------------
             # STEP 14
-            # History
+            # Save history
             # ------------------------------------------------
 
             self.history.append(result)
@@ -475,10 +572,11 @@ class Orchestrator:
                 self.history.pop(0)
 
             logger.info(
-                f"Analysis completed: "
-                f"{symbol} → "
-                f"{final_action} "
-                f"(confidence={final_confidence:.2%})"
+                "Analysis completed: %s -> %s "
+                "(confidence=%.2f%%)",
+                symbol,
+                final_action,
+                final_confidence * 100
             )
 
             return result
@@ -486,10 +584,14 @@ class Orchestrator:
         except Exception as e:
 
             logger.exception(
-                f"Orchestrator analysis failed for {symbol}: {e}"
+                "Orchestrator analysis failed for %s: %s",
+                symbol,
+                e
             )
 
-            return self._get_default_result(symbol)
+            return self._get_default_result(
+                symbol
+            )
 
     # ========================================================
     # BASE AGENTS
@@ -505,7 +607,9 @@ class Orchestrator:
     ]:
 
         """
-        Menjalankan sentiment + technical sekali saja.
+        Sentiment + Technical dijalankan paralel.
+
+        Keduanya hanya dipanggil satu kali per analysis cycle.
         """
 
         tasks = [
@@ -520,7 +624,7 @@ class Orchestrator:
                 self.technical_agent.analyze,
                 symbol,
                 market_data
-            )
+            ),
         ]
 
         results = await asyncio.gather(
@@ -529,40 +633,61 @@ class Orchestrator:
         )
 
         sentiment_result = None
+
         technical_result = None
 
         # ----------------------------------------------------
         # Sentiment
         # ----------------------------------------------------
 
-        if not isinstance(
-            results[0],
-            Exception
+        if (
+            len(results) > 0
+            and not isinstance(
+                results[0],
+                Exception
+            )
         ):
 
             sentiment_result = results[0]
 
         else:
 
+            error = (
+                results[0]
+                if results
+                else "Unknown error"
+            )
+
             logger.error(
-                f"Sentiment agent failed: {results[0]}"
+                "Sentiment agent failed: %s",
+                error
             )
 
         # ----------------------------------------------------
         # Technical
         # ----------------------------------------------------
 
-        if not isinstance(
-            results[1],
-            Exception
+        if (
+            len(results) > 1
+            and not isinstance(
+                results[1],
+                Exception
+            )
         ):
 
             technical_result = results[1]
 
         else:
 
+            error = (
+                results[1]
+                if len(results) > 1
+                else "Unknown error"
+            )
+
             logger.error(
-                f"Technical agent failed: {results[1]}"
+                "Technical agent failed: %s",
+                error
             )
 
         return (
@@ -577,14 +702,18 @@ class Orchestrator:
     async def _run_decision(
         self,
         symbol: str,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
+        sentiment: Optional[
+            SentimentResult
+        ],
+        technical: Optional[
+            TechnicalResult
+        ],
         market_data: Dict[str, Any]
     ) -> Optional[DecisionResult]:
 
         try:
 
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self.decision_agent.analyze,
                 symbol,
                 sentiment,
@@ -592,10 +721,13 @@ class Orchestrator:
                 market_data
             )
 
+            return result
+
         except Exception as e:
 
             logger.error(
-                f"Decision agent failed: {e}"
+                "Decision agent failed: %s",
+                e
             )
 
             return None
@@ -607,14 +739,18 @@ class Orchestrator:
     async def _run_forecast(
         self,
         symbol: str,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
+        sentiment: Optional[
+            SentimentResult
+        ],
+        technical: Optional[
+            TechnicalResult
+        ],
         market_data: Dict[str, Any]
     ) -> Optional[ForecastResult]:
 
         try:
 
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self.forecast_agent.analyze,
                 symbol,
                 sentiment,
@@ -622,10 +758,13 @@ class Orchestrator:
                 market_data
             )
 
+            return result
+
         except Exception as e:
 
             logger.error(
-                f"Forecast agent failed: {e}"
+                "Forecast agent failed: %s",
+                e
             )
 
             return None
@@ -640,9 +779,37 @@ class Orchestrator:
         market_data: Dict[str, Any]
     ) -> Optional[ReflectionResult]:
 
+        """
+        Reflector tidak menggunakan analysis history
+        sebagai executed trades.
+
+        Jika market_data memiliki:
+
+            recent_trades
+
+        maka data tersebut diberikan ke Reflector.
+
+        Dengan demikian:
+            SIGNAL != TRADE
+        """
+
         try:
 
-            trades = self._get_recent_trades(symbol)
+            trades = market_data.get(
+                "recent_trades",
+                []
+            )
+
+            if trades is None:
+
+                trades = []
+
+            if not isinstance(
+                trades,
+                list
+            ):
+
+                trades = []
 
             return await asyncio.to_thread(
                 self.reflector_agent.analyze,
@@ -654,7 +821,8 @@ class Orchestrator:
         except Exception as e:
 
             logger.error(
-                f"Reflector agent failed: {e}"
+                "Reflector agent failed: %s",
+                e
             )
 
             return None
@@ -665,85 +833,114 @@ class Orchestrator:
 
     def _perform_voting(
         self,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
-        decision: Optional[DecisionResult],
-        forecast: Optional[ForecastResult]
+        sentiment: Optional[
+            SentimentResult
+        ],
+        technical: Optional[
+            TechnicalResult
+        ],
+        decision: Optional[
+            DecisionResult
+        ],
+        forecast: Optional[
+            ForecastResult
+        ]
     ) -> Tuple[str, float]:
 
         """
         Weighted consensus.
 
-        Tidak menggunakan jumlah vote saja.
+        Rumus:
 
-        Setiap agent memberikan:
-            score × weight
+            sum(score * weight)
+            -------------------
+              available weight
 
-        kemudian dinormalisasi berdasarkan
-        agent yang benar-benar tersedia.
+        Dengan demikian agent yang gagal
+        tidak membuat score menjadi bias ke 0.
         """
 
-        weighted_scores = []
+        weighted_total = 0.0
+
+        available_weight = 0.0
 
         # ----------------------------------------------------
         # Sentiment
         # ----------------------------------------------------
 
-        if sentiment:
+        if sentiment is not None:
 
             score = self._safe_score(
-                sentiment.overall_score
+                getattr(
+                    sentiment,
+                    "overall_score",
+                    0.0
+                )
             )
 
             weight = self.agent_weights[
                 "sentiment"
             ]
 
-            weighted_scores.append(
+            weighted_total += (
                 score * weight
             )
+
+            available_weight += weight
 
         # ----------------------------------------------------
         # Technical
         # ----------------------------------------------------
 
-        if technical:
+        if technical is not None:
 
             score = self._safe_score(
-                technical.overall_score
+                getattr(
+                    technical,
+                    "overall_score",
+                    0.0
+                )
             )
 
             weight = self.agent_weights[
                 "technical"
             ]
 
-            weighted_scores.append(
+            weighted_total += (
                 score * weight
             )
+
+            available_weight += weight
 
         # ----------------------------------------------------
         # Decision
         # ----------------------------------------------------
 
-        if decision:
+        if decision is not None:
 
             score = self._safe_score(
-                decision.action_score
+                getattr(
+                    decision,
+                    "action_score",
+                    0.0
+                )
             )
 
             weight = self.agent_weights[
                 "decision"
             ]
 
-            weighted_scores.append(
+            weighted_total += (
                 score * weight
             )
+
+            available_weight += weight
 
         # ----------------------------------------------------
         # Forecast
         # ----------------------------------------------------
 
-        if forecast:
+        if forecast is not None:
 
             score = self._forecast_to_score(
                 forecast
@@ -753,52 +950,40 @@ class Orchestrator:
                 "forecast"
             ]
 
-            weighted_scores.append(
+            weighted_total += (
                 score * weight
             )
 
-        # ----------------------------------------------------
-        # No valid agents
-        # ----------------------------------------------------
-
-        if not weighted_scores:
-
-            return "HOLD", 0.0
+            available_weight += weight
 
         # ----------------------------------------------------
-        # Normalize using actual weights
+        # No agents
         # ----------------------------------------------------
-
-        available_weight = 0.0
-
-        if sentiment:
-            available_weight += self.agent_weights["sentiment"]
-
-        if technical:
-            available_weight += self.agent_weights["technical"]
-
-        if decision:
-            available_weight += self.agent_weights["decision"]
-
-        if forecast:
-            available_weight += self.agent_weights["forecast"]
 
         if available_weight <= 0:
 
-            return "HOLD", 0.0
+            return (
+                "HOLD",
+                0.0
+            )
+
+        # ----------------------------------------------------
+        # Normalize
+        # ----------------------------------------------------
 
         consensus_score = (
-            sum(weighted_scores)
+            weighted_total
             / available_weight
         )
 
-        consensus_score = max(
-            -1.0,
-            min(1.0, consensus_score)
+        consensus_score = self._safe_score(
+            consensus_score
         )
 
-        consensus_action = self._score_to_action(
-            consensus_score
+        consensus_action = (
+            self._score_to_action(
+                consensus_score
+            )
         )
 
         return (
@@ -807,7 +992,7 @@ class Orchestrator:
         )
 
     # ========================================================
-    # SCORE → ACTION
+    # SCORE -> ACTION
     # ========================================================
 
     def _score_to_action(
@@ -815,24 +1000,38 @@ class Orchestrator:
         score: float
     ) -> str:
 
-        score = self._safe_score(score)
+        score = self._safe_score(
+            score
+        )
 
-        if score >= self.voting_thresholds["strong_buy"]:
+        if score >= self.voting_thresholds[
+            "strong_buy"
+        ]:
+
             return "STRONG_BUY"
 
-        if score >= self.voting_thresholds["buy"]:
+        if score >= self.voting_thresholds[
+            "buy"
+        ]:
+
             return "BUY"
 
-        if score <= self.voting_thresholds["strong_sell"]:
+        if score <= self.voting_thresholds[
+            "strong_sell"
+        ]:
+
             return "STRONG_SELL"
 
-        if score <= self.voting_thresholds["sell"]:
+        if score <= self.voting_thresholds[
+            "sell"
+        ]:
+
             return "SELL"
 
         return "HOLD"
 
     # ========================================================
-    # FORECAST → SCORE
+    # FORECAST -> SCORE
     # ========================================================
 
     def _forecast_to_score(
@@ -840,29 +1039,43 @@ class Orchestrator:
         forecast: ForecastResult
     ) -> float:
 
-        score = 0.0
+        """
+        Mengubah ForecastResult menjadi score -1 sampai +1.
+
+        Komponen:
+
+            Trend              40%
+            Probability        30%
+            Price prediction   30%
+        """
 
         # ----------------------------------------------------
         # Trend
         # ----------------------------------------------------
 
-        trend = getattr(
-            forecast,
-            "primary_trend",
-            ""
-        )
+        trend_score = 0.0
+
+        trend = str(
+            getattr(
+                forecast,
+                "primary_trend",
+                ""
+            )
+        ).upper()
 
         if trend == "BULLISH":
 
-            score += 0.40
+            trend_score = 1.0
 
         elif trend == "BEARISH":
 
-            score -= 0.40
+            trend_score = -1.0
 
         # ----------------------------------------------------
-        # Next move probability
+        # Probability
         # ----------------------------------------------------
+
+        probability_score = 0.0
 
         next_move = getattr(
             forecast,
@@ -870,64 +1083,102 @@ class Orchestrator:
             {}
         )
 
-        if not isinstance(
+        if isinstance(
             next_move,
             dict
         ):
 
-            next_move = {}
+            up_probability = self._safe_probability(
+                next_move.get(
+                    "UP",
+                    0.0
+                )
+            )
 
-        up_probability = float(
-            next_move.get("UP", 0)
-            or 0
-        )
+            down_probability = self._safe_probability(
+                next_move.get(
+                    "DOWN",
+                    0.0
+                )
+            )
 
-        down_probability = float(
-            next_move.get("DOWN", 0)
-            or 0
-        )
-
-        if up_probability > 0.50:
-
-            score += 0.30
-
-        elif down_probability > 0.50:
-
-            score -= 0.30
+            probability_score = (
+                up_probability
+                -
+                down_probability
+            )
 
         # ----------------------------------------------------
-        # Short term prediction
+        # Predicted price
         # ----------------------------------------------------
+
+        prediction_score = 0.0
 
         try:
 
-            short_term = forecast.short_term
+            short_term = getattr(
+                forecast,
+                "short_term",
+                None
+            )
 
             predicted_price = float(
-                short_term.predicted_price
+                getattr(
+                    short_term,
+                    "predicted_price"
+                )
             )
 
             current_price = float(
-                forecast.current_price
+                getattr(
+                    forecast,
+                    "current_price"
+                )
             )
 
             if current_price > 0:
 
-                if predicted_price > current_price:
+                price_change = (
+                    predicted_price
+                    -
+                    current_price
+                ) / current_price
 
-                    score += 0.20
+                # Clamp price impact.
+                #
+                # 5% movement = maximum directional score.
 
-                elif predicted_price < current_price:
+                prediction_score = max(
+                    -1.0,
+                    min(
+                        1.0,
+                        price_change / 0.05
+                    )
+                )
 
-                    score -= 0.20
+        except (
+            AttributeError,
+            TypeError,
+            ValueError,
+            ZeroDivisionError
+        ):
 
-        except Exception:
+            prediction_score = 0.0
 
-            pass
+        # ----------------------------------------------------
+        # Combine
+        # ----------------------------------------------------
 
-        return max(
-            -1.0,
-            min(1.0, score)
+        score = (
+            trend_score * 0.40
+            +
+            probability_score * 0.30
+            +
+            prediction_score * 0.30
+        )
+
+        return self._safe_score(
+            score
         )
 
     # ========================================================
@@ -936,37 +1187,86 @@ class Orchestrator:
 
     def _get_agent_votes(
         self,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
-        decision: Optional[DecisionResult],
-        forecast: Optional[ForecastResult]
+        sentiment: Optional[
+            SentimentResult
+        ],
+        technical: Optional[
+            TechnicalResult
+        ],
+        decision: Optional[
+            DecisionResult
+        ],
+        forecast: Optional[
+            ForecastResult
+        ]
     ) -> Dict[str, str]:
 
-        votes = {}
+        votes: Dict[str, str] = {}
 
-        if sentiment:
+        if sentiment is not None:
 
             votes["sentiment"] = (
                 self._score_to_action(
-                    sentiment.overall_score
+                    self._safe_score(
+                        getattr(
+                            sentiment,
+                            "overall_score",
+                            0.0
+                        )
+                    )
                 )
             )
 
-        if technical:
+        if technical is not None:
 
             votes["technical"] = (
                 self._score_to_action(
-                    technical.overall_score
+                    self._safe_score(
+                        getattr(
+                            technical,
+                            "overall_score",
+                            0.0
+                        )
+                    )
                 )
             )
 
-        if decision:
+        if decision is not None:
+
+            decision_action = str(
+                getattr(
+                    decision,
+                    "action",
+                    "HOLD"
+                )
+            ).upper()
+
+            # Validate action.
+            valid_actions = {
+                "STRONG_BUY",
+                "BUY",
+                "HOLD",
+                "SELL",
+                "STRONG_SELL",
+            }
+
+            if decision_action not in valid_actions:
+
+                decision_action = (
+                    self._score_to_action(
+                        getattr(
+                            decision,
+                            "action_score",
+                            0.0
+                        )
+                    )
+                )
 
             votes["decision"] = (
-                decision.action
+                decision_action
             )
 
-        if forecast:
+        if forecast is not None:
 
             votes["forecast"] = (
                 self._score_to_action(
@@ -984,12 +1284,20 @@ class Orchestrator:
 
     def _determine_final_decision(
         self,
-        decision: Optional[DecisionResult],
+        decision: Optional[
+            DecisionResult
+        ],
         consensus_action: str,
         consensus_score: float,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
-        forecast: Optional[ForecastResult]
+        sentiment: Optional[
+            SentimentResult
+        ],
+        technical: Optional[
+            TechnicalResult
+        ],
+        forecast: Optional[
+            ForecastResult
+        ]
     ) -> Tuple[
         str,
         float,
@@ -997,33 +1305,28 @@ class Orchestrator:
         Dict[str, float]
     ]:
 
-        """
-        Menggabungkan decision agent dengan consensus.
-
-        Tidak memberikan bonus confidence secara arbitrer.
-
-        Confidence dibangun dari:
-            1. Decision confidence
-            2. Consensus strength
-            3. Agent agreement
-        """
-
         # ----------------------------------------------------
-        # Decision score
+        # Decision data
         # ----------------------------------------------------
 
-        if decision:
+        if decision is not None:
 
-            decision_score = self._safe_score(
-                decision.action_score
+            decision_score = (
+                self._safe_score(
+                    getattr(
+                        decision,
+                        "action_score",
+                        0.0
+                    )
+                )
             )
 
-            decision_confidence = max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        decision.confidence
+            decision_confidence = (
+                self._safe_probability(
+                    getattr(
+                        decision,
+                        "confidence",
+                        0.0
                     )
                 )
             )
@@ -1031,101 +1334,110 @@ class Orchestrator:
         else:
 
             decision_score = 0.0
+
             decision_confidence = 0.0
 
         # ----------------------------------------------------
         # Consensus
         # ----------------------------------------------------
 
+        consensus_score = self._safe_score(
+            consensus_score
+        )
+
         consensus_strength = abs(
-            self._safe_score(
-                consensus_score
-            )
+            consensus_score
         )
 
         # ----------------------------------------------------
-        # Agent agreement
+        # Votes
         # ----------------------------------------------------
 
         votes = self._get_agent_votes(
-            sentiment,
-            technical,
-            decision,
-            forecast
+            sentiment=sentiment,
+            technical=technical,
+            decision=decision,
+            forecast=forecast
         )
 
-        agreement = self._calculate_agreement(
-            votes
+        agreement = (
+            self._calculate_agreement(
+                votes
+            )
+        )
+
+        agreement_direction = (
+            self._agreement_direction(
+                votes
+            )
         )
 
         # ----------------------------------------------------
         # Combined score
-        #
-        # Decision = 50%
-        # Consensus = 35%
-        # Agreement = directional modifier
         # ----------------------------------------------------
 
-        if decision:
+        if decision is not None:
 
             combined_score = (
+
                 decision_score * 0.50
+
                 +
+
                 consensus_score * 0.35
+
                 +
-                self._agreement_direction(
-                    votes,
-                    consensus_score
-                ) * 0.15
+
+                agreement_direction * 0.15
             )
 
         else:
 
-            combined_score = consensus_score
+            combined_score = (
+                consensus_score
+            )
 
-        combined_score = max(
-            -1.0,
-            min(1.0, combined_score)
+        combined_score = self._safe_score(
+            combined_score
         )
 
         # ----------------------------------------------------
         # Final action
         # ----------------------------------------------------
 
-        final_action = self._score_to_action(
-            combined_score
+        final_action = (
+            self._score_to_action(
+                combined_score
+            )
         )
 
         # ----------------------------------------------------
         # Confidence
-        #
-        # Confidence is NOT:
-        #
-        #     decision.confidence + 0.1
-        #
-        # Instead:
-        #
-        # confidence =
-        #   decision confidence
-        #   × consensus strength
-        #   × agreement
         # ----------------------------------------------------
 
-        if decision:
+        if decision is not None:
 
             raw_confidence = (
+
                 decision_confidence * 0.50
+
                 +
+
                 consensus_strength * 0.30
+
                 +
+
                 agreement * 0.20
             )
 
         else:
 
             raw_confidence = (
+
                 consensus_strength * 0.70
+
                 +
+
                 agreement * 0.30
             )
 
@@ -1136,6 +1448,20 @@ class Orchestrator:
                 raw_confidence
             )
         )
+
+        # ----------------------------------------------------
+        # HOLD confidence protection
+        #
+        # Jangan memberikan confidence tinggi kepada HOLD
+        # hanya karena agent sepakat HOLD.
+        # ----------------------------------------------------
+
+        if final_action == "HOLD":
+
+            final_confidence = min(
+                final_confidence,
+                0.50
+            )
 
         # ----------------------------------------------------
         # Confidence components
@@ -1161,11 +1487,17 @@ class Orchestrator:
                     4
                 ),
 
+            "agreement_direction":
+                round(
+                    agreement_direction,
+                    4
+                ),
+
             "combined_score":
                 round(
                     combined_score,
                     4
-                )
+                ),
         }
 
         return (
@@ -1185,78 +1517,21 @@ class Orchestrator:
     ) -> float:
 
         """
-        Mengukur seberapa konsisten agent.
+        Mengukur directional agreement.
 
-        1.0 = semua searah
-        0.0 = sangat terpecah
-        """
+        HOLD tidak dihitung sebagai bullish/bearish.
 
-        if not votes:
+        Contoh:
 
-            return 0.0
+            BUY
+            STRONG_BUY
+            BUY
+            SELL
 
-        scores = []
+        bullish = 3
+        bearish = 1
 
-        for action in votes.values():
-
-            scores.append(
-                self._action_to_score(action)
-            )
-
-        if not scores:
-
-            return 0.0
-
-        positive = sum(
-            1
-            for score in scores
-            if score > 0
-        )
-
-        negative = sum(
-            1
-            for score in scores
-            if score < 0
-        )
-
-        neutral = sum(
-            1
-            for score in scores
-            if score == 0
-        )
-
-        total = len(scores)
-
-        dominant = max(
-            positive,
-            negative,
-            neutral
-        )
-
-        return dominant / total
-
-    # ========================================================
-    # AGREEMENT DIRECTION
-    # ========================================================
-
-    def _agreement_direction(
-        self,
-        votes: Dict[str, str],
-        consensus_score: float
-    ) -> float:
-
-        """
-        Memberikan kontribusi directional berdasarkan
-        mayoritas agent.
-
-        Jika mayoritas bullish:
-            positif
-
-        Jika mayoritas bearish:
-            negatif
-
-        Jika netral:
-            0
+        agreement = 3 / 4 = 0.75
         """
 
         if not votes:
@@ -1265,37 +1540,95 @@ class Orchestrator:
 
         scores = [
 
-            self._action_to_score(action)
+            self._action_to_score(
+                action
+            )
 
             for action in votes.values()
-
         ]
 
         if not scores:
 
             return 0.0
 
-        average = sum(scores) / len(scores)
+        bullish = sum(
+            1
+            for score in scores
+            if score > 0
+        )
 
-        # Direction consensus
-        if consensus_score > 0:
+        bearish = sum(
+            1
+            for score in scores
+            if score < 0
+        )
 
-            return max(
-                0.0,
-                average
-            )
+        total_directional = (
+            bullish
+            +
+            bearish
+        )
 
-        if consensus_score < 0:
+        # ----------------------------------------------------
+        # Semua HOLD
+        # ----------------------------------------------------
 
-            return min(
-                0.0,
-                average
-            )
+        if total_directional == 0:
 
-        return 0.0
+            return 0.0
+
+        dominant = max(
+            bullish,
+            bearish
+        )
+
+        return (
+            dominant
+            /
+            len(scores)
+        )
 
     # ========================================================
-    # ACTION → SCORE
+    # AGREEMENT DIRECTION
+    # ========================================================
+
+    def _agreement_direction(
+        self,
+        votes: Dict[str, str]
+    ) -> float:
+
+        """
+        Menghasilkan directional score dari vote agent.
+
+        Tidak lagi menggunakan consensus_score sebagai
+        input sehingga tidak terjadi circular reinforcement.
+        """
+
+        if not votes:
+
+            return 0.0
+
+        scores = [
+
+            self._action_to_score(
+                action
+            )
+
+            for action in votes.values()
+        ]
+
+        if not scores:
+
+            return 0.0
+
+        return self._safe_score(
+            sum(scores)
+            /
+            len(scores)
+        )
+
+    # ========================================================
+    # ACTION -> SCORE
     # ========================================================
 
     def _action_to_score(
@@ -1328,34 +1661,50 @@ class Orchestrator:
     def _calculate_position_size(
         self,
         confidence: float,
-        decision: Optional[DecisionResult],
+        decision: Optional[
+            DecisionResult
+        ],
         action: str
     ) -> float:
 
         """
         Preliminary position sizing.
 
-        PENTING:
-        Ini BELUM risk engine.
+        BUKAN final risk sizing.
 
-        Risk Engine nantinya akan menjadi
-        authority final untuk position sizing.
+        Risk Engine wajib melakukan validasi ulang.
         """
 
         if action == "HOLD":
 
             return 0.0
 
-        if decision:
+        confidence = self._safe_probability(
+            confidence
+        )
 
-            base_size = float(
-                getattr(
-                    decision,
-                    "suggested_position_size",
+        if decision is not None:
+
+            raw_base_size = getattr(
+                decision,
+                "suggested_position_size",
+                self.default_position_size
+            )
+
+            try:
+
+                base_size = float(
+                    raw_base_size
+                )
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                base_size = (
                     self.default_position_size
                 )
-                or self.default_position_size
-            )
 
         else:
 
@@ -1363,20 +1712,17 @@ class Orchestrator:
                 self.default_position_size
             )
 
-        confidence_factor = max(
-            0.0,
-            min(
-                1.0,
-                confidence
-            )
-        )
+        if base_size < 0:
+
+            base_size = 0.0
 
         size = (
             base_size
-            * confidence_factor
+            *
+            confidence
         )
 
-        return max(
+        size = max(
             0.0,
             min(
                 self.max_position_size,
@@ -1384,13 +1730,17 @@ class Orchestrator:
             )
         )
 
+        return size
+
     # ========================================================
     # SL / TP
     # ========================================================
 
     def _calculate_sl_tp(
         self,
-        technical: Optional[TechnicalResult],
+        technical: Optional[
+            TechnicalResult
+        ],
         action: str,
         current_price: float
     ) -> Tuple[
@@ -1398,41 +1748,84 @@ class Orchestrator:
         Optional[float]
     ]:
 
+        """
+        Menghasilkan preliminary SL/TP.
+
+        BUY:
+            SL = support terdekat di bawah price
+            TP = resistance terdekat di atas price
+
+        SELL:
+            SL = resistance terdekat di atas price
+            TP = support terdekat di bawah price
+
+        Risk Engine tetap harus memvalidasi semuanya.
+        """
+
         if (
-            not technical
+            technical is None
             or current_price <= 0
         ):
 
             return None, None
 
+        if action == "HOLD":
+
+            return None, None
+
+        support_levels = (
+            self._extract_price_levels(
+                getattr(
+                    technical,
+                    "support_levels",
+                    None
+                )
+            )
+        )
+
+        resistance_levels = (
+            self._extract_price_levels(
+                getattr(
+                    technical,
+                    "resistance_levels",
+                    None
+                )
+            )
+        )
+
         stop_loss = None
+
         take_profit = None
 
         # ----------------------------------------------------
         # BUY
         # ----------------------------------------------------
 
-        if action in [
+        if action in {
             "BUY",
             "STRONG_BUY"
-        ]:
+        }:
 
-            support_levels = getattr(
-                technical,
-                "support_levels",
-                None
-            )
+            supports_below = [
+                level
+                for level in support_levels
+                if level < current_price
+            ]
 
-            resistance_levels = getattr(
-                technical,
-                "resistance_levels",
-                None
-            )
+            resistances_above = [
+                level
+                for level in resistance_levels
+                if level > current_price
+            ]
 
-            if support_levels:
+            if supports_below:
+
+                nearest_support = max(
+                    supports_below
+                )
 
                 stop_loss = (
-                    min(support_levels)
+                    nearest_support
                     * 0.99
                 )
 
@@ -1443,11 +1836,15 @@ class Orchestrator:
                     * 0.95
                 )
 
-            if resistance_levels:
+            if resistances_above:
+
+                nearest_resistance = min(
+                    resistances_above
+                )
 
                 take_profit = (
-                    max(resistance_levels)
-                    * 1.01
+                    nearest_resistance
+                    * 0.99
                 )
 
             else:
@@ -1461,27 +1858,31 @@ class Orchestrator:
         # SELL
         # ----------------------------------------------------
 
-        elif action in [
+        elif action in {
             "SELL",
             "STRONG_SELL"
-        ]:
+        }:
 
-            support_levels = getattr(
-                technical,
-                "support_levels",
-                None
-            )
+            resistances_above = [
+                level
+                for level in resistance_levels
+                if level > current_price
+            ]
 
-            resistance_levels = getattr(
-                technical,
-                "resistance_levels",
-                None
-            )
+            supports_below = [
+                level
+                for level in support_levels
+                if level < current_price
+            ]
 
-            if resistance_levels:
+            if resistances_above:
+
+                nearest_resistance = min(
+                    resistances_above
+                )
 
                 stop_loss = (
-                    max(resistance_levels)
+                    nearest_resistance
                     * 1.01
                 )
 
@@ -1492,11 +1893,15 @@ class Orchestrator:
                     * 1.05
                 )
 
-            if support_levels:
+            if supports_below:
+
+                nearest_support = max(
+                    supports_below
+                )
 
                 take_profit = (
-                    min(support_levels)
-                    * 0.99
+                    nearest_support
+                    * 1.01
                 )
 
             else:
@@ -1506,9 +1911,70 @@ class Orchestrator:
                     * 0.90
                 )
 
+        # ----------------------------------------------------
+        # Validate
+        # ----------------------------------------------------
+
+        if stop_loss is not None:
+
+            stop_loss = float(
+                stop_loss
+            )
+
+        if take_profit is not None:
+
+            take_profit = float(
+                take_profit
+            )
+
         return (
             stop_loss,
             take_profit
+        )
+
+    # ========================================================
+    # EXTRACT PRICE LEVELS
+    # ========================================================
+
+    def _extract_price_levels(
+        self,
+        levels: Any
+    ) -> List[float]:
+
+        if levels is None:
+
+            return []
+
+        if not isinstance(
+            levels,
+            (list, tuple, set)
+        ):
+
+            return []
+
+        clean_levels = []
+
+        for level in levels:
+
+            try:
+
+                value = float(level)
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            if value > 0:
+
+                clean_levels.append(
+                    value
+                )
+
+        return sorted(
+            set(clean_levels)
         )
 
     # ========================================================
@@ -1517,43 +1983,63 @@ class Orchestrator:
 
     def _build_market_scores(
         self,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
-        decision: Optional[DecisionResult],
-        forecast: Optional[ForecastResult],
+        sentiment: Optional[
+            SentimentResult
+        ],
+        technical: Optional[
+            TechnicalResult
+        ],
+        decision: Optional[
+            DecisionResult
+        ],
+        forecast: Optional[
+            ForecastResult
+        ],
         consensus_score: float
     ) -> Dict[str, float]:
 
-        scores = {}
+        scores: Dict[str, float] = {}
 
-        if sentiment:
+        if sentiment is not None:
 
             scores["sentiment"] = round(
                 self._safe_score(
-                    sentiment.overall_score
+                    getattr(
+                        sentiment,
+                        "overall_score",
+                        0.0
+                    )
                 ),
                 4
             )
 
-        if technical:
+        if technical is not None:
 
             scores["technical"] = round(
                 self._safe_score(
-                    technical.overall_score
+                    getattr(
+                        technical,
+                        "overall_score",
+                        0.0
+                    )
                 ),
                 4
             )
 
-        if decision:
+        if decision is not None:
 
             scores["decision"] = round(
                 self._safe_score(
-                    decision.action_score
+                    getattr(
+                        decision,
+                        "action_score",
+                        0.0
+                    )
                 ),
                 4
             )
 
-        if forecast:
+        if forecast is not None:
 
             scores["forecast"] = round(
                 self._forecast_to_score(
@@ -1578,132 +2064,103 @@ class Orchestrator:
     def _get_current_price(
         self,
         market_data: Dict[str, Any],
-        technical: Optional[TechnicalResult]
+        technical: Optional[
+            TechnicalResult
+        ],
+        forecast: Optional[
+            ForecastResult
+        ]
     ) -> float:
+
+        # ----------------------------------------------------
+        # 1. Market data
+        # ----------------------------------------------------
 
         if market_data:
 
-            price = market_data.get(
-                "current_price"
-            )
+            possible_keys = [
+                "current_price",
+                "price",
+                "last_price",
+                "close",
+            ]
 
-            if price is not None:
+            for key in possible_keys:
+
+                value = market_data.get(
+                    key
+                )
+
+                if value is None:
+
+                    continue
 
                 try:
 
-                    return float(price)
+                    price = float(
+                        value
+                    )
+
+                    if price > 0:
+
+                        return price
 
                 except (
-                    ValueError,
-                    TypeError
+                    TypeError,
+                    ValueError
                 ):
 
-                    pass
+                    continue
 
-        if technical:
+        # ----------------------------------------------------
+        # 2. Technical
+        # ----------------------------------------------------
+
+        if technical is not None:
 
             try:
 
-                return float(
+                price = float(
                     technical.current_price
                 )
 
+                if price > 0:
+
+                    return price
+
             except (
-                ValueError,
-                TypeError
+                AttributeError,
+                TypeError,
+                ValueError
+            ):
+
+                pass
+
+        # ----------------------------------------------------
+        # 3. Forecast
+        # ----------------------------------------------------
+
+        if forecast is not None:
+
+            try:
+
+                price = float(
+                    forecast.current_price
+                )
+
+                if price > 0:
+
+                    return price
+
+            except (
+                AttributeError,
+                TypeError,
+                ValueError
             ):
 
                 pass
 
         return 0.0
-
-    # ========================================================
-    # RECENT TRADES
-    # ========================================================
-
-    def _get_recent_trades(
-        self,
-        symbol: str
-    ) -> List[TradeRecord]:
-
-        trades = []
-
-        for result in self.history[-50:]:
-
-            if result.symbol != symbol:
-
-                continue
-
-            if result.final_action not in [
-                "BUY",
-                "STRONG_BUY",
-                "SELL",
-                "STRONG_SELL"
-            ]:
-
-                continue
-
-            trade = TradeRecord(
-
-                trade_id=(
-                    f"TRADE_"
-                    f"{result.timestamp.timestamp()}"
-                ),
-
-                symbol=result.symbol,
-
-                entry_price=result.current_price,
-
-                exit_price=0.0,
-
-                entry_time=result.timestamp,
-
-                exit_time=result.timestamp,
-
-                position_size=result.position_size,
-
-                action=result.final_action,
-
-                outcome="PENDING",
-
-                pnl=0.0,
-
-                pnl_percent=0.0,
-
-                holding_period_hours=0.0,
-
-                decision_confidence=(
-                    result.final_confidence
-                ),
-
-                sentiment_score_at_entry=(
-                    result.sentiment.overall_score
-                    if result.sentiment
-                    else 0
-                ),
-
-                technical_score_at_entry=(
-                    result.technical.overall_score
-                    if result.technical
-                    else 0
-                ),
-
-                stop_loss=(
-                    result.stop_loss
-                    or 0
-                ),
-
-                take_profit=(
-                    result.take_profit
-                    or 0
-                ),
-
-                reason_closed="PENDING"
-            )
-
-            trades.append(trade)
-
-        return trades
 
     # ========================================================
     # SUMMARY
@@ -1723,77 +2180,102 @@ class Orchestrator:
         take_profit: Optional[float]
     ) -> str:
 
-        summary = ""
+        lines = []
 
-        summary += (
-            "=== ORCHESTRATOR SUMMARY ===\n"
+        lines.append(
+            "=== ORCHESTRATOR SUMMARY ==="
         )
 
-        summary += (
-            f"Symbol: {symbol}\n"
+        lines.append(
+            f"Symbol: {symbol}"
         )
 
-        summary += (
-            f"Current Price: "
-            f"{current_price:.8f}\n"
+        lines.append(
+            f"Current Price: {current_price:.8f}"
         )
 
-        summary += (
-            f"Final Action: "
-            f"{final_action}\n"
+        lines.append(
+            f"Final Action: {final_action}"
         )
 
-        summary += (
-            f"Confidence: "
-            f"{final_confidence:.2%}\n"
+        lines.append(
+            f"Confidence: {final_confidence:.2%}"
         )
 
-        summary += (
-            f"Position Size: "
-            f"{position_size:.2%}\n"
+        lines.append(
+            f"Preliminary Position Size: "
+            f"{position_size:.2%}"
         )
 
-        summary += (
-            f"Consensus: "
-            f"{consensus_action}\n"
+        lines.append(
+            f"Consensus: {consensus_action}"
         )
 
-        summary += (
+        lines.append(
             f"Consensus Score: "
-            f"{consensus_score:.4f}\n"
+            f"{consensus_score:.4f}"
         )
 
-        if stop_loss:
+        if stop_loss is not None:
 
-            summary += (
-                f"Stop Loss: "
-                f"{stop_loss:.8f}\n"
+            lines.append(
+                f"Preliminary Stop Loss: "
+                f"{stop_loss:.8f}"
             )
 
-        if take_profit:
+        else:
 
-            summary += (
-                f"Take Profit: "
-                f"{take_profit:.8f}\n"
+            lines.append(
+                "Preliminary Stop Loss: N/A"
             )
 
-        summary += "\nAgent Votes:\n"
+        if take_profit is not None:
+
+            lines.append(
+                f"Preliminary Take Profit: "
+                f"{take_profit:.8f}"
+            )
+
+        else:
+
+            lines.append(
+                "Preliminary Take Profit: N/A"
+            )
+
+        lines.append("")
+
+        lines.append(
+            "Agent Votes:"
+        )
 
         if agent_votes:
 
-            for agent, vote in agent_votes.items():
+            for agent, vote in (
+                agent_votes.items()
+            ):
 
-                summary += (
-                    f"  {agent}: {vote}\n"
+                lines.append(
+                    f"  {agent}: {vote}"
                 )
 
         else:
 
-            summary += (
-                "  No valid agent votes\n"
+            lines.append(
+                "  No valid agent votes"
             )
 
-        return summary
+        lines.append("")
+
+        lines.append(
+            "NOTE: Position size and SL/TP "
+            "are preliminary only. "
+            "Risk Engine must validate them "
+            "before execution."
+        )
+
+        return "\n".join(
+            lines
+        )
 
     # ========================================================
     # SAFE SCORE
@@ -1806,11 +2288,59 @@ class Orchestrator:
 
         try:
 
-            value = float(value)
+            value = float(
+                value
+            )
 
         except (
-            ValueError,
-            TypeError
+            TypeError,
+            ValueError
+        ):
+
+            return 0.0
+
+        if value != value:
+
+            return 0.0
+
+        if value == float(
+            "inf"
+        ):
+
+            return 1.0
+
+        if value == float(
+            "-inf"
+        ):
+
+            return -1.0
+
+        return max(
+            -1.0,
+            min(
+                1.0,
+                value
+            )
+        )
+
+    # ========================================================
+    # SAFE PROBABILITY
+    # ========================================================
+
+    def _safe_probability(
+        self,
+        value: Any
+    ) -> float:
+
+        try:
+
+            value = float(
+                value
+            )
+
+        except (
+            TypeError,
+            ValueError
         ):
 
             return 0.0
@@ -1820,7 +2350,7 @@ class Orchestrator:
             return 0.0
 
         return max(
-            -1.0,
+            0.0,
             min(
                 1.0,
                 value
@@ -1836,9 +2366,22 @@ class Orchestrator:
         symbol: str
     ) -> OrchestratorResult:
 
+        timestamp = datetime.now(
+            timezone.utc
+        )
+
+        summary = (
+            "=== ORCHESTRATOR ERROR ===\n"
+            f"Symbol: {symbol}\n"
+            "Final Action: HOLD\n"
+            "Confidence: 0.00%\n"
+            "Position Size: 0.00%\n"
+            "No trading execution performed."
+        )
+
         return OrchestratorResult(
 
-            timestamp=datetime.now(),
+            timestamp=timestamp,
 
             symbol=symbol,
 
@@ -1873,18 +2416,21 @@ class Orchestrator:
             decision_score=0.0,
 
             confidence_components={
+
                 "decision_confidence": 0.0,
+
                 "consensus_strength": 0.0,
+
                 "agent_agreement": 0.0,
-                "combined_score": 0.0
+
+                "agreement_direction": 0.0,
+
+                "combined_score": 0.0,
             },
 
             market_scores={},
 
-            summary=(
-                "Orchestrator error. "
-                "Default decision: HOLD"
-            )
+            summary=summary
         )
 
     # ========================================================
@@ -1895,6 +2441,10 @@ class Orchestrator:
         self,
         n: int = 10
     ) -> List[OrchestratorResult]:
+
+        if n <= 0:
+
+            return []
 
         return self.history[-n:]
 
@@ -1907,88 +2457,236 @@ if __name__ == "__main__":
 
     async def main():
 
+        print("=" * 70)
+
+        print(
+            "AI TRADING ORCHESTRATOR"
+        )
+
+        print(
+            "Starting..."
+        )
+
+        print("=" * 70)
+
         orchestrator = Orchestrator()
 
         result = await orchestrator.analyze(
             "BTC-USD"
         )
 
-        print("=" * 60)
+        print()
+
+        print("=" * 70)
 
         print(
             "ORCHESTRATOR RESULT"
         )
 
-        print("=" * 60)
+        print("=" * 70)
 
         print(
-            f"Symbol: "
+            f"Timestamp      : "
+            f"{result.timestamp.isoformat()}"
+        )
+
+        print(
+            f"Symbol         : "
             f"{result.symbol}"
         )
 
         print(
-            f"Price: "
+            f"Current Price  : "
             f"{result.current_price}"
         )
 
+        print()
+
         print(
-            f"Action: "
-            f"{result.final_action}"
+            "--- AGENT STATUS ---"
         )
 
         print(
-            f"Confidence: "
-            f"{result.final_confidence:.2%}"
+            f"Sentiment      : "
+            f"{'OK' if result.sentiment else 'FAILED'}"
         )
 
         print(
-            f"Position Size: "
-            f"{result.position_size:.2%}"
+            f"Technical      : "
+            f"{'OK' if result.technical else 'FAILED'}"
         )
 
         print(
-            f"Consensus: "
+            f"Decision       : "
+            f"{'OK' if result.decision else 'FAILED'}"
+        )
+
+        print(
+            f"Forecast       : "
+            f"{'OK' if result.forecast else 'FAILED'}"
+        )
+
+        print(
+            f"Reflector      : "
+            f"{'OK' if result.reflection else 'FAILED'}"
+        )
+
+        print()
+
+        print(
+            "--- CONSENSUS ---"
+        )
+
+        print(
+            f"Consensus Action : "
             f"{result.consensus_action}"
         )
 
         print(
-            f"Consensus Score: "
+            f"Consensus Score  : "
             f"{result.consensus_score:.4f}"
         )
 
+        print()
+
         print(
-            "\nAgent Votes:"
+            "--- AGENT VOTES ---"
         )
 
-        for agent, vote in result.agent_votes.items():
+        if result.agent_votes:
+
+            for agent, vote in (
+                result.agent_votes.items()
+            ):
+
+                print(
+                    f"{agent:<15}: {vote}"
+                )
+
+        else:
 
             print(
-                f"  {agent}: {vote}"
+                "No valid votes."
             )
 
+        print()
+
         print(
-            "\nMarket Scores:"
+            "--- FINAL DECISION ---"
         )
 
-        for name, score in result.market_scores.items():
+        print(
+            f"Final Action     : "
+            f"{result.final_action}"
+        )
+
+        print(
+            f"Final Confidence : "
+            f"{result.final_confidence:.2%}"
+        )
+
+        print(
+            f"Decision Score   : "
+            f"{result.decision_score:.4f}"
+        )
+
+        print()
+
+        print(
+            "--- POSITION ---"
+        )
+
+        print(
+            f"Preliminary Size : "
+            f"{result.position_size:.2%}"
+        )
+
+        if result.stop_loss is not None:
 
             print(
-                f"  {name}: {score:.4f}"
+                f"Stop Loss        : "
+                f"{result.stop_loss}"
             )
 
-        print(
-            "\nConfidence Components:"
-        )
-
-        for name, value in result.confidence_components.items():
+        else:
 
             print(
-                f"  {name}: {value:.4f}"
+                "Stop Loss        : N/A"
             )
 
+        if result.take_profit is not None:
+
+            print(
+                f"Take Profit      : "
+                f"{result.take_profit}"
+            )
+
+        else:
+
+            print(
+                "Take Profit      : N/A"
+            )
+
+        print()
+
         print(
-            "\n"
-            + result.summary
+            "--- MARKET SCORES ---"
         )
 
-    asyncio.run(main())
+        if result.market_scores:
+
+            for name, score in (
+                result.market_scores.items()
+            ):
+
+                print(
+                    f"{name:<15}: {score:.4f}"
+                )
+
+        else:
+
+            print(
+                "No market scores."
+            )
+
+        print()
+
+        print(
+            "--- CONFIDENCE COMPONENTS ---"
+        )
+
+        for name, value in (
+            result.confidence_components.items()
+        ):
+
+            print(
+                f"{name:<22}: {value:.4f}"
+            )
+
+        print()
+
+        print(
+            "--- SUMMARY ---"
+        )
+
+        print(
+            result.summary
+        )
+
+        print()
+
+        print("=" * 70)
+
+        print(
+            "ORCHESTRATOR TEST COMPLETED"
+        )
+
+        print("=" * 70)
+
+        print(
+            "No order was executed."
+        )
+
+    asyncio.run(
+        main()
+    )
