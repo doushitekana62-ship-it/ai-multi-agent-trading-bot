@@ -1122,39 +1122,42 @@ class Orchestrator:
                 None
             )
 
-            predicted_price = float(
-                getattr(
-                    short_term,
-                    "predicted_price"
-                )
-            )
-
-            current_price = float(
-                getattr(
-                    forecast,
-                    "current_price"
-                )
-            )
-
-            if current_price > 0:
-
-                price_change = (
-                    predicted_price
-                    -
-                    current_price
-                ) / current_price
-
-                # Clamp price impact.
-                #
-                # 5% movement = maximum directional score.
-
-                prediction_score = max(
-                    -1.0,
-                    min(
-                        1.0,
-                        price_change / 0.05
+            if short_term is not None:
+                predicted_price = float(
+                    getattr(
+                        short_term,
+                        "predicted_price",
+                        0.0
                     )
                 )
+
+                current_price = float(
+                    getattr(
+                        forecast,
+                        "current_price",
+                        0.0
+                    )
+                )
+
+                if current_price > 0:
+
+                    price_change = (
+                        predicted_price
+                        -
+                        current_price
+                    ) / current_price
+
+                    # Clamp price impact.
+                    #
+                    # 5% movement = maximum directional score.
+
+                    prediction_score = max(
+                        -1.0,
+                        min(
+                            1.0,
+                            price_change / 0.05
+                        )
+                    )
 
         except (
             AttributeError,
@@ -1361,7 +1364,7 @@ class Orchestrator:
         )
 
         agreement = (
-            self._calculate_agreement(
+            self._calculate_agent_agreement(
                 votes
             )
         )
@@ -1511,39 +1514,40 @@ class Orchestrator:
     # AGREEMENT
     # ========================================================
 
-def _calculate_agent_agreement(self, agent_votes: Dict[str, str]) -> float:
-    """
-    Menghitung tingkat kesepakatan agent berdasarkan action.
-    
-    HOLD/HOLD/HOLD/HOLD = 1.0
-    BUY/BUY/BUY/HOLD = 0.75
-    BUY/SELL/HOLD/HOLD = 0.50
-    """
-    if not agent_votes:
-        return 0.0
+    def _calculate_agent_agreement(self, agent_votes: Dict[str, str]) -> float:
+        """
+        Menghitung tingkat kesepakatan agent berdasarkan action.
+        
+        HOLD/HOLD/HOLD/HOLD = 1.0
+        BUY/BUY/BUY/HOLD = 0.75
+        BUY/SELL/HOLD/HOLD = 0.50
+        """
+        if not agent_votes:
+            return 0.0
 
-    actions = []
-    for vote in agent_votes.values():
-        if vote is None:
-            continue
-        action = str(vote).upper().strip()
-        if action in ("BUY", "SELL", "HOLD"):
-            actions.append(action)
+        actions = []
+        for vote in agent_votes.values():
+            if vote is None:
+                continue
+            action = str(vote).upper().strip()
+            if action in ("BUY", "SELL", "HOLD"):
+                actions.append(action)
 
-    if not actions:
-        return 0.0
+        if not actions:
+            return 0.0
 
-    # Majority agreement
-    counts = {
-        "BUY": actions.count("BUY"),
-        "SELL": actions.count("SELL"),
-        "HOLD": actions.count("HOLD"),
-    }
-    
-    majority_count = max(counts.values())
-    agreement = majority_count / len(actions)
-    
-    return round(agreement, 4)
+        # Majority agreement
+        counts = {
+            "BUY": actions.count("BUY"),
+            "SELL": actions.count("SELL"),
+            "HOLD": actions.count("HOLD"),
+        }
+        
+        majority_count = max(counts.values())
+        agreement = majority_count / len(actions)
+        
+        return round(agreement, 4)
+
     # ========================================================
     # AGREEMENT DIRECTION
     # ========================================================
@@ -2093,8 +2097,7 @@ def _calculate_agent_agreement(self, agent_votes: Dict[str, str]) -> float:
                 pass
 
         # ----------------------------------------------------
-        # 3. Forecast
-        # ----------------------------------------------------
+        # 3. Forecast        # ----------------------------------------------------
 
         if forecast is not None:
 
