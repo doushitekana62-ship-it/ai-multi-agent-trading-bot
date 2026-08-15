@@ -564,3 +564,164 @@ class TradingIntegrationEngine:
         """Stop engine."""
         self.running = False
         logger.info("Trading Integration Engine STOPPED")
+        # ============================================================
+# TEST RUNNER
+# ============================================================
+
+async def test_engine():
+    """Test function untuk menjalankan trading engine."""
+    print("\n" + "=" * 70)
+    print("TESTING TRADING ENGINE")
+    print("=" * 70 + "\n")
+    
+    # Configuration
+    config = {
+        "mode": "paper",
+        "use_unified_data": True,
+        "execution_allowed": True,
+        
+        "orchestrator": {
+            "enable_dynamic_weights": True,
+            "max_position_size": 0.20,
+            "min_confidence": 0.40,
+            "debug_enabled": True
+        },
+        
+        "risk_engine": {
+            "minimum_confidence": 0.40,
+            "max_position_size": 0.20,
+            "minimum_risk_reward": 1.50,
+            "max_daily_loss": 0.03
+        },
+        
+        "decision_engine": {
+            "min_confidence": 0.40,
+            "min_consensus": 0.15,
+            "min_directional_edge": 0.10,
+            "min_risk_reward": 1.50,
+            "live_trading_enabled": False
+        },
+        
+        "execution_gate": {
+            "min_confidence": 0.40,
+            "min_risk_reward": 1.50,
+            "max_position_size": 0.20
+        },
+        
+        "paper_trading": {
+            "initial_balance": 10000.0,
+            "max_position_size": 0.20
+        }
+    }
+    
+    # Initialize engine
+    engine = TradingIntegrationEngine(config)
+    engine.start()
+    
+    # Test market data
+    market_data = {
+        "symbol": "BTC-USD",
+        "current_price": 62760.21,
+        "timeframe": "1h",
+        "volume_24h": 15000000.0,
+        "high_24h": 63500.00,
+        "low_24h": 62000.00,
+        "fear_greed_index": 45,
+        "ohlcv": _generate_test_ohlcv(62760.21, 100)
+    }
+    
+    print("📊 Market Data:")
+    print(f"   Symbol: {market_data['symbol']}")
+    print(f"   Price: ${market_data['current_price']:.2f}")
+    print(f"   OHLCV Points: {len(market_data['ohlcv'])}")
+    print()
+    
+    # Run one cycle
+    try:
+        result = await engine.analyze_and_execute("BTC-USD", market_data)
+        
+        print("=" * 70)
+        print("📈 RESULT")
+        print("=" * 70)
+        print(f"Status: {result.get('status')}")
+        print(f"Action: {result.get('action')}")
+        print(f"Confidence: {result.get('confidence', 0):.2%}")
+        print(f"Position Size: {result.get('position_size', 0):.2%}")
+        
+        if result.get('hold_reason'):
+            print(f"HOLD Reason: {result.get('hold_reason')}")
+        if result.get('reason'):
+            print(f"Reason: {result.get('reason')}")
+        
+        print("\n" + "=" * 70)
+        print("ENGINE STATUS")
+        print("=" * 70)
+        status = engine.get_status()
+        print(f"Mode: {status.get('mode')}")
+        print(f"Total Cycles: {status.get('total_cycles')}")
+        print(f"Executed Trades: {status.get('executed_trades')}")
+        print(f"Blocked Trades: {status.get('blocked_trades')}")
+        print(f"Closed Trades: {status.get('closed_trades')}")
+        
+        if status.get('paper_trading'):
+            pt = status['paper_trading']
+            print(f"Balance: ${pt.get('balance', 0):.2f}")
+            print(f"Equity: ${pt.get('equity', 0):.2f}")
+            print(f"Total PnL: ${pt.get('total_pnl', 0):.2f}")
+            print(f"Win Rate: {pt.get('win_rate', 0):.1%}")
+        
+    except Exception as e:
+        logger.exception("Test failed: %s", e)
+        print(f"\n❌ ERROR: {e}")
+    
+    finally:
+        engine.stop()
+        print("\n" + "=" * 70)
+        print("TEST COMPLETED")
+        print("=" * 70)
+
+
+def _generate_test_ohlcv(base_price: float, count: int) -> List[Dict[str, Any]]:
+    """Generate test OHLCV data."""
+    import random
+    import math
+    
+    ohlcv = []
+    now = datetime.now(timezone.utc)
+    price = base_price
+    
+    for i in range(count):
+        # Random walk
+        change = random.gauss(0, 0.002)
+        open_price = price * (1 + change * 0.5)
+        close_price = price * (1 + change)
+        high_price = max(open_price, close_price) * (1 + abs(random.gauss(0, 0.001)))
+        low_price = min(open_price, close_price) * (1 - abs(random.gauss(0, 0.001)))
+        volume = 1000 + 500 * (1 + math.sin(i / 10))
+        
+        candle_time = now - timedelta(minutes=(count - i) * 60)
+        
+        ohlcv.append({
+            "timestamp": candle_time,
+            "open": round(open_price, 2),
+            "high": round(high_price, 2),
+            "low": round(low_price, 2),
+            "close": round(close_price, 2),
+            "volume": round(volume, 2)
+        })
+        
+        price = close_price
+    
+    return ohlcv
+
+
+if __name__ == "__main__":
+    import asyncio
+    from datetime import timedelta
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
+    
+    asyncio.run(test_engine())
