@@ -177,9 +177,12 @@ class DecisionEngine:
         # Risk
         # ----------------------------------------------------
 
+        # ============================================================
+        # FIX: PERUBAHAN UTAMA - max_risk_score DEFAULT 1.0
+        # ============================================================
         self.max_risk_score = self.config.get(
             "max_risk_score",
-            0.50
+            1.0  # ← DIUBAH DARI 0.50 KE 1.0
         )
 
         self.min_risk_reward = self.config.get(
@@ -210,8 +213,21 @@ class DecisionEngine:
             False
         )
 
+        # ============================================================
+        # FIX: TAMBAHKAN LOGGING UNTUK DEBUG
+        # ============================================================
         logger.info(
-            "Decision Engine initialized"
+            "Decision Engine initialized | "
+            "min_confidence=%.2f | "
+            "min_consensus=%.2f | "
+            "max_risk_score=%.2f | "
+            "min_risk_reward=%.2f | "
+            "live_trading_enabled=%s",
+            self.min_confidence,
+            self.min_consensus,
+            self.max_risk_score,
+            self.min_risk_reward,
+            self.live_trading_enabled
         )
 
     # ========================================================
@@ -224,7 +240,9 @@ class DecisionEngine:
     ) -> DecisionResult:
 
         logger.info(
-            f"Decision Engine evaluating {data.symbol}"
+            f"Decision Engine evaluating {data.symbol} | "
+            f"risk_score={data.risk_score:.4f} | "
+            f"max_risk_score={self.max_risk_score:.2f}"
         )
 
         # ----------------------------------------------------
@@ -367,9 +385,18 @@ class DecisionEngine:
         # Risk checks
         # ----------------------------------------------------
 
+        # ============================================================
+        # FIX: TAMBAHKAN LOG UNTUK RISK CHECK
+        # ============================================================
         risk_ok = (
             risk_score <= self.max_risk_score
         )
+
+        if not risk_ok:
+            logger.warning(
+                f"RISK CHECK FAILED | risk_score={risk_score:.4f} > "
+                f"max_risk_score={self.max_risk_score:.2f}"
+            )
 
         risk_reward_ok = (
             data.risk_reward_ratio
@@ -749,14 +776,14 @@ class DecisionEngine:
 
             reasoning.append(
                 f"Risk score {risk_score:.4f} "
-                f"is within allowed limit"
+                f"is within allowed limit ({self.max_risk_score:.2f})"
             )
 
         else:
 
             reasoning.append(
                 f"Risk score {risk_score:.4f} "
-                f"exceeds allowed limit"
+                f"exceeds allowed limit ({self.max_risk_score:.2f})"
             )
 
         if risk_reward_ok:
@@ -853,7 +880,8 @@ class DecisionEngine:
                 "requested_action": action,
                 "requested_position_size": data.suggested_position_size,
                 "current_price": data.current_price,
-                "live_trading_enabled": self.live_trading_enabled
+                "live_trading_enabled": self.live_trading_enabled,
+                "max_risk_score": self.max_risk_score
             }
         )
 
