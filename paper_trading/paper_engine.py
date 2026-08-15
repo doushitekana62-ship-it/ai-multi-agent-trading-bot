@@ -38,11 +38,32 @@ class PaperTradingEngine:
         initial_balance: float = 10000.0,
         max_position_size: float = 0.20,
     ):
-        self.initial_balance = float(initial_balance)
 
-        self.balance = float(initial_balance)
+        if isinstance(initial_balance, dict):
 
-        self.max_position_size = float(max_position_size)
+            config = initial_balance
+
+            initial_balance = config.get(
+                "initial_balance",
+                10000.0
+            )
+
+            max_position_size = config.get(
+                "max_position_size",
+                0.20
+            )
+
+        self.initial_balance = float(
+            initial_balance
+        )
+
+        self.balance = float(
+            initial_balance
+        )
+
+        self.max_position_size = float(
+            max_position_size
+        )
 
         self.positions: Dict[str, Dict[str, Any]] = {}
 
