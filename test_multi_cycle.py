@@ -302,7 +302,7 @@ class MultiCycleTester:
                 "min_consensus": 0.05,
                 "min_directional_edge": 0.03,
                 "min_risk_reward": 0.8,
-                "live_trading_enabled": true
+                "live_trading_enabled": True
             },
             "execution_gate": {
                 "min_confidence": 0.15,
