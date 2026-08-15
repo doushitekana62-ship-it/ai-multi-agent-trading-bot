@@ -62,6 +62,13 @@ class TradingIntegrationEngine:
         self.paper_config = self.config.get("paper_trading", {})
 
         # ============================================================
+        # FIX: PASTIKAN max_risk_score ADA DI DECISION CONFIG
+        # ============================================================
+        if "max_risk_score" not in self.decision_config:
+            self.decision_config["max_risk_score"] = 1.0
+            logger.warning("max_risk_score not found in decision_config, setting to 1.0")
+
+        # ============================================================
         # COMPONENTS
         # ============================================================
 
@@ -83,13 +90,14 @@ class TradingIntegrationEngine:
         self.closed_trades = 0
 
         logger.info("Trading Integration Engine initialized | MODE=%s", self.mode)
+        logger.info("Decision Engine Config: %s", self.decision_config)
 
     def _build_execution_gate(self, config: Dict[str, Any]) -> ExecutionGate:
         """Build ExecutionGate dengan parameter yang benar."""
         config = config or {}
 
-        min_confidence = float(config.get("min_confidence", 0.60))
-        min_risk_reward = float(config.get("min_risk_reward", 1.50))
+        min_confidence = float(config.get("min_confidence", 0.25))
+        min_risk_reward = float(config.get("min_risk_reward", 0.80))
         max_position_size = float(config.get("max_position_size", 0.20))
 
         logger.info("Execution Gate config | min_confidence=%.2f | min_rr=%.2f | max_position=%.2f",
@@ -295,8 +303,8 @@ class TradingIntegrationEngine:
         decision_confidence = float(getattr(decision_result, "confidence", confidence))
         decision_position_size = float(getattr(decision_result, "position_size", position_size))
 
-        logger.info("DECISION ENGINE | action=%s | approved=%s | confidence=%.2f",
-                   decision_action, decision_approved, decision_confidence)
+        logger.info("DECISION ENGINE | action=%s | approved=%s | confidence=%.2f | risk_score=%.4f",
+                   decision_action, decision_approved, decision_confidence, risk_score)
 
         if not decision_approved:
             self.blocked_trades += 1
@@ -615,34 +623,34 @@ async def test_engine():
         "use_unified_data": True,
         "execution_allowed": True,
         
-      "orchestrator": {
-        "enable_dynamic_weights": True,
-        "max_position_size": 0.20,
-        "min_confidence": 0.25,  # ← TURUNKAN DARI 0.40 KE 0.35
-        "debug_enabled": True
-    },
-         "risk_engine": {
-        "minimum_confidence": 0.25,  # ← TURUNKAN
-        "max_position_size": 0.20,
-        "minimum_risk_reward": 0.80,
-        "max_daily_loss": 0.03,
-        "max_risk_score": 1.0,
-    },
+        "orchestrator": {
+            "enable_dynamic_weights": True,
+            "max_position_size": 0.20,
+            "min_confidence": 0.20,
+            "debug_enabled": True
+        },
+        
+        "risk_engine": {
+            "minimum_confidence": 0.20,
+            "max_position_size": 0.20,
+            "minimum_risk_reward": 0.80,
+            "max_daily_loss": 0.03
+        },
         
         "decision_engine": {
-        "min_confidence": 0.35,  # ← TURUNKAN
-        "min_consensus": 0.05,
-        "min_directional_edge": 0.05,
-        "max_risk_score": 1.0,
-        "min_risk_reward": 0.80,
-        "live_trading_enabled": True
-    },
+            "min_confidence": 0.20,
+            "min_consensus": 0.05,
+            "min_directional_edge": 0.03,
+            "max_risk_score": 1.0,  # ← SUDAH ADA
+            "min_risk_reward": 0.80,
+            "live_trading_enabled": True
+        },
         
-       "execution_gate": {
-        "min_confidence": 0.25,  # ← TURUNKAN
-        "min_risk_reward": 0.80,
-        "max_position_size": 0.20
-    },
+        "execution_gate": {
+            "min_confidence": 0.15,
+            "min_risk_reward": 0.50,
+            "max_position_size": 0.20
+        },
         
         "paper_trading": {
             "initial_balance": 10000.0,
