@@ -1,272 +1,270 @@
 """
-Agent 5: Forecasting Pergerakan Harga
-=====================================
-
 Forecast Agent v4
+=================
+
+AI Multi-Agent Trading Bot
+Agent 5: Forecasting Pergerakan Harga
 
 Tujuan:
-    Menghasilkan forecast harga multi-horizon menggunakan ensemble:
+- Menghasilkan forecast 1-7 hari
+- Menggabungkan beberapa model
+- Melakukan validasi output setiap model
+- Mencegah model dengan skala rusak menghancurkan ensemble
+- Mengukur model agreement
+- Mengukur data quality
+- Menghasilkan probabilitas UP/DOWN/SIDEWAYS
+- Menghasilkan bullish / bearish / most-likely scenarios
+- Menghasilkan forecast confidence yang lebih realistis
+- Tidak menghasilkan STRONG_BUY / STRONG_SELL hanya karena satu model anomali
 
-        1. Auto Regression
-        2. Linear Regression
-        3. Random Forest
-        4. Pattern Recognition
-        5. Monte Carlo
-        6. Sentiment + Technical
-
-Pipeline:
-
-    MARKET DATA
-         |
-         v
-    Forecast Agent
-         |
-         +--> AR
-         +--> Linear Regression
-         +--> Random Forest
-         +--> Pattern Recognition
-         +--> Monte Carlo
-         +--> Sentiment/Technical
-         |
-         v
-      ENSEMBLE
-         |
-         v
-      SCENARIOS
-         |
-         v
-    ForecastResult
-
-IMPORTANT:
-    - Agent ini TIDAK melakukan trading.
-    - Agent hanya menghasilkan forecast.
-    - Forecast bukan jaminan harga masa depan.
-    - Semua output harus diproses lagi oleh Risk Engine
-      dan Decision Engine sebelum paper/live execution.
+PENTING:
+Forecast Agent bukan eksekutor trade.
+Keputusan akhir tetap berada di Decision Agent / Risk Engine / Execution Gate.
 """
+
+from __future__ import annotations
 
 import logging
 import warnings
-
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-
 import yfinance as yf
 
 from scipy.signal import find_peaks
-
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
 
 warnings.filterwarnings("ignore")
 
 logger = logging.getLogger(__name__)
 
 
-# ==============================================================
-# DATA CLASSES
-# ==============================================================
+# ============================================================
+# CONSTANTS
+# ============================================================
 
+EPSILON = 1e-12
+
+HORIZONS = {
+    "short": 2,
+    "medium": 5,
+    "long": 7,
+}
+
+DEFAULT_MODEL_WEIGHTS = {
+    "arima": 0.20,
+    "linear_regression": 0.15,
+    "random_forest": 0.20,
+    "pattern_recognition": 0.15,
+    "monte_carlo": 0.15,
+    "sentiment_technical": 0.15,
+}
+
+DEFAULT_CONFIDENCE = {
+    "short": 0.60,
+    "medium": 0.50,
+    "long": 0.40,
+}
+
+
+# ============================================================
+# DATA CLASSES
+# ============================================================
 
 @dataclass
 class PricePrediction:
     """
-    Prediksi harga untuk satu horizon.
+    Prediksi harga pada horizon tertentu.
     """
 
     timestamp: datetime
-
     predicted_price: float
-
     confidence_interval_lower: float
-
     confidence_interval_upper: float
-
     confidence: float
-
     horizon: str
-
     predicted_change_percent: float = 0.0
 
 
 @dataclass
 class ForecastResult:
     """
-    Hasil lengkap forecasting.
+    Hasil lengkap Forecast Agent.
     """
 
     symbol: str
-
     timestamp: datetime
-
     current_price: float
 
     short_term: PricePrediction
-
     medium_term: PricePrediction
-
     long_term: PricePrediction
 
     bullish_path: List[float]
-
     bearish_path: List[float]
-
     most_likely_path: List[float]
 
     scenarios: Dict[str, Any]
 
     primary_trend: str
-
     trend_strength: float
 
     next_move_probability: Dict[str, float]
 
     expected_high: float
-
     expected_low: float
-
     expected_range: Dict[str, float]
 
     key_resistance: List[float]
-
     key_support: List[float]
 
     summary: str
-
     recommendations: List[str]
 
+    # ========================================================
+    # EXTRA METADATA
+    # ========================================================
+
     model_predictions: Dict[str, List[float]]
-
     model_weights: Dict[str, float]
-
     model_status: Dict[str, str]
 
-    data_quality: Dict[str, Any]
+    data_quality: Dict[str, float]
 
-    warnings: List[str]
+    model_agreement: float = 0.0
+    forecast_score: float = 0.0
+    forecast_action: str = "HOLD"
 
-    def to_dict(self) -> Dict[str, Any]:
+    warnings: List[str] = None
 
-        return asdict(self)
+    def __post_init__(self):
+        if self.warnings is None:
+            self.warnings = []
 
 
-# ==============================================================
+# ============================================================
 # FORECAST AGENT
-# ==============================================================
-
+# ============================================================
 
 class ForecastAgent:
-
     """
-    Multi-model forecasting engine.
+    Forecast Agent v4.
 
-    Fokus utama:
-        - robustness
-        - graceful fallback
-        - model agreement
-        - data quality
-        - compatibility dengan pipeline AI trading
+    Arsitektur:
+
+        Historical Data
+               |
+               +---- AR model
+               |
+               +---- Linear Regression
+               |
+               +---- Random Forest
+               |
+               +---- Pattern Recognition
+               |
+               +---- Monte Carlo
+               |
+               +---- Sentiment + Technical
+               |
+               v
+        Validation Layer
+               |
+               v
+        Ensemble Engine
+               |
+               +---- Model Agreement
+               +---- Trend
+               +---- Probability
+               +---- Scenarios
+               +---- Confidence
+               |
+               v
+        ForecastResult
     """
-
-    # ----------------------------------------------------------
-    # CONSTANTS
-    # ----------------------------------------------------------
-
-    HORIZONS = {
-        "short": 2,
-        "medium": 5,
-        "long": 7,
-    }
-
-    BASE_CONFIDENCE = {
-        "short": 0.70,
-        "medium": 0.60,
-        "long": 0.50,
-    }
-
-    DEFAULT_WEIGHTS = {
-        "arima": 0.20,
-        "linear_regression": 0.15,
-        "random_forest": 0.20,
-        "pattern_recognition": 0.15,
-        "monte_carlo": 0.15,
-        "sentiment_technical": 0.15,
-    }
-
-    MIN_HISTORY = 50
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
 
         self.config = config or {}
 
-        # ------------------------------------------------------
-        # CONFIG
-        # ------------------------------------------------------
-
         self.forecast_horizons = {
-            **self.HORIZONS,
+            **HORIZONS,
             **self.config.get("forecast_horizons", {}),
         }
 
         self.model_weights = {
-            **self.DEFAULT_WEIGHTS,
+            **DEFAULT_MODEL_WEIGHTS,
             **self.config.get("model_weights", {}),
         }
 
+        self.confidence_levels = {
+            **DEFAULT_CONFIDENCE,
+            **self.config.get("confidence_levels", {}),
+        }
+
+        self.cache: Dict[str, Tuple[ForecastResult, datetime]] = {}
+
         self.cache_duration = timedelta(
-            hours=float(
-                self.config.get(
-                    "cache_hours",
-                    1.0
-                )
-            )
+            minutes=self.config.get("cache_minutes", 30)
         )
 
-        self.history_period = self.config.get(
-            "history_period",
-            "1y"
+        # Model configuration
+        self.rf_estimators = int(
+            self.config.get("rf_estimators", 100)
         )
 
-        self.history_interval = self.config.get(
-            "history_interval",
-            "1d"
+        self.rf_max_depth = int(
+            self.config.get("rf_max_depth", 8)
         )
 
-        self.random_state = int(
-            self.config.get(
-                "random_state",
-                42
-            )
+        self.mc_simulations = int(
+            self.config.get("mc_simulations", 500)
         )
 
-        self.enable_cache = bool(
-            self.config.get(
-                "enable_cache",
-                True
-            )
+        # Pattern settings
+        self.pattern_window = int(
+            self.config.get("pattern_window", 30)
         )
 
-        self.cache: Dict[
-            str,
-            Tuple[ForecastResult, datetime]
-        ] = {}
+        self.pattern_search_window = int(
+            self.config.get("pattern_search_window", 240)
+        )
 
-        self.pattern_database: List[Dict[str, Any]] = []
+        # Signal thresholds
+        self.buy_threshold = float(
+            self.config.get("buy_threshold", 0.025)
+        )
 
-        self._initialize_pattern_database()
+        self.sell_threshold = float(
+            self.config.get("sell_threshold", -0.025)
+        )
+
+        self.strong_buy_threshold = float(
+            self.config.get("strong_buy_threshold", 0.05)
+        )
+
+        self.strong_sell_threshold = float(
+            self.config.get("strong_sell_threshold", -0.05)
+        )
+
+        self.min_model_agreement = float(
+            self.config.get("min_model_agreement", 0.55)
+        )
+
+        self.min_forecast_confidence = float(
+            self.config.get("min_forecast_confidence", 0.55)
+        )
 
         logger.info(
             "Forecast Agent initialized successfully"
         )
 
-    # ==========================================================
+    # ========================================================
     # PUBLIC API
-    # ==========================================================
+    # ========================================================
 
     def analyze(
         self,
@@ -278,1059 +276,1008 @@ class ForecastAgent:
 
         logger.info(
             "Generating forecast for %s",
-            symbol
+            symbol,
         )
 
-        symbol = str(symbol).upper()
+        cache_key = self._cache_key(symbol)
 
-        cache_key = f"forecast_{symbol}"
+        cached = self._get_cached(cache_key)
 
-        # ------------------------------------------------------
-        # CACHE
-        # ------------------------------------------------------
-
-        if self.enable_cache:
-
-            cached = self.cache.get(cache_key)
-
-            if cached:
-
-                cached_result, cache_time = cached
-
-                if (
-                    datetime.now(timezone.utc)
-                    - cache_time
-                    < self.cache_duration
-                ):
-
-                    logger.info(
-                        "Using cached forecast for %s",
-                        symbol
-                    )
-
-                    return cached_result
+        if cached is not None:
+            logger.info(
+                "Using cached forecast for %s",
+                symbol,
+            )
+            return cached
 
         warnings_list: List[str] = []
 
-        # ------------------------------------------------------
-        # MARKET DATA
-        # ------------------------------------------------------
+        try:
 
-        df = self._prepare_market_data(
-            symbol=symbol,
-            market_data=market_data
-        )
-
-        # ------------------------------------------------------
-        # FALLBACK
-        # ------------------------------------------------------
-
-        if df is None or df.empty:
-
-            logger.warning(
-                "No usable historical data for %s",
-                symbol
-            )
-
-            result = self._get_default_forecast(
+            df = self._prepare_market_data(
                 symbol=symbol,
-                market_data=market_data
+                market_data=market_data,
             )
 
-            result.warnings.append(
-                "Historical market data unavailable."
+            if df is None or len(df) < 60:
+
+                warnings_list.append(
+                    "Insufficient historical data"
+                )
+
+                return self._get_default_forecast(
+                    symbol=symbol,
+                    current_price=self._extract_current_price(
+                        market_data
+                    ),
+                    warnings=warnings_list,
+                )
+
+            current_price = float(
+                df["Close"].iloc[-1]
+            )
+
+            if current_price <= 0:
+                raise ValueError(
+                    "Current price is invalid"
+                )
+
+            prices = (
+                df["Close"]
+                .astype(float)
+                .to_numpy()
+            )
+
+            # ------------------------------------------------
+            # DATA QUALITY
+            # ------------------------------------------------
+
+            data_quality = self._calculate_data_quality(
+                df
+            )
+
+            if data_quality["quality_score"] < 0.70:
+                warnings_list.append(
+                    "Historical data quality is below recommended level"
+                )
+
+            # ------------------------------------------------
+            # MODEL PREDICTIONS
+            # ------------------------------------------------
+
+            predictions: Dict[str, np.ndarray] = {}
+
+            model_status: Dict[str, str] = {}
+
+            # AR
+            predictions["arima"] = self._safe_model_call(
+                "arima",
+                lambda: self._arima_forecast(
+                    prices,
+                    self.forecast_horizons["long"],
+                ),
+                prices,
+                model_status,
+            )
+
+            # Linear regression
+            predictions["linear_regression"] = self._safe_model_call(
+                "linear_regression",
+                lambda: self._linear_regression_forecast(
+                    prices
+                ),
+                prices,
+                model_status,
+            )
+
+            # Random forest
+            predictions["random_forest"] = self._safe_model_call(
+                "random_forest",
+                lambda: self._random_forest_forecast(
+                    df
+                ),
+                prices,
+                model_status,
+            )
+
+            # Pattern recognition
+            predictions["pattern_recognition"] = self._safe_model_call(
+                "pattern_recognition",
+                lambda: self._pattern_recognition_forecast(
+                    prices
+                ),
+                prices,
+                model_status,
+            )
+
+            # Monte Carlo
+            predictions["monte_carlo"] = self._safe_model_call(
+                "monte_carlo",
+                lambda: self._monte_carlo_forecast(
+                    prices
+                ),
+                prices,
+                model_status,
+            )
+
+            # Sentiment + Technical
+            if (
+                sentiment_result is not None
+                and technical_result is not None
+            ):
+
+                predictions["sentiment_technical"] = (
+                    self._safe_model_call(
+                        "sentiment_technical",
+                        lambda: self._sentiment_technical_forecast(
+                            prices,
+                            sentiment_result,
+                            technical_result,
+                        ),
+                        prices,
+                        model_status,
+                    )
+                )
+
+            # ------------------------------------------------
+            # VALIDATE MODEL OUTPUTS
+            # ------------------------------------------------
+
+            predictions, validation_warnings = (
+                self._validate_predictions(
+                    predictions,
+                    current_price,
+                )
+            )
+
+            warnings_list.extend(
+                validation_warnings
+            )
+
+            # ------------------------------------------------
+            # ENSEMBLE
+            # ------------------------------------------------
+
+            ensemble_prediction, effective_weights = (
+                self._ensemble_forecast(
+                    predictions,
+                    current_price,
+                )
+            )
+
+            # ------------------------------------------------
+            # MODEL AGREEMENT
+            # ------------------------------------------------
+
+            model_agreement = (
+                self._calculate_model_agreement(
+                    predictions,
+                    current_price,
+                )
+            )
+
+            # ------------------------------------------------
+            # TREND
+            # ------------------------------------------------
+
+            primary_trend, trend_strength = (
+                self._analyze_trend(
+                    prices
+                )
+            )
+
+            # ------------------------------------------------
+            # NEXT MOVE PROBABILITY
+            # ------------------------------------------------
+
+            next_move_probability = (
+                self._predict_next_move(
+                    prices,
+                    ensemble_prediction,
+                    model_agreement,
+                )
+            )
+
+            # ------------------------------------------------
+            # SCENARIOS
+            # ------------------------------------------------
+
+            scenarios = self._generate_scenarios(
+                current_price=current_price,
+                ensemble_pred=ensemble_prediction,
+                predictions=predictions,
+                model_agreement=model_agreement,
+            )
+
+            # ------------------------------------------------
+            # PRICE PREDICTIONS
+            # ------------------------------------------------
+
+            short_pred = self._create_price_prediction(
+                ensemble_prediction,
+                "short",
+                current_price,
+                model_agreement,
+                data_quality["quality_score"],
+            )
+
+            medium_pred = self._create_price_prediction(
+                ensemble_prediction,
+                "medium",
+                current_price,
+                model_agreement,
+                data_quality["quality_score"],
+            )
+
+            long_pred = self._create_price_prediction(
+                ensemble_prediction,
+                "long",
+                current_price,
+                model_agreement,
+                data_quality["quality_score"],
+            )
+
+            # ------------------------------------------------
+            # KEY LEVELS
+            # ------------------------------------------------
+
+            key_support, key_resistance = (
+                self._find_key_levels(
+                    df,
+                    current_price,
+                )
+            )
+
+            # ------------------------------------------------
+            # EXPECTED RANGE
+            # ------------------------------------------------
+
+            expected_high, expected_low = (
+                self._calculate_expected_range(
+                    current_price=current_price,
+                    predictions=predictions,
+                    ensemble_prediction=ensemble_prediction,
+                )
+            )
+
+            # ------------------------------------------------
+            # FORECAST SCORE
+            # ------------------------------------------------
+
+            forecast_score = (
+                self._calculate_forecast_score(
+                    current_price=current_price,
+                    short_prediction=short_pred,
+                    trend=primary_trend,
+                    trend_strength=trend_strength,
+                    model_agreement=model_agreement,
+                    data_quality=data_quality["quality_score"],
+                    probabilities=next_move_probability,
+                )
+            )
+
+            forecast_action = (
+                self._forecast_action(
+                    forecast_score=forecast_score,
+                    confidence=short_pred.confidence,
+                    model_agreement=model_agreement,
+                )
+            )
+
+            # ------------------------------------------------
+            # SUMMARY
+            # ------------------------------------------------
+
+            summary = self._generate_summary(
+                symbol=symbol,
+                current_price=current_price,
+                trend=primary_trend,
+                trend_strength=trend_strength,
+                short_pred=short_pred,
+                model_agreement=model_agreement,
+                data_quality=data_quality["quality_score"],
+                next_move_probability=next_move_probability,
+            )
+
+            # ------------------------------------------------
+            # RECOMMENDATIONS
+            # ------------------------------------------------
+
+            recommendations = (
+                self._generate_recommendations(
+                    current_price=current_price,
+                    trend=primary_trend,
+                    trend_strength=trend_strength,
+                    short_pred=short_pred,
+                    model_agreement=model_agreement,
+                    support=key_support,
+                    resistance=key_resistance,
+                    forecast_action=forecast_action,
+                    probabilities=next_move_probability,
+                )
+            )
+
+            # ------------------------------------------------
+            # MODEL OUTPUT SERIALIZATION
+            # ------------------------------------------------
+
+            model_predictions_serialized = {
+                name: self._safe_float_list(pred)
+                for name, pred in predictions.items()
+            }
+
+            # ------------------------------------------------
+            # BUILD RESULT
+            # ------------------------------------------------
+
+            result = ForecastResult(
+                symbol=symbol,
+                timestamp=datetime.now(timezone.utc),
+                current_price=current_price,
+
+                short_term=short_pred,
+                medium_term=medium_pred,
+                long_term=long_pred,
+
+                bullish_path=self._safe_float_list(
+                    scenarios["bullish"]
+                ),
+
+                bearish_path=self._safe_float_list(
+                    scenarios["bearish"]
+                ),
+
+                most_likely_path=self._safe_float_list(
+                    scenarios["most_likely"]
+                ),
+
+                scenarios={
+                    "bullish": {
+                        "path": self._safe_float_list(
+                            scenarios["bullish"]
+                        ),
+                        "probability": float(
+                            scenarios["bullish_prob"]
+                        ),
+                    },
+                    "bearish": {
+                        "path": self._safe_float_list(
+                            scenarios["bearish"]
+                        ),
+                        "probability": float(
+                            scenarios["bearish_prob"]
+                        ),
+                    },
+                    "most_likely": {
+                        "path": self._safe_float_list(
+                            scenarios["most_likely"]
+                        ),
+                        "probability": float(
+                            scenarios["most_likely_prob"]
+                        ),
+                    },
+                },
+
+                primary_trend=primary_trend,
+                trend_strength=float(
+                    trend_strength
+                ),
+
+                next_move_probability={
+                    key: float(value)
+                    for key, value
+                    in next_move_probability.items()
+                },
+
+                expected_high=float(
+                    expected_high
+                ),
+
+                expected_low=float(
+                    expected_low
+                ),
+
+                expected_range={
+                    "high": float(expected_high),
+                    "low": float(expected_low),
+                    "range_percent": float(
+                        (
+                            expected_high - expected_low
+                        )
+                        / current_price
+                        * 100
+                    ),
+                },
+
+                key_resistance=[
+                    float(x)
+                    for x in key_resistance
+                ],
+
+                key_support=[
+                    float(x)
+                    for x in key_support
+                ],
+
+                summary=summary,
+
+                recommendations=recommendations,
+
+                model_predictions=model_predictions_serialized,
+
+                model_weights={
+                    key: float(value)
+                    for key, value
+                    in effective_weights.items()
+                },
+
+                model_status=model_status,
+
+                data_quality={
+                    key: float(value)
+                    for key, value
+                    in data_quality.items()
+                    if isinstance(value, (int, float, np.number))
+                },
+
+                model_agreement=float(
+                    model_agreement
+                ),
+
+                forecast_score=float(
+                    forecast_score
+                ),
+
+                forecast_action=forecast_action,
+
+                warnings=warnings_list,
+            )
+
+            self._store_cache(
+                cache_key,
+                result,
             )
 
             return result
 
-        # ------------------------------------------------------
-        # CLEAN CLOSE
-        # ------------------------------------------------------
+        except Exception as exc:
 
-        prices = self._safe_price_array(
-            df["Close"]
-        )
-
-        if len(prices) < self.MIN_HISTORY:
-
-            warnings_list.append(
-                f"Limited history: {len(prices)} observations."
+            logger.exception(
+                "Error generating forecast for %s",
+                symbol,
             )
 
-        if len(prices) < 10:
-
-            logger.warning(
-                "Insufficient price history for %s",
-                symbol
+            warnings_list.append(
+                f"Forecast engine error: {str(exc)}"
             )
 
             return self._get_default_forecast(
                 symbol=symbol,
-                market_data=market_data,
-                current_price=float(prices[-1])
-                if len(prices) > 0
-                else 0.0
+                current_price=self._extract_current_price(
+                    market_data
+                ),
+                warnings=warnings_list,
             )
 
-        current_price = float(
-            prices[-1]
-        )
-
-        # ------------------------------------------------------
-        # DATA QUALITY
-        # ------------------------------------------------------
-
-        data_quality = self._calculate_data_quality(
-            prices
-        )
-
-        if data_quality["return_volatility"] > 0.10:
-
-            warnings_list.append(
-                "Very high historical volatility."
-            )
-
-        if data_quality["missing_ratio"] > 0:
-
-            warnings_list.append(
-                "Missing values were detected and cleaned."
-            )
-
-        # ======================================================
-        # MODEL PREDICTIONS
-        # ======================================================
-
-        predictions: Dict[str, np.ndarray] = {}
-
-        model_status: Dict[str, str] = {}
-
-        horizon = self.forecast_horizons["long"]
-
-        # ------------------------------------------------------
-        # 1. AUTO REGRESSION
-        # ------------------------------------------------------
-
-        try:
-
-            pred = self._arima_forecast(
-                prices,
-                horizon
-            )
-
-            predictions["arima"] = self._sanitize_prediction(
-                pred,
-                current_price,
-                horizon
-            )
-
-            model_status["arima"] = "OK"
-
-        except Exception as e:
-
-            logger.exception(
-                "AR model failed"
-            )
-
-            model_status["arima"] = f"FAILED: {e}"
-
-        # ------------------------------------------------------
-        # 2. LINEAR REGRESSION
-        # ------------------------------------------------------
-
-        try:
-
-            pred = self._linear_regression_forecast(
-                prices
-            )
-
-            predictions["linear_regression"] = (
-                self._sanitize_prediction(
-                    pred,
-                    current_price,
-                    horizon
-                )
-            )
-
-            model_status["linear_regression"] = "OK"
-
-        except Exception as e:
-
-            logger.exception(
-                "Linear regression failed"
-            )
-
-            model_status["linear_regression"] = (
-                f"FAILED: {e}"
-            )
-
-        # ------------------------------------------------------
-        # 3. RANDOM FOREST
-        # ------------------------------------------------------
-
-        try:
-
-            pred = self._random_forest_forecast(
-                df
-            )
-
-            predictions["random_forest"] = (
-                self._sanitize_prediction(
-                    pred,
-                    current_price,
-                    horizon
-                )
-            )
-
-            model_status["random_forest"] = "OK"
-
-        except Exception as e:
-
-            logger.exception(
-                "Random forest failed"
-            )
-
-            model_status["random_forest"] = (
-                f"FAILED: {e}"
-            )
-
-        # ------------------------------------------------------
-        # 4. PATTERN RECOGNITION
-        # ------------------------------------------------------
-
-        try:
-
-            pred = self._pattern_recognition_forecast(
-                prices
-            )
-
-            predictions["pattern_recognition"] = (
-                self._sanitize_prediction(
-                    pred,
-                    current_price,
-                    horizon
-                )
-            )
-
-            model_status["pattern_recognition"] = "OK"
-
-        except Exception as e:
-
-            logger.exception(
-                "Pattern recognition failed"
-            )
-
-            model_status["pattern_recognition"] = (
-                f"FAILED: {e}"
-            )
-
-        # ------------------------------------------------------
-        # 5. MONTE CARLO
-        # ------------------------------------------------------
-
-        try:
-
-            pred = self._monte_carlo_forecast(
-                prices
-            )
-
-            predictions["monte_carlo"] = (
-                self._sanitize_prediction(
-                    pred,
-                    current_price,
-                    horizon
-                )
-            )
-
-            model_status["monte_carlo"] = "OK"
-
-        except Exception as e:
-
-            logger.exception(
-                "Monte Carlo failed"
-            )
-
-            model_status["monte_carlo"] = (
-                f"FAILED: {e}"
-            )
-
-        # ------------------------------------------------------
-        # 6. SENTIMENT + TECHNICAL
-        # ------------------------------------------------------
-
-        if (
-            sentiment_result is not None
-            or technical_result is not None
-        ):
-
-            try:
-
-                pred = self._sentiment_technical_forecast(
-                    prices,
-                    sentiment_result,
-                    technical_result
-                )
-
-                predictions["sentiment_technical"] = (
-                    self._sanitize_prediction(
-                        pred,
-                        current_price,
-                        horizon
-                    )
-                )
-
-                model_status[
-                    "sentiment_technical"
-                ] = "OK"
-
-            except Exception as e:
-
-                logger.exception(
-                    "Sentiment/technical forecast failed"
-                )
-
-                model_status[
-                    "sentiment_technical"
-                ] = f"FAILED: {e}"
-
-        # ======================================================
-        # ENSEMBLE
-        # ======================================================
-
-        ensemble_prediction, effective_weights = (
-            self._ensemble_forecast(
-                predictions,
-                current_price,
-                horizon
-            )
-        )
-
-        if len(predictions) < 2:
-
-            warnings_list.append(
-                "Ensemble has fewer than 2 successful models."
-            )
-
-        # ======================================================
-        # SCENARIOS
-        # ======================================================
-
-        scenarios = self._generate_scenarios(
-            current_price=current_price,
-            ensemble_pred=ensemble_prediction,
-            predictions=predictions,
-            prices=prices
-        )
-
-        # ======================================================
-        # TREND
-        # ======================================================
-
-        primary_trend, trend_strength = (
-            self._analyze_trend(
-                prices
-            )
-        )
-
-        # ======================================================
-        # NEXT MOVE
-        # ======================================================
-
-        next_move_probability = (
-            self._predict_next_move(
-                prices,
-                ensemble_prediction
-            )
-        )
-
-        # ======================================================
-        # PRICE PREDICTIONS
-        # ======================================================
-
-        short_pred = self._create_price_prediction(
-            ensemble_prediction,
-            "short",
-            current_price
-        )
-
-        medium_pred = self._create_price_prediction(
-            ensemble_prediction,
-            "medium",
-            current_price
-        )
-
-        long_pred = self._create_price_prediction(
-            ensemble_prediction,
-            "long",
-            current_price
-        )
-
-        # ======================================================
-        # KEY LEVELS
-        # ======================================================
-
-        key_support, key_resistance = (
-            self._find_key_levels(
-                df,
-                current_price
-            )
-        )
-
-        # ======================================================
-        # EXPECTED RANGE
-        # ======================================================
-
-        expected_high, expected_low = (
-            self._calculate_expected_range(
-                predictions=predictions,
-                current_price=current_price,
-                prices=prices
-            )
-        )
-
-        # ======================================================
-        # SUMMARY
-        # ======================================================
-
-        summary = self._generate_summary(
-            symbol=symbol,
-            current_price=current_price,
-            trend=primary_trend,
-            trend_strength=trend_strength,
-            ensemble_pred=ensemble_prediction,
-            short_pred=short_pred,
-            scenarios=scenarios,
-            data_quality=data_quality
-        )
-
-        # ======================================================
-        # RECOMMENDATIONS
-        # ======================================================
-
-        recommendations = (
-            self._generate_recommendations(
-                trend=primary_trend,
-                trend_strength=trend_strength,
-                ensemble_pred=ensemble_prediction,
-                short_pred=short_pred,
-                support=key_support,
-                resistance=key_resistance,
-                next_move_probability=next_move_probability
-            )
-        )
-
-        # ======================================================
-        # MODEL OUTPUT
-        # ======================================================
-
-        model_predictions = {}
-
-        for name, pred in predictions.items():
-
-            model_predictions[name] = [
-                float(x)
-                for x in pred
-            ]
-
-        # ======================================================
-        # BUILD RESULT
-        # ======================================================
-
-        result = ForecastResult(
-
-            symbol=symbol,
-
-            timestamp=datetime.now(
-                timezone.utc
-            ),
-
-            current_price=current_price,
-
-            short_term=short_pred,
-
-            medium_term=medium_pred,
-
-            long_term=long_pred,
-
-            bullish_path=[
-                float(x)
-                for x in scenarios["bullish"]
-            ],
-
-            bearish_path=[
-                float(x)
-                for x in scenarios["bearish"]
-            ],
-
-            most_likely_path=[
-                float(x)
-                for x in scenarios["most_likely"]
-            ],
-
-            scenarios={
-                "bullish": {
-                    "path": [
-                        float(x)
-                        for x in scenarios["bullish"]
-                    ],
-                    "probability": float(
-                        scenarios["bullish_prob"]
-                    )
-                },
-
-                "bearish": {
-                    "path": [
-                        float(x)
-                        for x in scenarios["bearish"]
-                    ],
-                    "probability": float(
-                        scenarios["bearish_prob"]
-                    )
-                },
-
-                "most_likely": {
-                    "path": [
-                        float(x)
-                        for x in scenarios["most_likely"]
-                    ],
-                    "probability": float(
-                        scenarios["most_likely_prob"]
-                    )
-                }
-            },
-
-            primary_trend=primary_trend,
-
-            trend_strength=float(
-                trend_strength
-            ),
-
-            next_move_probability={
-                key: float(value)
-                for key, value
-                in next_move_probability.items()
-            },
-
-            expected_high=float(
-                expected_high
-            ),
-
-            expected_low=float(
-                expected_low
-            ),
-
-            expected_range={
-                "high": float(expected_high),
-                "low": float(expected_low),
-                "range_percent": float(
-                    (
-                        expected_high
-                        - expected_low
-                    )
-                    / current_price
-                    * 100
-                )
-                if current_price > 0
-                else 0.0
-            },
-
-            key_resistance=[
-                float(x)
-                for x in key_resistance
-            ],
-
-            key_support=[
-                float(x)
-                for x in key_support
-            ],
-
-            summary=summary,
-
-            recommendations=recommendations,
-
-            model_predictions=model_predictions,
-
-            model_weights={
-                key: float(value)
-                for key, value
-                in effective_weights.items()
-            },
-
-            model_status=model_status,
-
-            data_quality=data_quality,
-
-            warnings=warnings_list
-        )
-
-        # ------------------------------------------------------
-        # CACHE
-        # ------------------------------------------------------
-
-        if self.enable_cache:
-
-            self.cache[cache_key] = (
-                result,
-                datetime.now(timezone.utc)
-            )
-
-        return result
-
-    # ==========================================================
-    # MARKET DATA
-    # ==========================================================
+    # ========================================================
+    # DATA
+    # ========================================================
 
     def _prepare_market_data(
         self,
         symbol: str,
-        market_data: Optional[Dict[str, Any]]
+        market_data: Optional[Dict[str, Any]],
     ) -> Optional[pd.DataFrame]:
 
-        """
-        Gunakan market_data jika memiliki OHLCV.
+        # ----------------------------------------------------
+        # Try supplied market data first
+        # ----------------------------------------------------
 
-        Jika tidak tersedia, fallback ke yfinance.
-        """
+        if isinstance(market_data, dict):
 
-        # ------------------------------------------------------
-        # MARKET DATA FROM ORCHESTRATOR
-        # ------------------------------------------------------
+            for key in (
+                "df",
+                "dataframe",
+                "historical",
+                "history",
+            ):
 
-        if isinstance(
-            market_data,
-            pd.DataFrame
-        ):
+                candidate = market_data.get(key)
 
-            df = market_data.copy()
+                if isinstance(candidate, pd.DataFrame):
 
-            return self._clean_dataframe(
-                df
-            )
-
-        if isinstance(
-            market_data,
-            dict
-        ):
-
-            # Support:
-            # {
-            #   "history": [...]
-            # }
-            # atau:
-            # {
-            #   "historical_data": [...]
-            # }
-
-            historical = (
-                market_data.get("history")
-                or market_data.get("historical_data")
-            )
-
-            if historical is not None:
-
-                try:
-
-                    df = pd.DataFrame(
-                        historical
+                    prepared = self._normalize_dataframe(
+                        candidate
                     )
 
-                    return self._clean_dataframe(
-                        df
-                    )
+                    if prepared is not None:
+                        return prepared
 
-                except Exception as e:
-
-                    logger.warning(
-                        "Unable to parse market_data history: %s",
-                        e
-                    )
-
-            # Support simple OHLC arrays
-            if "Close" in market_data:
-
-                try:
-
-                    close = self._safe_price_array(
-                        market_data["Close"]
-                    )
-
-                    if len(close) >= 10:
-
-                        return pd.DataFrame(
-                            {
-                                "Close": close
-                            }
-                        )
-
-                except Exception:
-                    pass
-
-        # ======================================================
-        # YFINANCE FALLBACK
-        # ======================================================
+        # ----------------------------------------------------
+        # Yahoo Finance
+        # ----------------------------------------------------
 
         try:
 
-            ticker = yf.Ticker(
-                symbol
-            )
+            ticker = yf.Ticker(symbol)
 
             df = ticker.history(
-                period=self.history_period,
-                interval=self.history_interval,
-                auto_adjust=True
+                period="2y",
+                interval="1d",
+                auto_adjust=False,
             )
 
-            return self._clean_dataframe(
+            return self._normalize_dataframe(
                 df
             )
 
-        except Exception as e:
+        except Exception as exc:
 
             logger.error(
-                "Error fetching historical data for %s: %s",
+                "Error fetching market data for %s: %s",
                 symbol,
-                e
+                exc,
             )
 
             return None
 
-    # ==========================================================
-    # DATA CLEANING
-    # ==========================================================
-
-    def _clean_dataframe(
+    def _normalize_dataframe(
         self,
-        df: pd.DataFrame
+        df: Optional[pd.DataFrame],
     ) -> Optional[pd.DataFrame]:
 
         if df is None or df.empty:
-
             return None
 
-        df = df.copy()
+        data = df.copy()
 
-        # Normalize column names
-        df.columns = [
-            str(col).strip()
-            for col in df.columns
-        ]
+        # Flatten MultiIndex columns
+        if isinstance(
+            data.columns,
+            pd.MultiIndex,
+        ):
 
-        # Case-insensitive Close lookup
-        close_column = None
-
-        for col in df.columns:
-
-            if str(col).lower() == "close":
-
-                close_column = col
-                break
-
-        if close_column is None:
-
-            return None
-
-        if close_column != "Close":
-
-            df["Close"] = df[
-                close_column
+            data.columns = [
+                str(col[0])
+                for col in data.columns
             ]
 
-        # Numeric conversion
-        for col in [
+        required = [
+            "Close",
+        ]
+
+        for column in required:
+
+            if column not in data.columns:
+                return None
+
+        for column in (
             "Open",
             "High",
             "Low",
             "Close",
-            "Volume"
-        ]:
+            "Volume",
+        ):
 
-            if col in df.columns:
+            if column in data.columns:
 
-                df[col] = pd.to_numeric(
-                    df[col],
-                    errors="coerce"
+                data[column] = pd.to_numeric(
+                    data[column],
+                    errors="coerce",
                 )
 
-        # Remove invalid prices
-        df = df.dropna(
+        data = data.replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+
+        data = data.dropna(
             subset=["Close"]
         )
 
-        df = df[
-            np.isfinite(
-                df["Close"].values
-            )
-        ]
+        data = data[data["Close"] > 0]
 
-        # Positive prices only
-        df = df[
-            df["Close"] > 0
-        ]
+        if data.empty:
+            return None
 
-        return df
+        return data
 
-    # ==========================================================
-    # SAFE ARRAY
-    # ==========================================================
+    def _extract_current_price(
+        self,
+        market_data: Optional[Dict[str, Any]],
+    ) -> float:
 
-    @staticmethod
-    def _safe_price_array(
-        data: Any
+        if not isinstance(market_data, dict):
+            return 0.0
+
+        for key in (
+            "current_price",
+            "price",
+            "last_price",
+        ):
+
+            value = market_data.get(key)
+
+            try:
+
+                value = float(value)
+
+                if value > 0:
+                    return value
+
+            except Exception:
+                pass
+
+        return 0.0
+
+    # ========================================================
+    # MODEL SAFETY
+    # ========================================================
+
+    def _safe_model_call(
+        self,
+        model_name: str,
+        function,
+        prices: np.ndarray,
+        model_status: Dict[str, str],
     ) -> np.ndarray:
 
-        """
-        FIX UTAMA ERROR:
+        try:
 
-            'list' object has no attribute 'std'
+            result = function()
 
-        Semua input dikonversi ke numpy.ndarray.
-        """
-
-        if data is None:
-
-            return np.array(
-                [],
-                dtype=float
+            result = self._sanitize_prediction(
+                result,
+                prices[-1],
             )
 
-        if isinstance(
-            data,
-            pd.Series
-        ):
+            model_status[model_name] = "OK"
 
-            values = data.to_numpy(
-                dtype=float
+            return result
+
+        except Exception as exc:
+
+            logger.warning(
+                "Model %s failed: %s",
+                model_name,
+                exc,
             )
 
-        elif isinstance(
-            data,
-            pd.DataFrame
-        ):
-
-            values = data.iloc[
-                :,
-                0
-            ].to_numpy(
-                dtype=float
+            model_status[model_name] = (
+                f"FALLBACK: {str(exc)[:80]}"
             )
 
-        else:
-
-            values = np.asarray(
-                data,
-                dtype=float
+            return np.full(
+                self.forecast_horizons["long"],
+                prices[-1],
+                dtype=float,
             )
 
-        values = values.reshape(-1)
+    def _sanitize_prediction(
+        self,
+        prediction: Any,
+        current_price: float,
+    ) -> np.ndarray:
 
-        values = values[
-            np.isfinite(values)
+        horizon = self.forecast_horizons["long"]
+
+        arr = np.asarray(
+            prediction,
+            dtype=np.float64,
+        ).reshape(-1)
+
+        if arr.size == 0:
+            raise ValueError(
+                "Empty prediction"
+            )
+
+        arr = arr[
+            np.isfinite(arr)
         ]
 
-        values = values[
-            values > 0
-        ]
+        if arr.size == 0:
+            raise ValueError(
+                "Prediction contains no finite values"
+            )
 
-        return values.astype(
-            float
+        # Resize to exactly horizon
+        if arr.size < horizon:
+
+            arr = np.pad(
+                arr,
+                (
+                    0,
+                    horizon - arr.size,
+                ),
+                mode="edge",
+            )
+
+        elif arr.size > horizon:
+
+            arr = arr[:horizon]
+
+        # No negative prices
+        arr = np.maximum(
+            arr,
+            current_price * 0.10,
         )
 
-    # ==========================================================
-    # AUTO REGRESSION
-    # ==========================================================
+        # ----------------------------------------------------
+        # CRITICAL OUTLIER PROTECTION
+        #
+        # A daily model shouldn't suddenly say BTC goes
+        # from 62k to 156 dollars.
+        # ----------------------------------------------------
+
+        max_deviation = float(
+            self.config.get(
+                "max_prediction_deviation",
+                0.35,
+            )
+        )
+
+        lower_bound = (
+            current_price
+            * (1.0 - max_deviation)
+        )
+
+        upper_bound = (
+            current_price
+            * (1.0 + max_deviation)
+        )
+
+        arr = np.clip(
+            arr,
+            lower_bound,
+            upper_bound,
+        )
+
+        return arr.astype(float)
+
+    def _validate_predictions(
+        self,
+        predictions: Dict[str, np.ndarray],
+        current_price: float,
+    ) -> Tuple[
+        Dict[str, np.ndarray],
+        List[str],
+    ]:
+
+        warnings_list = []
+
+        valid = {}
+
+        horizon = self.forecast_horizons["long"]
+
+        for name, prediction in predictions.items():
+
+            try:
+
+                arr = self._sanitize_prediction(
+                    prediction,
+                    current_price,
+                )
+
+                if len(arr) != horizon:
+
+                    warnings_list.append(
+                        f"{name}: invalid horizon length"
+                    )
+
+                    continue
+
+                # Check total deviation
+                deviation = abs(
+                    arr[-1] / current_price - 1.0
+                )
+
+                if deviation > 0.35:
+
+                    warnings_list.append(
+                        f"{name}: extreme deviation rejected"
+                    )
+
+                    continue
+
+                valid[name] = arr
+
+            except Exception as exc:
+
+                warnings_list.append(
+                    f"{name}: validation failed - {exc}"
+                )
+
+        if not valid:
+
+            valid["fallback"] = np.full(
+                horizon,
+                current_price,
+            )
+
+            warnings_list.append(
+                "All forecasting models failed validation"
+            )
+
+        return valid, warnings_list
+
+    # ========================================================
+    # AR MODEL
+    # ========================================================
 
     def _arima_forecast(
         self,
         prices: np.ndarray,
-        horizon: int
+        horizon: int,
     ) -> np.ndarray:
 
-        prices = self._safe_price_array(
-            prices
+        prices = np.asarray(
+            prices,
+            dtype=float,
         )
 
-        if len(prices) < 10:
-
+        if len(prices) < 30:
             return np.full(
                 horizon,
-                prices[-1]
-                if len(prices)
-                else 0.0
+                prices[-1],
             )
 
-        window_size = min(
-            60,
-            len(prices)
+        data = prices[-60:]
+
+        # Work with log returns instead of raw prices.
+        # This improves numerical stability.
+        returns = np.diff(
+            np.log(data)
         )
 
-        data = prices[
-            -window_size:
-        ]
-
-        lag = min(
-            5,
-            max(
-                2,
-                len(data) // 10
-            )
-        )
-
-        if len(data) <= lag + 5:
+        if len(returns) < 10:
 
             return self._simple_moving_average_forecast(
-                data,
-                horizon
+                prices,
+                horizon,
             )
 
-        X = []
+        # AR(2) on returns
+        lag = 2
 
-        y = []
+        y = returns[lag:]
 
-        for i in range(
-            lag,
-            len(data)
-        ):
-
-            X.append(
-                data[
-                    i - lag:i
-                ]
-            )
-
-            y.append(
-                data[i]
-            )
-
-        X = np.asarray(
-            X,
-            dtype=float
+        X = np.column_stack(
+            [
+                returns[lag - 1:-1],
+                returns[lag - 2:-2],
+                np.ones(len(y)),
+            ]
         )
 
-        y = np.asarray(
+        coef, _, _, _ = np.linalg.lstsq(
+            X,
             y,
-            dtype=float
+            rcond=None,
         )
 
-        model = LinearRegression()
-
-        model.fit(
-            X,
-            y
-        )
+        future_returns = []
 
         history = list(
-            data[-lag:]
+            returns[-2:]
         )
-
-        predictions = []
 
         for _ in range(horizon):
 
-            features = np.asarray(
-                history[-lag:],
-                dtype=float
-            ).reshape(
-                1,
-                -1
+            next_return = (
+                coef[0] * history[-1]
+                + coef[1] * history[-2]
+                + coef[2]
             )
 
-            next_price = float(
-                model.predict(
-                    features
-                )[0]
+            # Prevent explosive AR predictions
+            next_return = float(
+                np.clip(
+                    next_return,
+                    -0.10,
+                    0.10,
+                )
             )
 
-            predictions.append(
-                next_price
+            future_returns.append(
+                next_return
             )
 
             history.append(
-                next_price
+                next_return
+            )
+
+        last_price = prices[-1]
+
+        predictions = []
+
+        price = last_price
+
+        for ret in future_returns:
+
+            price *= np.exp(ret)
+
+            predictions.append(
+                price
             )
 
         return np.asarray(
             predictions,
-            dtype=float
+            dtype=float,
         )
-
-    # ==========================================================
-    # MOVING AVERAGE FALLBACK
-    # ==========================================================
 
     def _simple_moving_average_forecast(
         self,
         prices: np.ndarray,
-        horizon: int
+        horizon: int,
     ) -> np.ndarray:
 
-        prices = self._safe_price_array(
-            prices
-        )
-
         if len(prices) == 0:
-
             return np.zeros(
-                horizon
-            )
-
-        if len(prices) < 5:
-
-            return np.full(
                 horizon,
-                prices[-1]
+                dtype=float,
             )
+
+        prices = np.asarray(
+            prices,
+            dtype=float,
+        )
 
         window = min(
-            10,
-            len(prices)
+            20,
+            len(prices),
         )
 
-        recent = prices[
-            -window:
-        ]
+        recent = prices[-window:]
 
         weights = np.arange(
             1,
             window + 1,
-            dtype=float
+            dtype=float,
         )
 
         weights /= weights.sum()
 
-        base = float(
-            np.dot(
-                recent,
-                weights
+        baseline = float(
+            np.sum(
+                recent * weights
             )
         )
 
-        returns = np.diff(
-            recent
-        ) / recent[:-1]
+        if len(prices) >= 6:
 
-        drift = float(
-            np.median(
-                returns
+            momentum = (
+                prices[-1]
+                / prices[-6]
+                - 1.0
             )
-        ) if len(returns) else 0.0
 
-        # Limit runaway forecasts
-        drift = float(
+        else:
+
+            momentum = 0.0
+
+        # Damp momentum heavily
+        daily_drift = (
+            momentum / 5.0
+        )
+
+        daily_drift = float(
             np.clip(
-                drift,
+                daily_drift,
                 -0.02,
-                0.02
+                0.02,
             )
         )
 
         predictions = []
 
-        price = base
+        price = baseline
 
-        for _ in range(horizon):
+        for i in range(horizon):
 
             price *= (
-                1 + drift
+                1.0
+                + daily_drift
+                * (0.8 ** i)
             )
 
             predictions.append(
@@ -1338,133 +1285,165 @@ class ForecastAgent:
             )
 
         return np.asarray(
-            predictions
+            predictions,
+            dtype=float,
         )
 
-    # ==========================================================
+    # ========================================================
     # LINEAR REGRESSION
-    # ==========================================================
+    # ========================================================
 
     def _linear_regression_forecast(
         self,
-        prices: np.ndarray
+        prices: np.ndarray,
     ) -> np.ndarray:
 
-        prices = self._safe_price_array(
-            prices
+        prices = np.asarray(
+            prices,
+            dtype=float,
         )
 
-        horizon = self.forecast_horizons[
-            "long"
-        ]
+        horizon = self.forecast_horizons["long"]
 
-        if len(prices) < 10:
+        if len(prices) < 30:
 
             return np.full(
                 horizon,
-                prices[-1]
-                if len(prices)
-                else 0.0
+                prices[-1],
             )
 
+        # Use recent window
         window = min(
-            60,
-            len(prices)
+            90,
+            len(prices),
         )
 
-        data = prices[
-            -window:
-        ]
+        data = prices[-window:]
+
+        # Regression on log prices
+        log_prices = np.log(
+            np.maximum(
+                data,
+                EPSILON,
+            )
+        )
 
         X = np.arange(
             len(data),
-            dtype=float
-        ).reshape(
-            -1,
-            1
-        )
-
-        y = data
+            dtype=float,
+        ).reshape(-1, 1)
 
         model = LinearRegression()
 
         model.fit(
             X,
-            y
+            log_prices,
         )
 
         future_X = np.arange(
             len(data),
-            len(data) + horizon
-        ).reshape(
-            -1,
-            1
+            len(data) + horizon,
+            dtype=float,
+        ).reshape(-1, 1)
+
+        predictions = np.exp(
+            model.predict(
+                future_X
+            )
         )
 
-        predictions = model.predict(
-            future_X
+        return predictions.astype(
+            float
         )
 
-        return np.asarray(
-            predictions,
-            dtype=float
-        )
-
-    # ==========================================================
+    # ========================================================
     # RANDOM FOREST
-    # ==========================================================
+    # ========================================================
 
     def _random_forest_forecast(
         self,
-        df: pd.DataFrame
+        df: pd.DataFrame,
     ) -> np.ndarray:
 
-        prices = self._safe_price_array(
+        prices = (
             df["Close"]
+            .astype(float)
+            .to_numpy()
         )
 
-        horizon = self.forecast_horizons[
-            "long"
-        ]
+        horizon = self.forecast_horizons["long"]
 
-        if len(prices) < 50:
+        if len(prices) < 80:
 
             return self._linear_regression_forecast(
                 prices
             )
 
-        data = prices[
-            -min(200, len(prices)):
-        ]
+        data = prices[-250:]
 
-        lookback = min(
-            10,
-            max(
-                5,
-                len(data) // 10
+        # Features:
+        # lagged log returns + momentum
+        X = []
+        y = []
+
+        lookback = 12
+
+        returns = np.diff(
+            np.log(
+                np.maximum(
+                    data,
+                    EPSILON,
+                )
             )
         )
 
-        X = []
-
-        y = []
-
         for i in range(
             lookback,
-            len(data)
+            len(returns),
         ):
 
-            X.append(
-                data[
-                    i - lookback:i
+            feature_window = returns[
+                i - lookback:i
+            ]
+
+            momentum_3 = (
+                np.sum(
+                    feature_window[-3:]
+                )
+            )
+
+            momentum_7 = (
+                np.sum(
+                    feature_window[-7:]
+                )
+            )
+
+            volatility = (
+                np.std(
+                    feature_window
+                )
+            )
+
+            features = np.concatenate(
+                [
+                    feature_window,
+                    [
+                        momentum_3,
+                        momentum_7,
+                        volatility,
+                    ],
                 ]
             )
 
-            y.append(
-                data[i]
+            X.append(
+                features
             )
 
-        if len(X) < 20:
+            y.append(
+                returns[i]
+            )
+
+        if len(X) < 30:
 
             return self._linear_regression_forecast(
                 prices
@@ -1472,307 +1451,299 @@ class ForecastAgent:
 
         X = np.asarray(
             X,
-            dtype=float
+            dtype=float,
         )
 
         y = np.asarray(
             y,
-            dtype=float
+            dtype=float,
         )
 
         model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=8,
+            n_estimators=self.rf_estimators,
+            max_depth=self.rf_max_depth,
             min_samples_leaf=3,
-            random_state=self.random_state,
-            n_jobs=-1
+            random_state=42,
+            n_jobs=-1,
         )
 
         model.fit(
             X,
-            y
+            y,
         )
 
-        history = list(
-            data[-lookback:]
+        recent_returns = list(
+            returns[-lookback:]
+        )
+
+        price = float(
+            prices[-1]
         )
 
         predictions = []
 
         for _ in range(horizon):
 
-            features = np.asarray(
-                history[-lookback:]
-            ).reshape(
-                1,
-                -1
+            recent = np.asarray(
+                recent_returns[-lookback:],
+                dtype=float,
             )
 
-            next_price = float(
+            features = np.concatenate(
+                [
+                    recent,
+                    [
+                        np.sum(
+                            recent[-3:]
+                        ),
+                        np.sum(
+                            recent[-7:]
+                        ),
+                        np.std(
+                            recent
+                        ),
+                    ],
+                ]
+            ).reshape(
+                1,
+                -1,
+            )
+
+            next_return = float(
                 model.predict(
                     features
                 )[0]
             )
 
-            predictions.append(
-                next_price
+            next_return = float(
+                np.clip(
+                    next_return,
+                    -0.08,
+                    0.08,
+                )
             )
 
-            history.append(
-                next_price
+            price *= np.exp(
+                next_return
+            )
+
+            predictions.append(
+                price
+            )
+
+            recent_returns.append(
+                next_return
             )
 
         return np.asarray(
             predictions,
-            dtype=float
+            dtype=float,
         )
 
-    # ==========================================================
+    # ========================================================
     # PATTERN RECOGNITION
-    # ==========================================================
+    # ========================================================
 
     def _pattern_recognition_forecast(
         self,
-        prices: np.ndarray
+        prices: np.ndarray,
     ) -> np.ndarray:
 
-        """
-        Pattern recognition yang sudah diperbaiki.
-
-        Sebelumnya:
-            pattern['prices'] adalah list
-
-        lalu kemungkinan dipanggil:
-            pattern.std()
-
-        Itu menyebabkan:
-
-            'list' object has no attribute 'std'
-
-        Sekarang seluruh pattern selalu diproses
-        melalui _safe_price_array().
-        """
-
-        prices = self._safe_price_array(
-            prices
+        prices = np.asarray(
+            prices,
+            dtype=np.float64,
         )
 
-        horizon = self.forecast_horizons[
-            "long"
-        ]
+        horizon = self.forecast_horizons["long"]
 
-        pattern_length = min(
-            30,
-            len(prices)
-        )
+        window = self.pattern_window
 
-        if pattern_length < 10:
+        if len(prices) < (
+            window + horizon + 20
+        ):
 
-            return np.full(
+            return self._momentum_fallback(
+                prices,
                 horizon,
-                prices[-1]
             )
 
-        current_pattern = prices[
-            -pattern_length:
-        ]
+        current_pattern = prices[-window:]
 
-        similarities = []
-
-        # ------------------------------------------------------
-        # SEARCH DATABASE
-        # ------------------------------------------------------
-
-        for pattern in self.pattern_database:
-
-            try:
-
-                historical_pattern = (
-                    self._safe_price_array(
-                        pattern.get(
-                            "prices"
-                        )
-                    )
-                )
-
-                future_prices = (
-                    self._safe_price_array(
-                        pattern.get(
-                            "future_prices"
-                        )
-                    )
-                )
-
-                if (
-                    len(historical_pattern)
-                    < pattern_length
-                    or len(future_prices)
-                    < horizon
-                ):
-
-                    continue
-
-                historical_pattern = (
-                    historical_pattern[
-                        :pattern_length
-                    ]
-                )
-
-                similarity = (
-                    self._calculate_pattern_similarity(
+        current_returns = (
+            np.diff(
+                np.log(
+                    np.maximum(
                         current_pattern,
-                        historical_pattern
+                        EPSILON,
                     )
                 )
-
-                if not np.isfinite(
-                    similarity
-                ):
-
-                    continue
-
-                similarities.append(
-                    {
-                        "similarity": similarity,
-                        "future": future_prices[
-                            :horizon
-                        ]
-                    }
-                )
-
-            except Exception as e:
-
-                logger.debug(
-                    "Skipping invalid pattern: %s",
-                    e
-                )
-
-        # ------------------------------------------------------
-        # NO PATTERN
-        # ------------------------------------------------------
-
-        if not similarities:
-
-            return self._pattern_fallback(
-                current_pattern,
-                horizon
             )
-
-        # ------------------------------------------------------
-        # TOP PATTERNS
-        # ------------------------------------------------------
-
-        similarities.sort(
-            key=lambda x: x["similarity"],
-            reverse=True
         )
 
-        top_patterns = similarities[
-            :min(
-                5,
-                len(similarities)
+        candidates = []
+
+        search_start = max(
+            window,
+            len(prices)
+            - self.pattern_search_window,
+        )
+
+        search_end = (
+            len(prices)
+            - horizon
+        )
+
+        for end_idx in range(
+            search_start,
+            search_end,
+        ):
+
+            start_idx = (
+                end_idx - window
             )
+
+            historical_pattern = (
+                prices[
+                    start_idx:end_idx
+                ]
+            )
+
+            historical_returns = (
+                np.diff(
+                    np.log(
+                        np.maximum(
+                            historical_pattern,
+                            EPSILON,
+                        )
+                    )
+                )
+            )
+
+            similarity = (
+                self._calculate_pattern_similarity(
+                    current_returns,
+                    historical_returns,
+                )
+            )
+
+            future_prices = prices[
+                end_idx:end_idx + horizon
+            ]
+
+            if len(future_prices) != horizon:
+                continue
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            # Store FUTURE RETURNS, not raw historical price.
+            #
+            # This prevents the old bug where BTC was compared
+            # against patterns priced at 100-200 dollars.
+            # ------------------------------------------------
+
+            future_returns = (
+                np.diff(
+                    np.log(
+                        np.maximum(
+                            np.concatenate(
+                                [
+                                    [prices[end_idx - 1]],
+                                    future_prices,
+                                ]
+                            ),
+                            EPSILON,
+                        )
+                    )
+                )
+            )
+
+            if len(future_returns) != horizon:
+                continue
+
+            candidates.append(
+                (
+                    similarity,
+                    future_returns,
+                )
+            )
+
+        if not candidates:
+
+            return self._momentum_fallback(
+                prices,
+                horizon,
+            )
+
+        candidates.sort(
+            key=lambda x: x[0],
+            reverse=True,
+        )
+
+        # Only use meaningful matches
+        selected = [
+            candidate
+            for candidate in candidates[:8]
+            if candidate[0] >= 0.55
         ]
 
-        weighted_sum = np.zeros(
+        if not selected:
+
+            return self._momentum_fallback(
+                prices,
+                horizon,
+            )
+
+        weighted_returns = np.zeros(
             horizon,
-            dtype=float
+            dtype=float,
         )
 
         total_weight = 0.0
 
-        for item in top_patterns:
+        for similarity, future_returns in selected:
 
             weight = max(
-                0.001,
-                float(
-                    item["similarity"]
-                )
+                similarity - 0.5,
+                0.01,
             )
 
-            future = np.asarray(
-                item["future"],
-                dtype=float
-            )
-
-            weighted_sum += (
-                future * weight
+            weighted_returns += (
+                future_returns
+                * weight
             )
 
             total_weight += weight
 
         if total_weight <= 0:
 
-            return self._pattern_fallback(
-                current_pattern,
-                horizon
-            )
-
-        result = (
-            weighted_sum
-            / total_weight
-        )
-
-        return result
-
-    # ==========================================================
-    # PATTERN FALLBACK
-    # ==========================================================
-
-    def _pattern_fallback(
-        self,
-        current_pattern: np.ndarray,
-        horizon: int
-    ) -> np.ndarray:
-
-        current_pattern = self._safe_price_array(
-            current_pattern
-        )
-
-        if len(current_pattern) == 0:
-
-            return np.zeros(
-                horizon
-            )
-
-        current_price = float(
-            current_pattern[-1]
-        )
-
-        if len(current_pattern) < 5:
-
-            return np.full(
+            return self._momentum_fallback(
+                prices,
                 horizon,
-                current_price
             )
 
-        recent_returns = (
-            np.diff(current_pattern)
-            / current_pattern[:-1]
+        weighted_returns /= (
+            total_weight
         )
 
-        momentum = float(
-            np.mean(
-                recent_returns[-5:]
-            )
-        )
-
-        momentum = float(
-            np.clip(
-                momentum,
-                -0.01,
-                0.01
-            )
+        # Reconstruct future price from CURRENT price
+        price = float(
+            prices[-1]
         )
 
         predictions = []
 
-        price = current_price
+        for ret in weighted_returns:
 
-        for _ in range(horizon):
+            ret = float(
+                np.clip(
+                    ret,
+                    -0.08,
+                    0.08,
+                )
+            )
 
-            price *= (
-                1 + momentum
+            price *= np.exp(
+                ret
             )
 
             predictions.append(
@@ -1780,312 +1751,284 @@ class ForecastAgent:
             )
 
         return np.asarray(
-            predictions
+            predictions,
+            dtype=float,
         )
-
-    # ==========================================================
-    # PATTERN SIMILARITY
-    # ==========================================================
 
     def _calculate_pattern_similarity(
         self,
-        pattern1: Any,
-        pattern2: Any
+        pattern1: np.ndarray,
+        pattern2: np.ndarray,
     ) -> float:
 
-        p1 = self._safe_price_array(
-            pattern1
+        pattern1 = np.asarray(
+            pattern1,
+            dtype=np.float64,
         )
 
-        p2 = self._safe_price_array(
-            pattern2
+        pattern2 = np.asarray(
+            pattern2,
+            dtype=np.float64,
         )
 
-        if (
-            len(p1) != len(p2)
-            or len(p1) < 5
-        ):
-
+        if len(pattern1) != len(pattern2):
             return 0.0
 
-        # ------------------------------------------------------
-        # Normalize
-        # ------------------------------------------------------
+        if len(pattern1) < 5:
+            return 0.0
 
-        p1_std = float(
-            np.std(p1)
-        )
+        std1 = np.std(pattern1)
+        std2 = np.std(pattern2)
 
-        p2_std = float(
-            np.std(p2)
-        )
+        if (
+            std1 < EPSILON
+            or std2 < EPSILON
+        ):
+            return 0.5
 
-        if p1_std <= 1e-12:
+        p1 = (
+            pattern1
+            - np.mean(pattern1)
+        ) / std1
 
-            p1_norm = (
-                p1 - np.mean(p1)
-            )
-
-        else:
-
-            p1_norm = (
-                p1 - np.mean(p1)
-            ) / p1_std
-
-        if p2_std <= 1e-12:
-
-            p2_norm = (
-                p2 - np.mean(p2)
-            )
-
-        else:
-
-            p2_norm = (
-                p2 - np.mean(p2)
-            ) / p2_std
-
-        # ------------------------------------------------------
-        # Correlation
-        # ------------------------------------------------------
+        p2 = (
+            pattern2
+            - np.mean(pattern2)
+        ) / std2
 
         correlation = np.corrcoef(
-            p1_norm,
-            p2_norm
+            p1,
+            p2,
         )[0, 1]
 
-        if not np.isfinite(
-            correlation
-        ):
-
+        if not np.isfinite(correlation):
             correlation = 0.0
 
         correlation_score = (
-            correlation + 1
-        ) / 2
+            correlation + 1.0
+        ) / 2.0
 
-        # ------------------------------------------------------
-        # Shape
-        # ------------------------------------------------------
-
-        shape_similarity = (
+        shape_score = (
             self._compare_pattern_shape(
-                p1,
-                p2
+                pattern1,
+                pattern2,
             )
         )
 
-        # ------------------------------------------------------
-        # Return
-        # ------------------------------------------------------
-
         similarity = (
-            0.70 * correlation_score
-            + 0.30 * shape_similarity
+            correlation_score * 0.75
+            + shape_score * 0.25
         )
 
         return float(
             np.clip(
                 similarity,
                 0.0,
-                1.0
+                1.0,
             )
         )
-
-    # ==========================================================
-    # PATTERN SHAPE
-    # ==========================================================
 
     def _compare_pattern_shape(
         self,
         pattern1: np.ndarray,
-        pattern2: np.ndarray
+        pattern2: np.ndarray,
     ) -> float:
 
-        p1 = self._safe_price_array(
-            pattern1
-        )
-
-        p2 = self._safe_price_array(
-            pattern2
-        )
-
-        if len(p1) != len(p2):
-
-            return 0.0
-
         peaks1, _ = find_peaks(
-            p1,
-            distance=3
+            pattern1,
+            distance=3,
         )
 
         peaks2, _ = find_peaks(
-            p2,
-            distance=3
+            pattern2,
+            distance=3,
         )
 
         troughs1, _ = find_peaks(
-            -p1,
-            distance=3
+            -pattern1,
+            distance=3,
         )
 
         troughs2, _ = find_peaks(
-            -p2,
-            distance=3
+            -pattern2,
+            distance=3,
         )
 
-        # Compare counts
-        peak_count_score = (
-            1.0
-            - min(
-                abs(
-                    len(peaks1)
-                    - len(peaks2)
-                ),
-                5
-            ) / 5.0
+        count_difference = (
+            abs(len(peaks1) - len(peaks2))
+            + abs(len(troughs1) - len(troughs2))
         )
 
-        trough_count_score = (
-            1.0
-            - min(
-                abs(
-                    len(troughs1)
-                    - len(troughs2)
-                ),
-                5
-            ) / 5.0
+        count_score = max(
+            0.0,
+            1.0 - count_difference / 6.0,
         )
 
-        count_score = (
-            peak_count_score
-            + trough_count_score
-        ) / 2
+        positional_score = 0.5
 
-        # Compare relative positions
-        position_score = 0.5
+        if (
+            len(peaks1) > 0
+            and len(peaks2) > 0
+        ):
 
-        if len(peaks1) and len(peaks2):
-
-            n = min(
-                len(peaks1),
-                len(peaks2)
+            p1 = (
+                peaks1
+                / len(pattern1)
             )
 
-            pos1 = (
-                peaks1[:n]
-                / len(p1)
+            p2 = (
+                peaks2
+                / len(pattern2)
             )
 
-            pos2 = (
-                peaks2[:n]
-                / len(p2)
+            common = min(
+                len(p1),
+                len(p2),
             )
 
-            position_score = max(
-                0.0,
+            positional_score = (
                 1.0
-                - float(
-                    np.mean(
-                        np.abs(
-                            pos1 - pos2
-                        )
+                - np.mean(
+                    np.abs(
+                        p1[:common]
+                        - p2[:common]
                     )
                 )
             )
 
         return float(
             np.clip(
-                0.5 * count_score
-                + 0.5 * position_score,
+                (
+                    count_score
+                    + positional_score
+                )
+                / 2.0,
                 0.0,
-                1.0
+                1.0,
             )
         )
 
-    # ==========================================================
+    def _momentum_fallback(
+        self,
+        prices: np.ndarray,
+        horizon: int,
+    ) -> np.ndarray:
+
+        prices = np.asarray(
+            prices,
+            dtype=float,
+        )
+
+        current = prices[-1]
+
+        if len(prices) >= 10:
+
+            momentum = (
+                prices[-1]
+                / prices[-10]
+                - 1.0
+            ) / 9.0
+
+        else:
+
+            momentum = 0.0
+
+        momentum = float(
+            np.clip(
+                momentum,
+                -0.015,
+                0.015,
+            )
+        )
+
+        predictions = []
+
+        price = current
+
+        for i in range(horizon):
+
+            price *= (
+                1.0
+                + momentum
+                * (0.8 ** i)
+            )
+
+            predictions.append(
+                price
+            )
+
+        return np.asarray(
+            predictions,
+            dtype=float,
+        )
+
+    # ========================================================
     # MONTE CARLO
-    # ==========================================================
+    # ========================================================
 
     def _monte_carlo_forecast(
         self,
-        prices: np.ndarray
+        prices: np.ndarray,
     ) -> np.ndarray:
 
-        prices = self._safe_price_array(
-            prices
+        prices = np.asarray(
+            prices,
+            dtype=float,
         )
 
-        horizon = self.forecast_horizons[
-            "long"
-        ]
+        horizon = self.forecast_horizons["long"]
 
-        if len(prices) < 10:
+        if len(prices) < 30:
 
             return np.full(
                 horizon,
-                prices[-1]
-                if len(prices)
-                else 0.0
+                prices[-1],
             )
 
-        returns = (
-            np.diff(prices)
-            / prices[:-1]
-        )
-
-        returns = returns[
-            np.isfinite(returns)
-        ]
-
-        if len(returns) < 10:
-
-            return np.full(
-                horizon,
-                prices[-1]
+        returns = np.diff(
+            np.log(
+                np.maximum(
+                    prices,
+                    EPSILON,
+                )
             )
-
-        # Log returns lebih stabil
-        log_returns = np.log(
-            prices[1:]
-            / prices[:-1]
         )
+
+        # Recent volatility is more relevant
+        returns = returns[-120:]
 
         mu = float(
-            np.mean(log_returns)
+            np.mean(returns)
         )
 
         sigma = float(
-            np.std(log_returns)
+            np.std(returns)
         )
+
+        # Damp drift to avoid unrealistic exponential growth
+        mu *= 0.35
 
         sigma = max(
             sigma,
-            1e-6
-        )
-
-        n_simulations = int(
-            self.config.get(
-                "monte_carlo_simulations",
-                500
-            )
+            0.0001,
         )
 
         rng = np.random.default_rng(
-            self.random_state
+            seed=42
         )
 
         random_returns = rng.normal(
             loc=mu,
             scale=sigma,
             size=(
-                n_simulations,
-                horizon
-            )
+                self.mc_simulations,
+                horizon,
+            ),
         )
 
         cumulative = np.cumsum(
             random_returns,
-            axis=1
+            axis=1,
         )
 
         paths = (
@@ -2095,72 +2038,48 @@ class ForecastAgent:
             )
         )
 
-        # Median lebih robust daripada mean
-        forecast = np.median(
+        # Use median instead of mean.
+        # Median is more robust against extreme paths.
+        median_path = np.median(
             paths,
-            axis=0
+            axis=0,
         )
 
-        return np.asarray(
-            forecast,
-            dtype=float
+        return median_path.astype(
+            float
         )
 
-    # ==========================================================
+    # ========================================================
     # SENTIMENT + TECHNICAL
-    # ==========================================================
+    # ========================================================
 
     def _sentiment_technical_forecast(
         self,
         prices: np.ndarray,
         sentiment_result: Any,
-        technical_result: Any
+        technical_result: Any,
     ) -> np.ndarray:
-
-        prices = self._safe_price_array(
-            prices
-        )
-
-        horizon = self.forecast_horizons[
-            "long"
-        ]
 
         current_price = float(
             prices[-1]
         )
 
-        sentiment_score = (
-            self._extract_score(
+        horizon = self.forecast_horizons["long"]
+
+        sentiment_score = self._safe_score(
+            getattr(
                 sentiment_result,
-                [
-                    "overall_score",
-                    "sentiment_score",
-                    "score"
-                ]
+                "overall_score",
+                0.0,
             )
         )
 
-        technical_score = (
-            self._extract_score(
+        technical_score = self._safe_score(
+            getattr(
                 technical_result,
-                [
-                    "overall_score",
-                    "technical_score",
-                    "score"
-                ]
+                "overall_score",
+                0.0,
             )
-        )
-
-        # Assume scores can be:
-        # -1 ... +1
-        # or
-        # 0 ... 1
-        sentiment_score = self._normalize_score(
-            sentiment_score
-        )
-
-        technical_score = self._normalize_score(
-            technical_score
         )
 
         combined_score = (
@@ -2169,25 +2088,31 @@ class ForecastAgent:
         )
 
         # Historical momentum
-        if len(prices) >= 5:
+        if len(prices) >= 10:
 
             momentum = (
                 prices[-1]
-                / prices[-5]
-                - 1
+                / prices[-10]
+                - 1.0
             )
 
         else:
 
             momentum = 0.0
 
-        # Keep forecast conservative
         momentum = float(
             np.clip(
                 momentum,
-                -0.03,
-                0.03
+                -0.08,
+                0.08,
             )
+        )
+
+        # Convert score into daily return.
+        # Maximum approximately ±1.5%.
+        sentiment_drift = (
+            combined_score
+            * 0.015
         )
 
         predictions = []
@@ -2197,40 +2122,28 @@ class ForecastAgent:
         for i in range(horizon):
 
             decay = (
-                1.0
-                / (
-                    1.0
-                    + i * 0.20
-                )
+                0.85 ** i
             )
 
-            sentiment_adjustment = (
-                combined_score
-                * 0.003
-                * decay
-            )
-
-            momentum_adjustment = (
+            daily_return = (
                 momentum
-                * 0.20
+                / 5.0
+                * decay
+                + sentiment_drift
                 * decay
             )
 
-            daily_change = (
-                sentiment_adjustment
-                + momentum_adjustment
-            )
-
-            daily_change = float(
+            daily_return = float(
                 np.clip(
-                    daily_change,
-                    -0.02,
-                    0.02
+                    daily_return,
+                    -0.03,
+                    0.03,
                 )
             )
 
             price *= (
-                1 + daily_change
+                1.0
+                + daily_return
             )
 
             predictions.append(
@@ -2238,525 +2151,244 @@ class ForecastAgent:
             )
 
         return np.asarray(
-            predictions
+            predictions,
+            dtype=float,
         )
 
-    # ==========================================================
-    # SCORE EXTRACTION
-    # ==========================================================
-
-    def _extract_score(
-        self,
-        obj: Any,
-        possible_keys: List[str]
-    ) -> float:
-
-        if obj is None:
-
-            return 0.0
-
-        for key in possible_keys:
-
-            value = None
-
-            if isinstance(
-                obj,
-                dict
-            ):
-
-                value = obj.get(
-                    key
-                )
-
-            else:
-
-                value = getattr(
-                    obj,
-                    key,
-                    None
-                )
-
-            if value is not None:
-
-                try:
-
-                    value = float(
-                        value
-                    )
-
-                    if np.isfinite(
-                        value
-                    ):
-
-                        return value
-
-                except Exception:
-
-                    continue
-
-        return 0.0
-
-    # ==========================================================
-    # NORMALIZE SCORE
-    # ==========================================================
-
-    @staticmethod
-    def _normalize_score(
-        score: float
-    ) -> float:
-
-        score = float(
-            score
-        )
-
-        if not np.isfinite(
-            score
-        ):
-
-            return 0.0
-
-        # Already -1 to 1
-        if -1 <= score <= 1:
-
-            return score
-
-        # 0 to 100
-        if 0 <= score <= 100:
-
-            return (
-                score
-                / 50
-                - 1
-            )
-
-        return float(
-            np.clip(
-                score,
-                -1,
-                1
-            )
-        )
-
-    # ==========================================================
+    # ========================================================
     # ENSEMBLE
-    # ==========================================================
+    # ========================================================
 
     def _ensemble_forecast(
         self,
         predictions: Dict[str, np.ndarray],
         current_price: float,
-        horizon: int
-    ) -> Tuple[np.ndarray, Dict[str, float]]:
-
-        if not predictions:
-
-            return (
-                np.full(
-                    horizon,
-                    current_price
-                ),
-                {}
-            )
+    ) -> Tuple[
+        np.ndarray,
+        Dict[str, float],
+    ]:
 
         valid_predictions = {}
 
-        for name, pred in predictions.items():
+        for name, prediction in predictions.items():
 
             arr = np.asarray(
-                pred,
-                dtype=float
-            ).reshape(-1)
+                prediction,
+                dtype=float,
+            )
 
-            if len(arr) != horizon:
-
-                continue
-
-            if not np.all(
-                np.isfinite(arr)
+            if (
+                arr.size
+                == self.forecast_horizons["long"]
+                and np.all(
+                    np.isfinite(arr)
+                )
             ):
 
-                continue
-
-            if np.any(
-                arr <= 0
-            ):
-
-                continue
-
-            valid_predictions[
-                name
-            ] = arr
+                valid_predictions[name] = arr
 
         if not valid_predictions:
 
-            return (
-                np.full(
-                    horizon,
-                    current_price
-                ),
-                {}
+            fallback = np.full(
+                self.forecast_horizons["long"],
+                current_price,
             )
+
+            return (
+                fallback,
+                {"fallback": 1.0},
+            )
+
+        # ----------------------------------------------------
+        # Normalize weights
+        # ----------------------------------------------------
 
         raw_weights = {}
 
         for name in valid_predictions:
 
-            weight = float(
-                self.model_weights.get(
-                    name,
-                    0.10
-                )
-            )
-
             raw_weights[name] = max(
+                float(
+                    self.model_weights.get(
+                        name,
+                        0.10,
+                    )
+                ),
                 0.0,
-                weight
             )
 
-        total_weight = sum(
+        total = sum(
             raw_weights.values()
         )
 
-        if total_weight <= 0:
+        if total <= 0:
 
             equal_weight = (
                 1.0
                 / len(valid_predictions)
             )
 
-            weights = {
+            effective_weights = {
                 name: equal_weight
-                for name
-                in valid_predictions
+                for name in valid_predictions
             }
 
         else:
 
-            weights = {
-                name: weight / total_weight
+            effective_weights = {
+                name: weight / total
                 for name, weight
                 in raw_weights.items()
             }
 
         ensemble = np.zeros(
-            horizon,
-            dtype=float
+            self.forecast_horizons["long"],
+            dtype=float,
         )
 
-        for name, pred in valid_predictions.items():
+        for name, prediction in valid_predictions.items():
 
             ensemble += (
-                pred
-                * weights[name]
+                prediction
+                * effective_weights[name]
             )
 
-        # ------------------------------------------------------
-        # Sanity clamp
-        # ------------------------------------------------------
-
-        # Prevent model ensemble from exploding.
-        max_daily_move = float(
-            self.config.get(
-                "max_forecast_daily_move",
-                0.05
-            )
+        ensemble = self._sanitize_prediction(
+            ensemble,
+            current_price,
         )
-
-        for i in range(
-            len(ensemble)
-        ):
-
-            previous = (
-                current_price
-                if i == 0
-                else ensemble[i - 1]
-            )
-
-            lower = (
-                previous
-                * (
-                    1
-                    - max_daily_move
-                )
-            )
-
-            upper = (
-                previous
-                * (
-                    1
-                    + max_daily_move
-                )
-            )
-
-            ensemble[i] = float(
-                np.clip(
-                    ensemble[i],
-                    lower,
-                    upper
-                )
-            )
 
         return (
             ensemble,
-            weights
+            effective_weights,
         )
 
-    # ==========================================================
-    # SANITIZE PREDICTION
-    # ==========================================================
+    # ========================================================
+    # MODEL AGREEMENT
+    # ========================================================
 
-    @staticmethod
-    def _sanitize_prediction(
-        prediction: Any,
-        current_price: float,
-        horizon: int
-    ) -> np.ndarray:
-
-        arr = np.asarray(
-            prediction,
-            dtype=float
-        ).reshape(-1)
-
-        arr = arr[
-            np.isfinite(arr)
-        ]
-
-        arr = arr[
-            arr > 0
-        ]
-
-        if len(arr) == 0:
-
-            return np.full(
-                horizon,
-                current_price
-            )
-
-        if len(arr) < horizon:
-
-            last = arr[-1]
-
-            arr = np.pad(
-                arr,
-                (
-                    0,
-                    horizon - len(arr)
-                ),
-                mode="constant",
-                constant_values=last
-            )
-
-        if len(arr) > horizon:
-
-            arr = arr[
-                :horizon
-            ]
-
-        return arr.astype(
-            float
-        )
-
-    # ==========================================================
-    # SCENARIOS
-    # ==========================================================
-
-    def _generate_scenarios(
+    def _calculate_model_agreement(
         self,
-        current_price: float,
-        ensemble_pred: np.ndarray,
         predictions: Dict[str, np.ndarray],
-        prices: np.ndarray
-    ) -> Dict[str, Any]:
+        current_price: float,
+    ) -> float:
 
-        horizon = len(
-            ensemble_pred
+        if len(predictions) <= 1:
+            return 1.0
+
+        final_returns = []
+
+        for prediction in predictions.values():
+
+            arr = np.asarray(
+                prediction,
+                dtype=float,
+            )
+
+            if len(arr) == 0:
+                continue
+
+            final_return = (
+                arr[-1]
+                / current_price
+                - 1.0
+            )
+
+            final_returns.append(
+                final_return
+            )
+
+        if len(final_returns) <= 1:
+            return 1.0
+
+        final_returns = np.asarray(
+            final_returns,
+            dtype=float,
         )
 
-        if not predictions:
-
-            bullish = (
-                ensemble_pred
-                * 1.03
+        dispersion = float(
+            np.std(
+                final_returns
             )
+        )
 
-            bearish = (
-                ensemble_pred
-                * 0.97
-            )
+        # Agreement falls as model dispersion increases.
+        # 5% dispersion => ~0 agreement.
+        agreement = (
+            1.0
+            - dispersion / 0.05
+        )
 
-        else:
-
-            stacked = np.vstack(
-                list(
-                    predictions.values()
-                )
-            )
-
-            model_high = np.percentile(
-                stacked,
-                80,
-                axis=0
-            )
-
-            model_low = np.percentile(
-                stacked,
-                20,
-                axis=0
-            )
-
-            bullish = np.maximum(
-                model_high,
-                ensemble_pred
-            )
-
-            bearish = np.minimum(
-                model_low,
-                ensemble_pred
-            )
-
-        # ------------------------------------------------------
-        # Volatility adjustment
-        # ------------------------------------------------------
-
-        if len(prices) >= 10:
-
-            returns = (
-                np.diff(prices)
-                / prices[:-1]
-            )
-
-            volatility = float(
-                np.std(
-                    returns
-                )
-            )
-
-        else:
-
-            volatility = 0.02
-
-        volatility = float(
+        agreement = float(
             np.clip(
-                volatility,
-                0.005,
-                0.10
+                agreement,
+                0.0,
+                1.0,
             )
         )
 
-        bullish = bullish * (
-            1
-            + volatility * 0.25
+        # Also check direction agreement
+        directions = np.sign(
+            final_returns
         )
 
-        bearish = bearish * (
-            1
-            - volatility * 0.25
+        positive = np.sum(
+            directions > 0
         )
 
-        bullish = np.maximum(
-            bullish,
-            ensemble_pred
+        negative = np.sum(
+            directions < 0
         )
 
-        bearish = np.minimum(
-            bearish,
-            ensemble_pred
+        sideways = np.sum(
+            directions == 0
         )
 
-        # ------------------------------------------------------
-        # Model agreement
-        # ------------------------------------------------------
+        direction_ratio = max(
+            positive,
+            negative,
+            sideways,
+        ) / len(
+            directions
+        )
 
-        if len(predictions) >= 2:
+        agreement = (
+            agreement * 0.65
+            + direction_ratio * 0.35
+        )
 
-            stacked = np.vstack(
-                list(
-                    predictions.values()
-                )
-            )
-
-            relative_std = (
-                np.std(
-                    stacked,
-                    axis=0
-                )
-                / np.maximum(
-                    np.mean(
-                        stacked,
-                        axis=0
-                    ),
-                    1e-9
-                )
-            )
-
-            agreement = float(
-                np.clip(
-                    1
-                    - np.mean(
-                        relative_std
-                    ) * 10,
-                    0,
-                    1
-                )
-            )
-
-        else:
-
-            agreement = 0.25
-
-        most_likely_prob = float(
+        return float(
             np.clip(
-                0.40
-                + agreement * 0.25,
-                0.40,
-                0.65
+                agreement,
+                0.0,
+                1.0,
             )
         )
 
-        remaining = (
-            1
-            - most_likely_prob
-        )
-
-        bullish_prob = (
-            remaining
-            * 0.55
-        )
-
-        bearish_prob = (
-            remaining
-            * 0.45
-        )
-
-        return {
-            "bullish": bullish,
-            "bearish": bearish,
-            "most_likely": ensemble_pred,
-            "bullish_prob": bullish_prob,
-            "bearish_prob": bearish_prob,
-            "most_likely_prob": most_likely_prob,
-            "agreement": agreement,
-        }
-
-    # ==========================================================
-    # TREND ANALYSIS
-    # ==========================================================
+    # ========================================================
+    # TREND
+    # ========================================================
 
     def _analyze_trend(
         self,
-        prices: np.ndarray
+        prices: np.ndarray,
     ) -> Tuple[str, float]:
 
-        prices = self._safe_price_array(
-            prices
+        prices = np.asarray(
+            prices,
+            dtype=float,
         )
 
-        if len(prices) < 20:
+        if len(prices) < 50:
 
             return (
                 "CONSOLIDATING",
-                0.0
+                0.0,
             )
+
+        current = float(
+            prices[-1]
+        )
 
         ma20 = float(
             np.mean(
@@ -2766,356 +2398,456 @@ class ForecastAgent:
 
         ma50 = float(
             np.mean(
-                prices[
-                    -min(
-                        50,
-                        len(prices)
-                    ):
-                ]
+                prices[-50:]
             )
         )
 
-        current_price = float(
-            prices[-1]
+        ma100 = float(
+            np.mean(
+                prices[-100:]
+            )
+        ) if len(prices) >= 100 else ma50
+
+        # Slopes
+        slope_20 = self._slope(
+            prices[-20:]
         )
 
-        # ------------------------------------------------------
-        # Trend score
-        # ------------------------------------------------------
+        slope_50 = self._slope(
+            prices[-50:]
+        )
 
-        bullish_components = 0
-
-        bearish_components = 0
-
-        if current_price > ma20:
-
-            bullish_components += 1
-
-        else:
-
-            bearish_components += 1
-
-        if ma20 > ma50:
-
-            bullish_components += 1
-
-        else:
-
-            bearish_components += 1
-
-        # Linear slope
-        window = prices[
-            -min(
-                30,
-                len(prices)
-            ):
+        bullish_conditions = [
+            current > ma20,
+            ma20 > ma50,
+            ma50 >= ma100,
+            slope_20 > 0,
+            slope_50 > 0,
         ]
 
-        x = np.arange(
-            len(window)
-        )
+        bearish_conditions = [
+            current < ma20,
+            ma20 < ma50,
+            ma50 <= ma100,
+            slope_20 < 0,
+            slope_50 < 0,
+        ]
 
-        slope = np.polyfit(
-            x,
-            window,
-            1
-        )[0]
-
-        normalized_slope = (
-            slope
-            / max(
-                np.mean(window),
-                1e-9
+        bullish_score = (
+            sum(
+                bullish_conditions
+            )
+            / len(
+                bullish_conditions
             )
         )
 
-        if normalized_slope > 0:
+        bearish_score = (
+            sum(
+                bearish_conditions
+            )
+            / len(
+                bearish_conditions
+            )
+        )
 
-            bullish_components += 1
-
-        elif normalized_slope < 0:
-
-            bearish_components += 1
-
-        if (
-            bullish_components
-            >= 2
-        ):
+        if bullish_score >= 0.70:
 
             trend = "BULLISH"
 
-        elif (
-            bearish_components
-            >= 2
-        ):
+            distance = abs(
+                current / ma20 - 1.0
+            )
+
+            strength = (
+                distance * 5.0
+                + bullish_score * 0.50
+            )
+
+        elif bearish_score >= 0.70:
 
             trend = "BEARISH"
+
+            distance = abs(
+                current / ma20 - 1.0
+            )
+
+            strength = (
+                distance * 5.0
+                + bearish_score * 0.50
+            )
 
         else:
 
             trend = "CONSOLIDATING"
 
-        # ------------------------------------------------------
-        # Strength
-        # ------------------------------------------------------
-
-        distance_ma20 = abs(
-            current_price
-            - ma20
-        ) / max(
-            ma20,
-            1e-9
-        )
-
-        distance_ma50 = abs(
-            ma20
-            - ma50
-        ) / max(
-            ma50,
-            1e-9
-        )
-
-        slope_strength = min(
-            abs(
-                normalized_slope
-            ) * 100,
-            1.0
-        )
-
-        strength = (
-            distance_ma20 * 2
-            + distance_ma50 * 2
-            + slope_strength
-        ) / 5
-
-        return (
-            trend,
-            float(
-                np.clip(
-                    strength,
-                    0,
-                    1
+            recent_range = (
+                np.max(
+                    prices[-20:]
                 )
+                - np.min(
+                    prices[-20:]
+                )
+            ) / max(
+                np.mean(
+                    prices[-20:]
+                ),
+                EPSILON,
+            )
+
+            strength = max(
+                0.0,
+                1.0 - recent_range * 10.0,
+            ) * 0.40
+
+        strength = float(
+            np.clip(
+                strength,
+                0.0,
+                1.0,
             )
         )
 
-    # ==========================================================
-    # NEXT MOVE
-    # ==========================================================
+        return (
+            trend,
+            strength,
+        )
+
+    def _slope(
+        self,
+        values: np.ndarray,
+    ) -> float:
+
+        values = np.asarray(
+            values,
+            dtype=float,
+        )
+
+        if len(values) < 2:
+            return 0.0
+
+        x = np.arange(
+            len(values),
+            dtype=float,
+        )
+
+        slope = np.polyfit(
+            x,
+            values,
+            1,
+        )[0]
+
+        mean_value = np.mean(
+            values
+        )
+
+        if abs(mean_value) < EPSILON:
+            return 0.0
+
+        return float(
+            slope / mean_value
+        )
+
+    # ========================================================
+    # NEXT MOVE PROBABILITY
+    # ========================================================
 
     def _predict_next_move(
         self,
         prices: np.ndarray,
-        ensemble_pred: np.ndarray
+        ensemble_pred: np.ndarray,
+        model_agreement: float,
     ) -> Dict[str, float]:
 
-        prices = self._safe_price_array(
-            prices
+        current_price = float(
+            prices[-1]
         )
 
-        if (
-            len(prices) < 5
-            or len(ensemble_pred) == 0
-        ):
+        if len(ensemble_pred) == 0:
 
             return {
                 "UP": 0.33,
                 "DOWN": 0.33,
-                "SIDEWAYS": 0.34
+                "SIDEWAYS": 0.34,
             }
 
-        current = float(
-            prices[-1]
-        )
-
-        predicted = float(
+        predicted_return = (
             ensemble_pred[0]
+            / current_price
+            - 1.0
         )
 
-        predicted_change = (
-            predicted
-            / current
-            - 1
-        )
+        if len(prices) >= 5:
 
-        historical_momentum = (
-            prices[-1]
-            / prices[-5]
-            - 1
-        )
+            historical_momentum = (
+                prices[-1]
+                / prices[-5]
+                - 1.0
+            )
 
+        else:
+
+            historical_momentum = 0.0
+
+        # Blend forecast and momentum
         combined = (
-            predicted_change * 0.60
-            + historical_momentum * 0.40
+            predicted_return * 0.70
+            + historical_momentum * 0.30
         )
 
-        threshold = 0.002
+        # Volatility adaptive threshold
+        returns = np.diff(
+            np.log(
+                np.maximum(
+                    prices,
+                    EPSILON,
+                )
+            )
+        )
+
+        volatility = (
+            np.std(
+                returns[-30:]
+            )
+            if len(returns) >= 5
+            else 0.01
+        )
+
+        threshold = max(
+            0.005,
+            volatility * 0.50,
+        )
+
+        # ----------------------------------------------------
+        # Convert signal into probabilities
+        # ----------------------------------------------------
+
+        magnitude = abs(
+            combined
+        )
+
+        strength = np.clip(
+            magnitude
+            / max(
+                threshold * 3.0,
+                EPSILON,
+            ),
+            0.0,
+            1.0,
+        )
+
+        # Agreement modifies certainty.
+        certainty = (
+            0.35
+            + 0.65
+            * model_agreement
+        )
+
+        strength *= certainty
 
         if combined > threshold:
 
-            up = float(
-                np.clip(
-                    0.50
-                    + combined * 8,
-                    0.35,
-                    0.75
-                )
+            up = (
+                0.34
+                + 0.45 * strength
             )
 
-            down = 0.15
+            down = (
+                0.22
+                - 0.10 * strength
+            )
 
             sideways = (
-                1
+                1.0
                 - up
                 - down
             )
 
         elif combined < -threshold:
 
-            down = float(
-                np.clip(
-                    0.50
-                    - combined * 8,
-                    0.35,
-                    0.75
-                )
+            down = (
+                0.34
+                + 0.45 * strength
             )
 
-            up = 0.15
+            up = (
+                0.22
+                - 0.10 * strength
+            )
 
             sideways = (
-                1
+                1.0
                 - up
                 - down
             )
 
         else:
 
-            up = 0.30
-
-            down = 0.30
-
-            sideways = 0.40
-
-        probabilities = np.array(
-            [
-                up,
-                down,
-                sideways
-            ],
-            dtype=float
-        )
-
-        probabilities /= (
-            probabilities.sum()
-        )
-
-        return {
-            "UP": float(
-                probabilities[0]
-            ),
-            "DOWN": float(
-                probabilities[1]
-            ),
-            "SIDEWAYS": float(
-                probabilities[2]
+            sideways = (
+                0.40
+                + 0.20
+                * (
+                    1.0
+                    - strength
+                )
             )
+
+            remaining = (
+                1.0
+                - sideways
+            )
+
+            up = (
+                remaining * 0.50
+            )
+
+            down = (
+                remaining * 0.50
+            )
+
+        probabilities = {
+            "UP": max(
+                0.0,
+                float(up),
+            ),
+            "DOWN": max(
+                0.0,
+                float(down),
+            ),
+            "SIDEWAYS": max(
+                0.0,
+                float(sideways),
+            ),
         }
 
-    # ==========================================================
-    # PRICE PREDICTION OBJECT
-    # ==========================================================
+        total = sum(
+            probabilities.values()
+        )
+
+        if total <= 0:
+
+            return {
+                "UP": 0.33,
+                "DOWN": 0.33,
+                "SIDEWAYS": 0.34,
+            }
+
+        return {
+            key: value / total
+            for key, value
+            in probabilities.items()
+        }
+
+    # ========================================================
+    # PRICE PREDICTION
+    # ========================================================
 
     def _create_price_prediction(
         self,
         ensemble_pred: np.ndarray,
         horizon: str,
-        current_price: float
+        current_price: float,
+        model_agreement: float,
+        data_quality: float,
     ) -> PricePrediction:
 
-        days = int(
-            self.forecast_horizons.get(
-                horizon,
-                2
-            )
-        )
+        days = self.forecast_horizons[
+            horizon
+        ]
 
         idx = min(
             days - 1,
-            len(ensemble_pred) - 1
-        )
-
-        idx = max(
-            0,
-            idx
+            len(ensemble_pred) - 1,
         )
 
         predicted_price = float(
             ensemble_pred[idx]
-            if len(ensemble_pred)
-            else current_price
         )
 
-        change_percent = (
-            (
-                predicted_price
-                / current_price
-                - 1
-            )
-            * 100
-            if current_price > 0
-            else 0.0
+        predicted_change = (
+            predicted_price
+            / current_price
+            - 1.0
         )
 
-        # Confidence decreases with horizon
         base_confidence = (
-            self.BASE_CONFIDENCE.get(
+            self.confidence_levels.get(
                 horizon,
-                0.50
+                0.50,
             )
         )
 
-        # Keep confidence realistic
+        # Confidence should depend on:
+        # 1. model agreement
+        # 2. data quality
+        # 3. magnitude of prediction
+        # 4. horizon
+
+        signal_strength = np.clip(
+            abs(predicted_change)
+            / 0.05,
+            0.0,
+            1.0,
+        )
+
+        confidence = (
+            base_confidence * 0.35
+            + model_agreement * 0.35
+            + data_quality * 0.20
+            + signal_strength * 0.10
+        )
+
         confidence = float(
             np.clip(
-                base_confidence,
+                confidence,
                 0.20,
-                0.90
+                0.90,
             )
         )
 
-        # Interval based on predicted move
-        spread = max(
-            abs(
-                predicted_price
-                - current_price
+        # Confidence interval based on recent volatility.
+        #
+        # More volatility = wider interval.
+        spread_factor = (
+            0.025
+            + (
+                1.0
+                - confidence
             )
-            * 0.35,
-            current_price * 0.005
+            * 0.05
+        )
+
+        spread = max(
+            predicted_price
+            * spread_factor,
+            current_price * 0.01,
+        )
+
+        lower = max(
+            current_price * 0.50,
+            predicted_price - spread,
+        )
+
+        upper = (
+            predicted_price
+            + spread
         )
 
         return PricePrediction(
-
-            timestamp=(
-                datetime.now(
-                    timezone.utc
-                )
-                + timedelta(
-                    days=days
-                )
+            timestamp=datetime.now(
+                timezone.utc
+            ) + timedelta(
+                days=days
             ),
 
             predicted_price=predicted_price,
 
-            confidence_interval_lower=max(
-                0.0,
-                predicted_price
-                - spread
+            confidence_interval_lower=float(
+                lower
             ),
 
-            confidence_interval_upper=(
-                predicted_price
-                + spread
+            confidence_interval_upper=float(
+                upper
             ),
 
             confidence=confidence,
@@ -3123,400 +2855,542 @@ class ForecastAgent:
             horizon=horizon.upper(),
 
             predicted_change_percent=float(
-                change_percent
-            )
+                predicted_change * 100.0
+            ),
         )
 
-    # ==========================================================
+    # ========================================================
+    # SCENARIOS
+    # ========================================================
+
+    def _generate_scenarios(
+        self,
+        current_price: float,
+        ensemble_pred: np.ndarray,
+        predictions: Dict[str, np.ndarray],
+        model_agreement: float,
+    ) -> Dict[str, Any]:
+
+        ensemble_pred = np.asarray(
+            ensemble_pred,
+            dtype=float,
+        )
+
+        # Most likely
+        most_likely = ensemble_pred.copy()
+
+        if predictions:
+
+            matrix = np.vstack(
+                [
+                    np.asarray(
+                        pred,
+                        dtype=float,
+                    )
+                    for pred in predictions.values()
+                ]
+            )
+
+            # Use quantiles instead of min/max.
+            # Min/max is too sensitive to one bad model.
+            bullish = np.percentile(
+                matrix,
+                75,
+                axis=0,
+            )
+
+            bearish = np.percentile(
+                matrix,
+                25,
+                axis=0,
+            )
+
+        else:
+
+            bullish = (
+                ensemble_pred * 1.05
+            )
+
+            bearish = (
+                ensemble_pred * 0.95
+            )
+
+        # Add controlled volatility buffer
+        bullish = np.maximum(
+            bullish,
+            most_likely,
+        )
+
+        bearish = np.minimum(
+            bearish,
+            most_likely,
+        )
+
+        # Scenario probabilities
+        #
+        # Better agreement => most likely scenario gets
+        # higher probability.
+        most_likely_prob = (
+            0.35
+            + 0.30
+            * model_agreement
+        )
+
+        remaining = (
+            1.0
+            - most_likely_prob
+        )
+
+        # Direction determines whether bullish or bearish
+        # gets slightly higher probability.
+        expected_return = (
+            most_likely[-1]
+            / current_price
+            - 1.0
+        )
+
+        if expected_return > 0:
+
+            bullish_prob = (
+                remaining * 0.60
+            )
+
+            bearish_prob = (
+                remaining * 0.40
+            )
+
+        elif expected_return < 0:
+
+            bullish_prob = (
+                remaining * 0.40
+            )
+
+            bearish_prob = (
+                remaining * 0.60
+            )
+
+        else:
+
+            bullish_prob = (
+                remaining * 0.50
+            )
+
+            bearish_prob = (
+                remaining * 0.50
+            )
+
+        probabilities = np.array(
+            [
+                bullish_prob,
+                bearish_prob,
+                most_likely_prob,
+            ],
+            dtype=float,
+        )
+
+        probabilities /= (
+            probabilities.sum()
+        )
+
+        return {
+            "bullish": bullish,
+            "bearish": bearish,
+            "most_likely": most_likely,
+
+            "bullish_prob": float(
+                probabilities[0]
+            ),
+
+            "bearish_prob": float(
+                probabilities[1]
+            ),
+
+            "most_likely_prob": float(
+                probabilities[2]
+            ),
+        }
+
+    # ========================================================
     # KEY LEVELS
-    # ==========================================================
+    # ========================================================
 
     def _find_key_levels(
         self,
         df: pd.DataFrame,
-        current_price: float
+        current_price: float,
     ) -> Tuple[
         List[float],
-        List[float]
+        List[float],
     ]:
 
-        prices = self._safe_price_array(
-            df["Close"]
-        )
-
-        if len(prices) < 20:
-
-            return (
-                [],
-                []
-            )
-
-        # ------------------------------------------------------
-        # Use High / Low if available
-        # ------------------------------------------------------
-
         if (
-            "High" in df.columns
-            and "Low" in df.columns
+            "High" not in df.columns
+            or "Low" not in df.columns
         ):
 
-            high = pd.to_numeric(
-                df["High"],
-                errors="coerce"
-            ).to_numpy(
-                dtype=float
-            )
+            return [], []
 
-            low = pd.to_numeric(
-                df["Low"],
-                errors="coerce"
-            ).to_numpy(
-                dtype=float
-            )
+        high = (
+            df["High"]
+            .astype(float)
+            .to_numpy()
+        )
 
-            valid = (
-                np.isfinite(high)
-                & np.isfinite(low)
-            )
+        low = (
+            df["Low"]
+            .astype(float)
+            .to_numpy()
+        )
 
-            high = high[valid]
+        if len(high) < 30:
+            return [], []
 
-            low = low[valid]
-
-        else:
-
-            high = prices.copy()
-
-            low = prices.copy()
-
-        # Limit to recent data
-        high = high[
-            -min(
-                120,
-                len(high)
-            ):
-        ]
-
-        low = low[
-            -min(
-                120,
-                len(low)
-            ):
-        ]
+        window = 5
 
         peaks, _ = find_peaks(
             high,
-            distance=5
+            distance=window,
         )
 
         troughs, _ = find_peaks(
             -low,
-            distance=5
+            distance=window,
         )
 
         resistance_candidates = [
-            float(
-                high[i]
-            )
+            float(high[i])
             for i in peaks
             if high[i] > current_price
         ]
 
         support_candidates = [
-            float(
-                low[i]
-            )
+            float(low[i])
             for i in troughs
             if low[i] < current_price
         ]
 
         resistance = self._cluster_levels(
-            resistance_candidates
+            resistance_candidates,
+            tolerance=0.015,
         )
 
         support = self._cluster_levels(
-            support_candidates
+            support_candidates,
+            tolerance=0.015,
         )
 
-        # Closest first
-        resistance.sort(
+        # Nearest levels first
+        resistance = sorted(
+            resistance,
             key=lambda x: abs(
                 x - current_price
-            )
+            ),
         )
 
-        support.sort(
+        support = sorted(
+            support,
             key=lambda x: abs(
                 x - current_price
-            )
+            ),
         )
 
         return (
             support[:3],
-            resistance[:3]
+            resistance[:3],
         )
-
-    # ==========================================================
-    # CLUSTER LEVELS
-    # ==========================================================
 
     def _cluster_levels(
         self,
         levels: List[float],
-        tolerance: float = 0.015
+        tolerance: float = 0.02,
     ) -> List[float]:
 
         if not levels:
-
             return []
 
-        clean = []
+        sorted_levels = sorted(
+            float(x)
+            for x in levels
+            if np.isfinite(x)
+            and x > 0
+        )
 
-        for level in levels:
-
-            try:
-
-                value = float(
-                    level
-                )
-
-                if (
-                    np.isfinite(value)
-                    and value > 0
-                ):
-
-                    clean.append(
-                        value
-                    )
-
-            except Exception:
-
-                continue
-
-        if not clean:
-
+        if not sorted_levels:
             return []
 
-        clean.sort()
+        clusters = []
 
-        clusters = [
-            [clean[0]]
+        current_cluster = [
+            sorted_levels[0]
         ]
 
-        for level in clean[1:]:
+        for level in sorted_levels[1:]:
 
-            cluster = clusters[-1]
-
-            average = (
-                sum(cluster)
-                / len(cluster)
+            avg = np.mean(
+                current_cluster
             )
 
             if (
                 abs(
-                    level
-                    - average
+                    level - avg
                 )
                 / max(
-                    average,
-                    1e-9
+                    avg,
+                    EPSILON,
                 )
                 <= tolerance
             ):
 
-                cluster.append(
+                current_cluster.append(
                     level
                 )
 
             else:
 
                 clusters.append(
-                    [level]
+                    float(
+                        np.mean(
+                            current_cluster
+                        )
+                    )
                 )
 
-        return [
-            float(
-                sum(cluster)
-                / len(cluster)
-            )
-            for cluster in clusters
-        ]
+                current_cluster = [
+                    level
+                ]
 
-    # ==========================================================
+        clusters.append(
+            float(
+                np.mean(
+                    current_cluster
+                )
+            )
+        )
+
+        return clusters
+
+    # ========================================================
     # EXPECTED RANGE
-    # ==========================================================
+    # ========================================================
 
     def _calculate_expected_range(
         self,
-        predictions: Dict[str, np.ndarray],
         current_price: float,
-        prices: np.ndarray
-    ) -> Tuple[
-        float,
-        float
-    ]:
+        predictions: Dict[str, np.ndarray],
+        ensemble_prediction: np.ndarray,
+    ) -> Tuple[float, float]:
 
-        candidates = []
-
-        for pred in predictions.values():
-
-            arr = np.asarray(
-                pred,
-                dtype=float
-            )
-
-            arr = arr[
-                np.isfinite(arr)
-            ]
-
-            arr = arr[
-                arr > 0
-            ]
-
-            if len(arr):
-
-                candidates.extend(
-                    arr.tolist()
-                )
-
-        if not candidates:
+        if not predictions:
 
             return (
-                current_price * 1.03,
+                current_price * 1.05,
+                current_price * 0.95,
+            )
+
+        matrix = np.vstack(
+            [
+                np.asarray(
+                    prediction,
+                    dtype=float,
+                )
+                for prediction
+                in predictions.values()
+            ]
+        )
+
+        # Robust quantiles
+        high = float(
+            np.percentile(
+                matrix,
+                90,
+            )
+        )
+
+        low = float(
+            np.percentile(
+                matrix,
+                10,
+            )
+        )
+
+        # Include ensemble
+        high = max(
+            high,
+            float(
+                np.max(
+                    ensemble_prediction
+                )
+            ),
+        )
+
+        low = min(
+            low,
+            float(
+                np.min(
+                    ensemble_prediction
+                )
+            ),
+        )
+
+        # ----------------------------------------------------
+        # CRITICAL SAFETY
+        # ----------------------------------------------------
+
+        low = max(
+            low,
+            current_price * 0.50,
+        )
+
+        high = max(
+            high,
+            current_price * 1.001,
+        )
+
+        # Never return invalid range
+        if low >= high:
+
+            low = (
                 current_price * 0.97
             )
 
-        predicted_high = max(
-            candidates
-        )
-
-        predicted_low = min(
-            candidates
-        )
-
-        # Historical volatility
-        if len(prices) >= 10:
-
-            returns = (
-                np.diff(prices)
-                / prices[:-1]
+            high = (
+                current_price * 1.03
             )
-
-            volatility = float(
-                np.std(
-                    returns
-                )
-            )
-
-        else:
-
-            volatility = 0.02
-
-        volatility = float(
-            np.clip(
-                volatility,
-                0.005,
-                0.10
-            )
-        )
-
-        buffer = (
-            current_price
-            * volatility
-            * 0.50
-        )
-
-        expected_high = max(
-            predicted_high
-            + buffer,
-            current_price
-        )
-
-        expected_low = max(
-            0.0,
-            min(
-                predicted_low
-                - buffer,
-                current_price
-            )
-        )
 
         return (
-            float(expected_high),
-            float(expected_low)
+            float(high),
+            float(low),
         )
 
-    # ==========================================================
-    # DATA QUALITY
-    # ==========================================================
+    # ========================================================
+    # FORECAST SCORE
+    # ========================================================
 
-    def _calculate_data_quality(
+    def _calculate_forecast_score(
         self,
-        prices: np.ndarray
-    ) -> Dict[str, Any]:
+        current_price: float,
+        short_prediction: PricePrediction,
+        trend: str,
+        trend_strength: float,
+        model_agreement: float,
+        data_quality: float,
+        probabilities: Dict[str, float],
+    ) -> float:
 
-        prices = self._safe_price_array(
-            prices
+        predicted_return = (
+            short_prediction.predicted_price
+            / current_price
+            - 1.0
         )
 
-        if len(prices) < 2:
-
-            return {
-                "observations": len(prices),
-                "return_volatility": 0.0,
-                "missing_ratio": 0.0,
-                "quality_score": 0.0
-            }
-
-        returns = (
-            np.diff(prices)
-            / prices[:-1]
+        # Normalize expected return to -1..1
+        return_component = np.clip(
+            predicted_return / 0.05,
+            -1.0,
+            1.0,
         )
 
-        returns = returns[
-            np.isfinite(returns)
-        ]
+        trend_component = 0.0
 
-        volatility = (
-            float(
-                np.std(
-                    returns
-                )
+        if trend == "BULLISH":
+            trend_component = (
+                trend_strength
             )
-            if len(returns)
-            else 0.0
+
+        elif trend == "BEARISH":
+            trend_component = (
+                -trend_strength
+            )
+
+        probability_component = (
+            probabilities["UP"]
+            - probabilities["DOWN"]
         )
 
-        quality = 1.0
+        score = (
+            return_component * 0.45
+            + trend_component * 0.20
+            + probability_component * 0.20
+            + (
+                return_component
+                * model_agreement
+            ) * 0.10
+            + (
+                return_component
+                * data_quality
+            ) * 0.05
+        )
 
-        if len(prices) < 50:
-
-            quality -= 0.25
-
-        if volatility > 0.10:
-
-            quality -= 0.15
-
-        quality = float(
+        return float(
             np.clip(
-                quality,
-                0,
-                1
+                score,
+                -1.0,
+                1.0,
             )
         )
 
-        return {
-            "observations": int(
-                len(prices)
-            ),
-            "return_volatility": volatility,
-            "missing_ratio": 0.0,
-            "quality_score": quality
-        }
+    # ========================================================
+    # ACTION
+    # ========================================================
 
-    # ==========================================================
+    def _forecast_action(
+        self,
+        forecast_score: float,
+        confidence: float,
+        model_agreement: float,
+    ) -> str:
+
+        # ----------------------------------------------------
+        # No strong action when models disagree.
+        # ----------------------------------------------------
+
+        if (
+            model_agreement
+            < self.min_model_agreement
+        ):
+
+            return "HOLD"
+
+        if (
+            confidence
+            < self.min_forecast_confidence
+        ):
+
+            return "HOLD"
+
+        if (
+            forecast_score
+            >= self.strong_buy_threshold
+        ):
+
+            return "STRONG_BUY"
+
+        if (
+            forecast_score
+            >= self.buy_threshold
+        ):
+
+            return "BUY"
+
+        if (
+            forecast_score
+            <= self.strong_sell_threshold
+        ):
+
+            return "STRONG_SELL"
+
+        if (
+            forecast_score
+            <= self.sell_threshold
+        ):
+
+            return "SELL"
+
+        return "HOLD"
+
+    # ========================================================
     # SUMMARY
-    # ==========================================================
+    # ========================================================
 
     def _generate_summary(
         self,
@@ -3524,10 +3398,10 @@ class ForecastAgent:
         current_price: float,
         trend: str,
         trend_strength: float,
-        ensemble_pred: np.ndarray,
         short_pred: PricePrediction,
-        scenarios: Dict[str, Any],
-        data_quality: Dict[str, Any]
+        model_agreement: float,
+        data_quality: float,
+        next_move_probability: Dict[str, float],
     ) -> str:
 
         symbol_name = (
@@ -3536,360 +3410,385 @@ class ForecastAgent:
             .replace("-USDT", "")
         )
 
-        short_change = (
+        change = (
             short_pred.predicted_change_percent
         )
 
-        if trend == "BULLISH":
+        if change > 1.0:
 
-            trend_text = (
-                f"Trend BULLISH "
-                f"dengan strength "
-                f"{trend_strength:.1%}."
+            direction = (
+                f"naik {change:.2f}%"
             )
 
-        elif trend == "BEARISH":
+        elif change < -1.0:
 
-            trend_text = (
-                f"Trend BEARISH "
-                f"dengan strength "
-                f"{trend_strength:.1%}."
+            direction = (
+                f"turun {abs(change):.2f}%"
             )
 
         else:
 
-            trend_text = (
-                "Trend berada dalam "
-                "fase CONSOLIDATING."
+            direction = (
+                "bergerak relatif sideways"
             )
 
-        if short_change > 1:
-
-            direction_text = (
-                f"Model ensemble memperkirakan "
-                f"kenaikan sekitar "
-                f"{short_change:.2f}% "
-                f"pada horizon pendek."
-            )
-
-        elif short_change < -1:
-
-            direction_text = (
-                f"Model ensemble memperkirakan "
-                f"penurunan sekitar "
-                f"{abs(short_change):.2f}% "
-                f"pada horizon pendek."
-            )
-
-        else:
-
-            direction_text = (
-                "Model ensemble memperkirakan "
-                "pergerakan relatif terbatas "
-                "pada horizon pendek."
-            )
-
-        agreement = scenarios.get(
-            "agreement",
-            0.0
-        )
-
-        return (
+        summary = (
             f"Forecast {symbol_name}: "
             f"harga saat ini "
             f"${current_price:.2f}. "
-            f"{trend_text} "
-            f"{direction_text} "
-            f"Prediksi jangka pendek "
-            f"${short_pred.predicted_price:.2f}. "
-            f"Model agreement "
-            f"{agreement:.1%}. "
-            f"Data quality "
-            f"{data_quality.get('quality_score', 0):.1%}."
         )
 
-    # ==========================================================
+        summary += (
+            f"Trend {trend} "
+            f"dengan strength "
+            f"{trend_strength:.1%}. "
+        )
+
+        summary += (
+            f"Forecast jangka pendek "
+            f"${short_pred.predicted_price:.2f} "
+            f"({direction}). "
+        )
+
+        summary += (
+            f"Model agreement "
+            f"{model_agreement:.1%}. "
+        )
+
+        summary += (
+            f"Data quality "
+            f"{data_quality:.1%}. "
+        )
+
+        summary += (
+            f"Probabilitas UP "
+            f"{next_move_probability['UP']:.1%}, "
+            f"DOWN "
+            f"{next_move_probability['DOWN']:.1%}, "
+            f"SIDEWAYS "
+            f"{next_move_probability['SIDEWAYS']:.1%}."
+        )
+
+        return summary
+
+    # ========================================================
     # RECOMMENDATIONS
-    # ==========================================================
+    # ========================================================
 
     def _generate_recommendations(
         self,
+        current_price: float,
         trend: str,
         trend_strength: float,
-        ensemble_pred: np.ndarray,
         short_pred: PricePrediction,
+        model_agreement: float,
         support: List[float],
         resistance: List[float],
-        next_move_probability: Dict[str, float]
+        forecast_action: str,
+        probabilities: Dict[str, float],
     ) -> List[str]:
 
         recommendations = []
 
-        up_prob = next_move_probability.get(
-            "UP",
-            0.33
-        )
-
-        down_prob = next_move_probability.get(
-            "DOWN",
-            0.33
-        )
-
-        sideways_prob = next_move_probability.get(
-            "SIDEWAYS",
-            0.34
-        )
-
-        # ------------------------------------------------------
         # Trend
-        # ------------------------------------------------------
-
         if trend == "BULLISH":
 
             recommendations.append(
-                "Trend bullish; BUY hanya "
-                "jika Risk Engine dan Decision "
-                "Engine memberikan approval."
+                "Trend bullish, tetapi entry tetap membutuhkan confirmation."
             )
 
         elif trend == "BEARISH":
 
             recommendations.append(
-                "Trend bearish; hindari entry "
-                "agresif sebelum confirmation."
+                "Trend bearish, hindari entry agresif sebelum confirmation."
             )
 
         else:
 
             recommendations.append(
-                "Trend konsolidasi; tunggu "
-                "confirmation sebelum entry."
+                "Trend masih konsolidasi; wait and see lebih aman."
             )
 
-        # ------------------------------------------------------
-        # Probability
-        # ------------------------------------------------------
+        # Forecast action
+        recommendations.append(
+            f"Forecast signal: {forecast_action}."
+        )
 
-        if up_prob > 0.55:
+        # Agreement
+        if model_agreement < 0.50:
 
             recommendations.append(
-                f"Probability UP cukup dominan "
-                f"({up_prob:.1%})."
+                "Model disagreement tinggi; jangan menjadikan forecast sebagai sinyal tunggal."
             )
 
-        elif down_prob > 0.55:
+        elif model_agreement >= 0.75:
 
             recommendations.append(
-                f"Probability DOWN cukup dominan "
-                f"({down_prob:.1%})."
+                f"Model agreement relatif kuat ({model_agreement:.1%})."
             )
 
-        else:
-
-            recommendations.append(
-                f"Directional confidence rendah; "
-                f"SIDEWAYS={sideways_prob:.1%}."
-            )
-
-        # ------------------------------------------------------
         # Support
-        # ------------------------------------------------------
-
         if support:
 
-            recommendations.append(
-                f"Support terdekat: "
-                f"${support[0]:.2f}."
+            nearest_support = min(
+                support,
+                key=lambda x: abs(
+                    x - current_price
+                ),
             )
 
-        # ------------------------------------------------------
-        # Resistance
-        # ------------------------------------------------------
+            recommendations.append(
+                f"Support terdekat: ${nearest_support:.2f}."
+            )
 
+        # Resistance
         if resistance:
 
-            recommendations.append(
-                f"Resistance terdekat: "
-                f"${resistance[0]:.2f}."
+            nearest_resistance = min(
+                resistance,
+                key=lambda x: abs(
+                    x - current_price
+                ),
             )
 
-        # ------------------------------------------------------
-        # Forecast
-        # ------------------------------------------------------
-
-        if abs(
-            short_pred.predicted_change_percent
-        ) < 1:
-
             recommendations.append(
-                "Forecast jangka pendek relatif "
-                "sempit; hindari overtrading."
+                f"Resistance terdekat: ${nearest_resistance:.2f}."
             )
 
-        return recommendations[:5]
+        # Direction probability
+        if (
+            probabilities["DOWN"]
+            >= 0.65
+        ):
 
-    # ==========================================================
-    # PATTERN DATABASE
-    # ==========================================================
+            recommendations.append(
+                "Probability DOWN dominan; tunggu confirmation sebelum entry."
+            )
 
-    def _initialize_pattern_database(self):
+        elif (
+            probabilities["UP"]
+            >= 0.65
+        ):
 
-        """
-        Pattern database demo.
+            recommendations.append(
+                "Probability UP dominan; tunggu confirmation sebelum entry."
+            )
 
-        Pattern dibuat dalam normalized shape agar tidak
-        bergantung pada harga absolut.
+        else:
 
-        Penting:
-            Pattern ini hanya fallback/demo.
-            Dalam production sebaiknya database pattern
-            dibangun dari historical market data aktual.
-        """
+            recommendations.append(
+                "Tidak ada probabilitas arah yang cukup dominan."
+            )
 
-        self.pattern_database = [
+        return recommendations[:6]
 
-            {
-                "prices": [
-                    100, 101, 102, 103, 102,
-                    104, 105, 106, 108, 107,
-                    109, 110, 111, 113, 112,
-                    114, 115, 116, 118, 119,
-                    118, 120, 121, 123, 124,
-                    123, 125, 126, 128, 129
-                ],
+    # ========================================================
+    # DATA QUALITY
+    # ========================================================
 
-                "future_prices": [
-                    130,
-                    131,
-                    133,
-                    134,
-                    136,
-                    137,
-                    139
-                ]
-            },
+    def _calculate_data_quality(
+        self,
+        df: pd.DataFrame,
+    ) -> Dict[str, float]:
 
-            {
-                "prices": [
-                    200, 199, 198, 197, 196,
-                    197, 195, 194, 193, 192,
-                    191, 190, 191, 189, 188,
-                    187, 186, 185, 184, 185,
-                    183, 182, 181, 180, 179,
-                    178, 179, 177, 176, 175
-                ],
+        observations = len(df)
 
-                "future_prices": [
-                    174,
-                    173,
-                    171,
-                    170,
-                    169,
-                    168,
-                    166
-                ]
-            }
+        close = (
+            df["Close"]
+            .astype(float)
+        )
 
-        ]
+        returns = (
+            close
+            .pct_change()
+            .replace(
+                [np.inf, -np.inf],
+                np.nan,
+            )
+            .dropna()
+        )
 
-    # ==========================================================
-    # DEFAULT FORECAST
-    # ==========================================================
+        missing_ratio = (
+            float(
+                df["Close"].isna().mean()
+            )
+        )
 
-    def _get_default_forecast(
+        return_volatility = (
+            float(
+                returns.std()
+            )
+            if len(returns) > 1
+            else 0.0
+        )
+
+        observation_score = min(
+            observations / 365.0,
+            1.0,
+        )
+
+        missing_score = max(
+            0.0,
+            1.0 - missing_ratio,
+        )
+
+        volatility_score = 1.0
+
+        if return_volatility > 0.10:
+            volatility_score = 0.70
+
+        if return_volatility > 0.20:
+            volatility_score = 0.40
+
+        quality_score = (
+            observation_score * 0.50
+            + missing_score * 0.30
+            + volatility_score * 0.20
+        )
+
+        return {
+            "observations": float(
+                observations
+            ),
+            "return_volatility": return_volatility,
+            "missing_ratio": missing_ratio,
+            "quality_score": float(
+                np.clip(
+                    quality_score,
+                    0.0,
+                    1.0,
+                )
+            ),
+        }
+
+    # ========================================================
+    # CACHE
+    # ========================================================
+
+    def _cache_key(
         self,
         symbol: str,
-        market_data: Optional[Dict[str, Any]] = None,
-        current_price: Optional[float] = None
-    ) -> ForecastResult:
+    ) -> str:
 
-        if current_price is None:
+        return (
+            f"forecast_v4_{symbol}"
+        )
 
-            current_price = 0.0
+    def _get_cached(
+        self,
+        cache_key: str,
+    ) -> Optional[ForecastResult]:
 
-            if isinstance(
-                market_data,
-                dict
-            ):
+        if cache_key not in self.cache:
+            return None
 
-                try:
-
-                    current_price = float(
-                        market_data.get(
-                            "current_price",
-                            market_data.get(
-                                "price",
-                                0.0
-                            )
-                        )
-                    )
-
-                except Exception:
-
-                    current_price = 0.0
-
-        current_price = max(
-            0.0,
-            current_price
+        result, timestamp = (
+            self.cache[cache_key]
         )
 
         now = datetime.now(
             timezone.utc
         )
 
-        def default_prediction(
-            days: int,
-            horizon: str
-        ):
+        # Normalize naive datetime
+        if timestamp.tzinfo is None:
 
-            return PricePrediction(
-
-                timestamp=(
-                    now
-                    + timedelta(
-                        days=days
-                    )
-                ),
-
-                predicted_price=current_price,
-
-                confidence_interval_lower=(
-                    current_price
-                ),
-
-                confidence_interval_upper=(
-                    current_price
-                ),
-
-                confidence=0.0,
-
-                horizon=horizon,
-
-                predicted_change_percent=0.0
+            timestamp = timestamp.replace(
+                tzinfo=timezone.utc
             )
 
+        if (
+            now - timestamp
+            < self.cache_duration
+        ):
+
+            return result
+
+        del self.cache[
+            cache_key
+        ]
+
+        return None
+
+    def _store_cache(
+        self,
+        cache_key: str,
+        result: ForecastResult,
+    ):
+
+        self.cache[
+            cache_key
+        ] = (
+            result,
+            datetime.now(
+                timezone.utc
+            ),
+        )
+
+    # ========================================================
+    # DEFAULT FORECAST
+    # ========================================================
+
+    def _get_default_forecast(
+        self,
+        symbol: str,
+        current_price: float = 0.0,
+        warnings: Optional[List[str]] = None,
+    ) -> ForecastResult:
+
+        current_price = max(
+            float(current_price),
+            0.0,
+        )
+
+        now = datetime.now(
+            timezone.utc
+        )
+
+        def make_prediction(
+            horizon_name: str,
+        ) -> PricePrediction:
+
+            days = self.forecast_horizons[
+                horizon_name
+            ]
+
+            return PricePrediction(
+                timestamp=now + timedelta(
+                    days=days
+                ),
+                predicted_price=current_price,
+                confidence_interval_lower=(
+                    current_price * 0.95
+                ),
+                confidence_interval_upper=(
+                    current_price * 1.05
+                ),
+                confidence=0.20,
+                horizon=horizon_name.upper(),
+                predicted_change_percent=0.0,
+            )
+
+        short = make_prediction(
+            "short"
+        )
+
+        medium = make_prediction(
+            "medium"
+        )
+
+        long = make_prediction(
+            "long"
+        )
+
         return ForecastResult(
-
             symbol=symbol,
-
             timestamp=now,
-
             current_price=current_price,
 
-            short_term=default_prediction(
-                2,
-                "SHORT"
-            ),
-
-            medium_term=default_prediction(
-                5,
-                "MEDIUM"
-            ),
-
-            long_term=default_prediction(
-                7,
-                "LONG"
-            ),
+            short_term=short,
+            medium_term=medium,
+            long_term=long,
 
             bullish_path=[
                 current_price
@@ -3908,22 +3807,20 @@ class ForecastAgent:
                     "path": [
                         current_price
                     ] * 7,
-                    "probability": 0.25
+                    "probability": 0.33,
                 },
-
                 "bearish": {
                     "path": [
                         current_price
                     ] * 7,
-                    "probability": 0.25
+                    "probability": 0.33,
                 },
-
                 "most_likely": {
                     "path": [
                         current_price
                     ] * 7,
-                    "probability": 0.50
-                }
+                    "probability": 0.34,
+                },
             },
 
             primary_trend="CONSOLIDATING",
@@ -3933,30 +3830,34 @@ class ForecastAgent:
             next_move_probability={
                 "UP": 0.33,
                 "DOWN": 0.33,
-                "SIDEWAYS": 0.34
+                "SIDEWAYS": 0.34,
             },
 
-            expected_high=current_price,
+            expected_high=(
+                current_price * 1.05
+            ),
 
-            expected_low=current_price,
+            expected_low=(
+                current_price * 0.95
+            ),
 
             expected_range={
-                "high": current_price,
-                "low": current_price,
-                "range_percent": 0.0
+                "high": current_price * 1.05,
+                "low": current_price * 0.95,
+                "range_percent": 10.0,
             },
 
             key_resistance=[],
-
             key_support=[],
 
             summary=(
-                "Forecast unavailable. "
-                "System fallback to neutral."
+                "Forecast unavailable; "
+                "defaulting to neutral."
             ),
 
             recommendations=[
-                "Wait for sufficient market data."
+                "Wait for sufficient historical data.",
+                "Do not trade based on forecast alone.",
             ],
 
             model_predictions={},
@@ -3966,42 +3867,109 @@ class ForecastAgent:
             model_status={},
 
             data_quality={
-                "observations": 0,
+                "observations": 0.0,
                 "return_volatility": 0.0,
-                "missing_ratio": 0.0,
-                "quality_score": 0.0
+                "missing_ratio": 1.0,
+                "quality_score": 0.0,
             },
 
-            warnings=[
-                "Forecast fallback activated."
-            ]
+            model_agreement=0.0,
+
+            forecast_score=0.0,
+
+            forecast_action="HOLD",
+
+            warnings=warnings or [],
         )
 
+    # ========================================================
+    # HELPERS
+    # ========================================================
 
-# ==============================================================
-# STANDALONE TEST
-# ==============================================================
+    @staticmethod
+    def _safe_score(
+        value: Any,
+    ) -> float:
+
+        try:
+
+            value = float(
+                np.asarray(
+                    value
+                ).reshape(-1)[0]
+            )
+
+            if not np.isfinite(
+                value
+            ):
+                return 0.0
+
+            return float(
+                np.clip(
+                    value,
+                    -1.0,
+                    1.0,
+                )
+            )
+
+        except Exception:
+
+            return 0.0
+
+    @staticmethod
+    def _safe_float_list(
+        values: Any,
+    ) -> List[float]:
+
+        arr = np.asarray(
+            values,
+            dtype=float,
+        ).reshape(-1)
+
+        return [
+            float(x)
+            for x in arr
+            if np.isfinite(x)
+        ]
 
 
-def print_forecast_result(
-    result: ForecastResult
-):
+# ============================================================
+# TEST / DIRECT EXECUTION
+# ============================================================
+
+if __name__ == "__main__":
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s - "
+            "%(name)s - "
+            "%(levelname)s - "
+            "%(message)s"
+        ),
+    )
+
+    print("=" * 70)
+    print("FORECAST AGENT v4 TEST")
+    print("=" * 70)
+
+    agent = ForecastAgent()
+
+    result = agent.analyze(
+        "BTC-USD"
+    )
 
     print()
-    print("=" * 70)
     print(
-        f"FORECAST RESULT | {result.symbol}"
-    )
-    print("=" * 70)
-
-    print(
-        f"Current Price : "
-        f"${result.current_price:,.2f}"
+        f"Symbol       : {result.symbol}"
     )
 
     print(
-        f"Trend         : "
-        f"{result.primary_trend}"
+        f"Current Price: ${result.current_price:,.2f}"
+    )
+
+    print(
+        f"Trend        : {result.primary_trend}"
     )
 
     print(
@@ -4010,25 +3978,31 @@ def print_forecast_result(
     )
 
     print()
-    print("PRICE FORECAST")
+    print("FORECAST")
     print("-" * 70)
 
     print(
-        f"Short  (2D): "
+        f"Short : "
         f"${result.short_term.predicted_price:,.2f} "
-        f"({result.short_term.predicted_change_percent:+.2f}%)"
+        f"({result.short_term.predicted_change_percent:+.2f}%) "
+        f"confidence="
+        f"{result.short_term.confidence:.1%}"
     )
 
     print(
-        f"Medium (5D): "
+        f"Medium: "
         f"${result.medium_term.predicted_price:,.2f} "
-        f"({result.medium_term.predicted_change_percent:+.2f}%)"
+        f"({result.medium_term.predicted_change_percent:+.2f}%) "
+        f"confidence="
+        f"{result.medium_term.confidence:.1%}"
     )
 
     print(
-        f"Long   (7D): "
+        f"Long  : "
         f"${result.long_term.predicted_price:,.2f} "
-        f"({result.long_term.predicted_change_percent:+.2f}%)"
+        f"({result.long_term.predicted_change_percent:+.2f}%) "
+        f"confidence="
+        f"{result.long_term.confidence:.1%}"
     )
 
     print()
@@ -4040,64 +4014,29 @@ def print_forecast_result(
     ):
 
         print(
-            f"{direction:<10}: "
-            f"{probability:.2%}"
+            f"{direction:10s}: "
+            f"{probability:.1%}"
         )
 
     print()
-    print("EXPECTED RANGE")
+    print("MODEL AGREEMENT")
     print("-" * 70)
 
     print(
-        f"High: "
-        f"${result.expected_high:,.2f}"
-    )
-
-    print(
-        f"Low : "
-        f"${result.expected_low:,.2f}"
-    )
-
-    print(
-        f"Range: "
-        f"{result.expected_range['range_percent']:.2f}%"
+        f"{result.model_agreement:.1%}"
     )
 
     print()
-    print("KEY LEVELS")
+    print("FORECAST SCORE")
     print("-" * 70)
 
-    if result.key_support:
+    print(
+        f"{result.forecast_score:+.4f}"
+    )
 
-        print(
-            "Support    : "
-            + ", ".join(
-                f"${x:,.2f}"
-                for x in result.key_support
-            )
-        )
-
-    else:
-
-        print(
-            "Support    : None"
-        )
-
-    if result.key_resistance:
-
-        print(
-            "Resistance  : "
-            + ", ".join(
-                f"${x:,.2f}"
-                for x in result.key_resistance
-            )
-        )
-
-    else:
-
-        print(
-            "Resistance  : None"
-        )
+    print(
+        f"Action: {result.forecast_action}"
+    )
 
     print()
     print("MODEL STATUS")
@@ -4108,38 +4047,51 @@ def print_forecast_result(
     ):
 
         print(
-            f"{model:<25}: {status}"
+            f"{model:25s}: "
+            f"{status}"
         )
 
     print()
-    print("MODEL WEIGHTS")
+    print("MODEL PREDICTIONS")
     print("-" * 70)
 
-    for model, weight in (
-        result.model_weights.items()
+    for model, prediction in (
+        result.model_predictions.items()
     ):
 
+        first = (
+            prediction[0]
+            if prediction
+            else result.current_price
+        )
+
+        last = (
+            prediction[-1]
+            if prediction
+            else result.current_price
+        )
+
         print(
-            f"{model:<25}: {weight:.2%}"
+            f"{model:25s}: "
+            f"${first:,.2f} -> "
+            f"${last:,.2f}"
         )
 
     print()
-    print("DATA QUALITY")
+    print("EXPECTED RANGE")
     print("-" * 70)
 
     print(
-        f"Observations : "
-        f"{result.data_quality.get('observations', 0)}"
+        f"High: ${result.expected_high:,.2f}"
     )
 
     print(
-        f"Volatility   : "
-        f"{result.data_quality.get('return_volatility', 0):.2%}"
+        f"Low : ${result.expected_low:,.2f}"
     )
 
     print(
-        f"Quality      : "
-        f"{result.data_quality.get('quality_score', 0):.2%}"
+        f"Range: "
+        f"{result.expected_range['range_percent']:.2f}%"
     )
 
     print()
@@ -4176,51 +4128,5 @@ def print_forecast_result(
 
     print()
     print("=" * 70)
-
-
-# ==============================================================
-# MAIN
-# ==============================================================
-
-
-def main():
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(name)s | "
-            "%(message)s"
-        )
-    )
-
-    print()
+    print("FORECAST AGENT v4 TEST COMPLETE")
     print("=" * 70)
-    print(
-        "AI TRADING FORECAST AGENT v4 TEST"
-    )
-    print("=" * 70)
-
-    agent = ForecastAgent(
-        {
-            "history_period": "1y",
-            "history_interval": "1d",
-            "monte_carlo_simulations": 500,
-            "random_state": 42,
-            "enable_cache": True
-        }
-    )
-
-    result = agent.analyze(
-        "BTC-USD"
-    )
-
-    print_forecast_result(
-        result
-    )
-
-
-if __name__ == "__main__":
-
-    main()
