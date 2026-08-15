@@ -618,34 +618,28 @@ class TechnicalAgent:
 
         try:
 
-            ticker = yf.Ticker(
-                symbol
-            )
+          ticker = yf.Ticker(symbol)
 
-            # ------------------------------------------------
-            # Primary
-            # ------------------------------------------------
+# Gunakan data 100 hari / 1 jam secara konsisten
+df = ticker.history(
+    period="100d",
+    interval="1h",
+    auto_adjust=False
+)
 
-            df = ticker.history(
-                period="100d",
-                interval="1h"
-            )
+if df.empty:
+    logger.warning(
+        f"No hourly data available for {symbol}, "
+        f"falling back to daily data"
+    )
 
-            if df is None or df.empty:
+    df = ticker.history(
+        period="100d",
+        interval="1d",
+        auto_adjust=False
+    )
 
-                # --------------------------------------------
-                # Fallback daily
-                # --------------------------------------------
-
-                df = ticker.history(
-                    period="100d"
-                )
-
-            if df is None or df.empty:
-
-                return None
-
-            return df
+return df
 
         except Exception as e:
 
