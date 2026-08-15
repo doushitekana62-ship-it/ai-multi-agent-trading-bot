@@ -1,15 +1,17 @@
 """
-unified_market_data.py - Unified Market Snapshot untuk semua agent
+core/unified_market_data.py - MODIFIED
 
-Menyediakan data pasar yang konsisten untuk seluruh pipeline.
-Ini adalah SINGLE SOURCE OF TRUTH untuk semua data pasar.
+Single Source of Truth untuk semua market data.
+Sekarang terintegrasi dengan MarketDataAdapter.
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
 import logging
 import math
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any
+
+from core.market_data_adapter import MarketDataAdapter, get_market_data_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -23,52 +25,73 @@ class OHLCV:
     low: float
     close: float
     volume: float
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume
+        }
+    
+    def is_valid(self) -> bool:
+        return (
+            self.open > 0 and
+            self.high > 0 and
+            self.low > 0 and
+            self.close > 0 and
+            self.volume >= 0
+        )
 
 
 @dataclass
 class UnifiedMarketSnapshot:
     """
-    Unified Market Snapshot - Sumber data tunggal untuk semua agent.
+    UNIFIED MARKET SNAPSHOT - Single Source of Truth.
     
-    Semua agent akan menggunakan snapshot ini untuk analisis,
-    sehingga tidak ada perbedaan harga/volume/data antar-agent.
+    Semua agent dan komponen menggunakan snapshot ini.
     """
     symbol: str
     timestamp: datetime
-    timeframe: str  # "1m", "5m", "15m", "1h", "4h", "1d"
+    timeframe: str
     
-    # Current price - SINGLE SOURCE OF TRUTH
+    # Current price
     current_price: float
     
-    # OHLCV data (historical)
+    # OHLCV data
     ohlcv_data: List[OHLCV] = field(default_factory=list)
     
-    # Derived data
+    # Derived metrics
     high_24h: Optional[float] = None
     low_24h: Optional[float] = None
     volume_24h: Optional[float] = None
     change_24h: Optional[float] = None
     change_percent_24h: Optional[float] = None
     
-    # Fear & Greed Index (jika tersedia)
-    fear_greed_index: Optional[float] = None  # 0-100
-    fear_greed_timestamp: Optional[datetime] = None
+    # Sentiment data
+    fear_greed_index: Optional[float] = None
     
     # Market context
-    market_phase: str = "NEUTRAL"  # BULLISH, BEARISH, NEUTRAL, VOLATILE
+    market_phase: str = "NEUTRAL"
     volatility: Optional[float] = None
     
-    # Metadata
-    data_quality_score: float = 1.0  # 0-1, seberapa lengkap data
+    # Data quality
+    data_quality_score: float = 1.0
     missing_fields: List[str] = field(default_factory=list)
+    source: str = "unified_market_data"
+    is_fresh: bool = True
+    age_seconds: float = 0.0
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for agent consumption."""
+        """Convert to dict untuk kompatibilitas dengan agents existing."""
         return {
             "symbol": self.symbol,
             "timestamp": self.timestamp.isoformat(),
             "timeframe": self.timeframe,
             "current_price": self.current_price,
+            "unified_price": self.current_price,  # Explicit marker
             "high_24h": self.high_24h,
             "low_24h": self.low_24h,
             "volume_24h": self.volume_24h,
@@ -79,169 +102,155 @@ class UnifiedMarketSnapshot:
             "volatility": self.volatility,
             "data_quality_score": self.data_quality_score,
             "missing_fields": self.missing_fields,
-            "ohlcv_count": len(self.ohlcv_data),
-            "ohlcv": [
-                {
-                    "timestamp": o.timestamp.isoformat(),
-                    "open": o.open,
-                    "high": o.high,
-                    "low": o.low,
-                    "close": o.close,
-                    "volume": o.volume
-                }
-                for o in self.ohlcv_data[-100:]  # Only last 100 points
-            ]
+            "source": self.source,
+            "is_fresh": self.is_fresh,
+            "ohlcv": [o.to_dict() for o in self.ohlcv_data[-100:]],
+            "ohlcv_count": len(self.ohlcv_data)
         }
     
-    def get_price_consistency_check(self) -> Dict[str, Any]:
-        """Check price consistency across data sources."""
-        return {
-            "current_price": self.current_price,
-            "last_close": self.ohlcv_data[-1].close if self.ohlcv_data else None,
-            "price_match": self.current_price == (self.ohlcv_data[-1].close if self.ohlcv_data else None),
-            "data_points": len(self.ohlcv_data),
-            "missing_fields": self.missing_fields,
-            "quality_score": self.data_quality_score
-        }
+    def get_price(self) -> float:
+        """Get unified price."""
+        return self.current_price
     
-    def get_latest_ohlcv(self) -> Optional[OHLCV]:
-        """Get latest OHLCV data point."""
-        return self.ohlcv_data[-1] if self.ohlcv_data else None
+    def get_ohlcv(self, limit: Optional[int] = None) -> List[OHLCV]:
+        """Get OHLCV data."""
+        if limit and limit > 0:
+            return self.ohlcv_data[-limit:]
+        return self.ohlcv_data
     
-    def get_ohlcv_for_period(self, periods: int = 20) -> List[OHLCV]:
-        """Get last N OHLCV data points."""
-        return self.ohlcv_data[-periods:] if self.ohlcv_data else []
+    def is_valid(self) -> bool:
+        """Check if snapshot is valid."""
+        return (
+            self.current_price > 0 and
+            self.data_quality_score >= 0.3 and
+            self.timestamp is not None and
+            self.is_fresh
+        )
+    
+    def is_stale(self, max_age_seconds: int = 60) -> bool:
+        """Check if snapshot is stale."""
+        age = (datetime.now(timezone.utc) - self.timestamp).total_seconds()
+        self.age_seconds = age
+        return age > max_age_seconds
 
 
 class UnifiedMarketDataProvider:
     """
-    Provider untuk Unified Market Snapshot.
-    Memastikan semua agent menggunakan data yang sama.
+    PROVIDER - Single access point untuk semua market data.
+    
+    Terintegrasi dengan MarketDataAdapter untuk fetching data.
     """
     
-    def __init__(self, cache_ttl: int = 30):
-        """
-        Initialize provider.
-        
-        Args:
-            cache_ttl: Cache TTL in seconds (default 30)
-        """
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
         self._cache: Dict[str, UnifiedMarketSnapshot] = {}
         self._cache_timestamp: Dict[str, datetime] = {}
-        self._cache_ttl = cache_ttl
+        self._cache_ttl = self.config.get("cache_ttl", 30)
         self._snapshot_counter = 0
         
-        logger.info("UnifiedMarketDataProvider initialized with TTL=%ds", cache_ttl)
+        # Market Data Adapter
+        self.adapter = get_market_data_adapter(config)
+        
+        logger.info("UnifiedMarketDataProvider initialized")
     
-    def create_snapshot(
+    def refresh_snapshot(
         self,
         symbol: str,
-        current_price: float,
-        ohlcv_data: Optional[List[Dict[str, Any]]] = None,
         timeframe: str = "1h",
-        fear_greed_index: Optional[float] = None,
-        volume_24h: Optional[float] = None,
-        high_24h: Optional[float] = None,
-        low_24h: Optional[float] = None,
-        force_refresh: bool = False
-    ) -> UnifiedMarketSnapshot:
+        limit: int = 100,
+        force: bool = False
+    ) -> Optional[UnifiedMarketSnapshot]:
         """
-        Create unified market snapshot.
+        Refresh snapshot from exchange.
         
         Args:
             symbol: Trading symbol
-            current_price: Current price (SINGLE SOURCE OF TRUTH)
-            ohlcv_data: List of OHLCV data points
-            timeframe: Timeframe for analysis
-            fear_greed_index: Fear & Greed Index (0-100)
-            volume_24h: 24h volume
-            high_24h: 24h high
-            low_24h: 24h low
-            force_refresh: Force refresh even if cache is valid
+            timeframe: Timeframe for OHLCV
+            limit: Number of candles
+            force: Force refresh even if cache is valid
         
         Returns:
-            UnifiedMarketSnapshot
+            UnifiedMarketSnapshot atau None jika gagal
         """
-        self._snapshot_counter += 1
-        timestamp = datetime.now(timezone.utc)
+        symbol = symbol.upper()
         
-        # Check cache first
-        if not force_refresh:
-            cached = self.get_snapshot(symbol)
-            if cached is not None:
+        # Check cache
+        if not force:
+            cached = self._get_cached(symbol)
+            if cached is not None and not cached.is_stale(self._cache_ttl):
                 logger.debug("Using cached snapshot for %s", symbol)
                 return cached
         
-        # Parse OHLCV data
-        parsed_ohlcv = []
-        missing_fields = []
-        data_quality_score = 1.0
+        # Fetch from adapter
+        response = self.adapter.get_market_data(symbol, timeframe, limit)
         
-        if ohlcv_data:
-            for item in ohlcv_data:
+        if not response.success or response.current_price is None:
+            logger.error("Failed to refresh snapshot for %s: %s",
+                        symbol, response.error)
+            return None
+        
+        # Create snapshot from response
+        snapshot = self._create_snapshot_from_response(response, timeframe)
+        
+        # Cache
+        self._cache[symbol] = snapshot
+        self._cache_timestamp[symbol] = snapshot.timestamp
+        
+        logger.info("Refreshed snapshot for %s: price=%.2f, quality=%.2f",
+                   symbol, snapshot.current_price, snapshot.data_quality_score)
+        
+        return snapshot
+    
+    def _create_snapshot_from_response(
+        self,
+        response,
+        timeframe: str
+    ) -> UnifiedMarketSnapshot:
+        """Create snapshot from MarketDataResponse."""
+        self._snapshot_counter += 1
+        
+        # Parse OHLCV
+        ohlcv_list = []
+        if response.ohlcv:
+            for item in response.ohlcv:
                 try:
                     if isinstance(item, dict):
                         ohlcv = OHLCV(
-                            timestamp=item.get("timestamp", timestamp),
+                            timestamp=item.get("timestamp", datetime.now(timezone.utc)),
                             open=float(item.get("open", 0)),
                             high=float(item.get("high", 0)),
                             low=float(item.get("low", 0)),
                             close=float(item.get("close", 0)),
                             volume=float(item.get("volume", 0))
                         )
-                        parsed_ohlcv.append(ohlcv)
-                    elif hasattr(item, "open"):
-                        ohlcv = OHLCV(
-                            timestamp=getattr(item, "timestamp", timestamp),
-                            open=float(getattr(item, "open", 0)),
-                            high=float(getattr(item, "high", 0)),
-                            low=float(getattr(item, "low", 0)),
-                            close=float(getattr(item, "close", 0)),
-                            volume=float(getattr(item, "volume", 0))
-                        )
-                        parsed_ohlcv.append(ohlcv)
+                        if ohlcv.is_valid():
+                            ohlcv_list.append(ohlcv)
                 except (TypeError, ValueError) as e:
-                    logger.warning("Error parsing OHLCV data: %s", e)
-                    data_quality_score -= 0.05
+                    logger.warning("Error parsing OHLCV: %s", e)
         
-        # Check missing fields
-        if not parsed_ohlcv:
-            missing_fields.append("ohlcv_data")
-            data_quality_score -= 0.3
-        
-        if fear_greed_index is None or fear_greed_index == 0:
-            missing_fields.append("fear_greed_index")
-            data_quality_score -= 0.1
-        
-        if volume_24h is None or volume_24h == 0:
-            missing_fields.append("volume_24h")
-            data_quality_score -= 0.05
-        
-        # Calculate derived metrics
+        # Calculate metrics
         change_24h = None
         change_percent_24h = None
         volatility = None
         
-        if len(parsed_ohlcv) > 1:
-            # 24h change (using last day data)
-            last_24h = parsed_ohlcv[-1]
-            first_24h = parsed_ohlcv[0]
-            if first_24h.close > 0:
-                change_24h = last_24h.close - first_24h.close
-                change_percent_24h = (change_24h / first_24h.close) * 100
+        if len(ohlcv_list) > 1:
+            last = ohlcv_list[-1]
+            first = ohlcv_list[0]
+            if first.close > 0:
+                change_24h = last.close - first.close
+                change_percent_24h = (change_24h / first.close) * 100
             
-            # Volatility (using standard deviation of returns)
             returns = []
-            for i in range(1, len(parsed_ohlcv)):
-                if parsed_ohlcv[i-1].close > 0:
-                    ret = (parsed_ohlcv[i].close - parsed_ohlcv[i-1].close) / parsed_ohlcv[i-1].close
+            for i in range(1, len(ohlcv_list)):
+                if ohlcv_list[i-1].close > 0:
+                    ret = (ohlcv_list[i].close - ohlcv_list[i-1].close) / ohlcv_list[i-1].close
                     returns.append(ret)
             if returns:
                 mean = sum(returns) / len(returns)
                 variance = sum((r - mean) ** 2 for r in returns) / len(returns)
                 volatility = math.sqrt(variance)
         
-        # Determine market phase
+        # Market phase
         market_phase = "NEUTRAL"
         if change_percent_24h is not None:
             if change_percent_24h > 2.0:
@@ -251,77 +260,102 @@ class UnifiedMarketDataProvider:
             elif volatility and volatility > 0.03:
                 market_phase = "VOLATILE"
         
-        # Calculate volume if 24h volume not provided
-        if volume_24h is None or volume_24h == 0:
-            if parsed_ohlcv:
-                volume_24h = sum(o.volume for o in parsed_ohlcv[-24:])  # Last 24 bars
+        # Quality score
+        quality_score = 1.0
+        missing_fields = []
         
-        # Clamp quality score
-        data_quality_score = max(0.0, min(1.0, data_quality_score))
+        if not ohlcv_list:
+            missing_fields.append("ohlcv_data")
+            quality_score -= 0.3
         
-        # If data quality is too low, warn
-        if data_quality_score < 0.5:
-            logger.warning("Low data quality for %s: %.2f, missing: %s", 
-                          symbol, data_quality_score, missing_fields)
+        if response.volume_24h is None or response.volume_24h == 0:
+            missing_fields.append("volume_24h")
+            quality_score -= 0.05
         
-        snapshot = UnifiedMarketSnapshot(
-            symbol=symbol.upper(),
-            timestamp=timestamp,
+        quality_score = max(0.0, min(1.0, quality_score))
+        
+        return UnifiedMarketSnapshot(
+            symbol=response.symbol,
+            timestamp=response.timestamp,
             timeframe=timeframe,
-            current_price=float(current_price),
-            ohlcv_data=parsed_ohlcv,
-            high_24h=high_24h or (parsed_ohlcv[-1].high if parsed_ohlcv else None),
-            low_24h=low_24h or (parsed_ohlcv[-1].low if parsed_ohlcv else None),
-            volume_24h=volume_24h,
+            current_price=float(response.current_price),
+            ohlcv_data=ohlcv_list,
+            high_24h=response.high_24h,
+            low_24h=response.low_24h,
+            volume_24h=response.volume_24h,
             change_24h=change_24h,
             change_percent_24h=change_percent_24h,
-            fear_greed_index=fear_greed_index,
             market_phase=market_phase,
             volatility=volatility,
-            data_quality_score=data_quality_score,
-            missing_fields=missing_fields
+            data_quality_score=quality_score,
+            missing_fields=missing_fields,
+            source=response.source,
+            is_fresh=True,
+            age_seconds=0.0
         )
-        
-        # Cache the snapshot
-        self._cache[symbol] = snapshot
-        self._cache_timestamp[symbol] = timestamp
-        
-        logger.info("Created unified snapshot #%d for %s: price=%.2f, quality=%.2f, missing=%s",
-                   self._snapshot_counter, symbol, current_price, data_quality_score, missing_fields)
-        
-        return snapshot
     
-    def get_snapshot(self, symbol: str) -> Optional[UnifiedMarketSnapshot]:
-        """Get cached snapshot if still valid."""
-        symbol = symbol.upper()
-        if symbol in self._cache:
-            cached_time = self._cache_timestamp.get(symbol)
-            if cached_time:
-                age = (datetime.now(timezone.utc) - cached_time).total_seconds()
-                if age < self._cache_ttl:
-                    return self._cache[symbol]
-        return None
-    
-    def update_price(self, symbol: str, new_price: float) -> Optional[UnifiedMarketSnapshot]:
-        """
-        Update price in existing snapshot without recreating everything.
-        
-        Args:
-            symbol: Trading symbol
-            new_price: New current price
-        
-        Returns:
-            Updated snapshot or None if not in cache
-        """
+    def _get_cached(self, symbol: str) -> Optional[UnifiedMarketSnapshot]:
+        """Get cached snapshot if valid."""
         symbol = symbol.upper()
         if symbol in self._cache:
             snapshot = self._cache[symbol]
-            snapshot.current_price = float(new_price)
-            snapshot.timestamp = datetime.now(timezone.utc)
-            self._cache_timestamp[symbol] = snapshot.timestamp
-            logger.debug("Updated price for %s: %.2f", symbol, new_price)
-            return snapshot
+            if snapshot.is_valid() and not snapshot.is_stale(self._cache_ttl):
+                return snapshot
         return None
+    
+    def get_snapshot(self, symbol: str) -> Optional[UnifiedMarketSnapshot]:
+        """Get snapshot from cache."""
+        return self._get_cached(symbol)
+    
+    def create_snapshot_from_market_data(
+        self,
+        symbol: str,
+        market_data: Dict[str, Any]
+    ) -> UnifiedMarketSnapshot:
+        """
+        Create snapshot from existing market_data dict.
+        
+        INI ADALAH ADAPTER - Untuk kompatibilitas dengan code existing.
+        """
+        symbol = symbol.upper()
+        
+        return UnifiedMarketSnapshot(
+            symbol=symbol,
+            timestamp=datetime.now(timezone.utc),
+            timeframe=market_data.get("timeframe", "1h"),
+            current_price=float(market_data.get("current_price", 0)),
+            ohlcv_data=self._parse_ohlcv_from_dict(market_data.get("ohlcv", [])),
+            high_24h=market_data.get("high_24h"),
+            low_24h=market_data.get("low_24h"),
+            volume_24h=market_data.get("volume_24h"),
+            fear_greed_index=market_data.get("fear_greed_index"),
+            market_phase=market_data.get("market_phase", "NEUTRAL"),
+            volatility=market_data.get("volatility"),
+            data_quality_score=market_data.get("data_quality_score", 0.5),
+            missing_fields=market_data.get("missing_fields", []),
+            source="legacy_market_data",
+            is_fresh=True,
+            age_seconds=0.0
+        )
+    
+    def _parse_ohlcv_from_dict(self, data: List[Dict]) -> List[OHLCV]:
+        """Parse OHLCV from dict list."""
+        ohlcv_list = []
+        for item in data or []:
+            try:
+                ohlcv = OHLCV(
+                    timestamp=item.get("timestamp", datetime.now(timezone.utc)),
+                    open=float(item.get("open", 0)),
+                    high=float(item.get("high", 0)),
+                    low=float(item.get("low", 0)),
+                    close=float(item.get("close", 0)),
+                    volume=float(item.get("volume", 0))
+                )
+                if ohlcv.is_valid():
+                    ohlcv_list.append(ohlcv)
+            except (TypeError, ValueError):
+                continue
+        return ohlcv_list
     
     def clear_cache(self):
         """Clear all cache."""
@@ -339,67 +373,37 @@ class UnifiedMarketDataProvider:
         }
 
 
-# Global instance for easy import
-market_data_provider = UnifiedMarketDataProvider()
+# ============================================================
+# COMPATIBILITY LAYER - Untuk kompatibilitas dengan code existing
+# ============================================================
+
+def get_market_data_for_agent(snapshot: UnifiedMarketSnapshot) -> Dict[str, Any]:
+    """Convert snapshot ke format yang kompatibel dengan agents existing."""
+    return snapshot.to_dict()
+
+
+def create_snapshot_from_market_data(
+    provider: UnifiedMarketDataProvider,
+    symbol: str,
+    market_data: Dict[str, Any]
+) -> UnifiedMarketSnapshot:
+    """Create snapshot dari market_data existing."""
+    return provider.create_snapshot_from_market_data(symbol, market_data)
 
 
 # ============================================================
-# TEST
+# SINGLETON INSTANCE
 # ============================================================
 
-if __name__ == "__main__":
-    import json
-    
-    logging.basicConfig(level=logging.INFO)
-    
-    print("=" * 70)
-    print("UNIFIED MARKET DATA PROVIDER TEST")
-    print("=" * 70)
-    
-    provider = UnifiedMarketDataProvider()
-    
-    # Create sample OHLCV data
-    base_price = 62760.21
-    sample_ohlcv = []
-    for i in range(100):
-        price = base_price * (1 + 0.001 * math.sin(i / 10) + 0.0005 * math.cos(i / 5))
-        sample_ohlcv.append({
-            "timestamp": datetime.now(timezone.utc),
-            "open": price * 0.999,
-            "high": price * 1.002,
-            "low": price * 0.998,
-            "close": price,
-            "volume": 1000 + 500 * (1 + math.sin(i / 20))
-        })
-    
-    # Create snapshot
-    snapshot = provider.create_snapshot(
-        symbol="BTC-USD",
-        current_price=base_price,
-        ohlcv_data=sample_ohlcv,
-        timeframe="1h",
-        fear_greed_index=45,
-        volume_24h=15000000,
-        high_24h=base_price * 1.03,
-        low_24h=base_price * 0.97
-    )
-    
-    print("\n--- SNAPSHOT CREATED ---")
-    print(f"Symbol: {snapshot.symbol}")
-    print(f"Price: ${snapshot.current_price:.2f}")
-    print(f"Market Phase: {snapshot.market_phase}")
-    print(f"Volatility: {snapshot.volatility:.4f}")
-    print(f"Data Quality: {snapshot.data_quality_score:.2%}")
-    print(f"Missing Fields: {snapshot.missing_fields}")
-    print(f"OHLCV Count: {len(snapshot.ohlcv_data)}")
-    
-    print("\n--- SNAPSHOT TO DICT ---")
-    snapshot_dict = snapshot.to_dict()
-    print(json.dumps(snapshot_dict, indent=2, default=str)[:1000] + "...")
-    
-    print("\n--- PROVIDER STATS ---")
-    print(json.dumps(provider.get_stats(), indent=2))
-    
-    print("\n" + "=" * 70)
-    print("TEST COMPLETED")
-    print("=" * 70)
+_market_data_provider = None
+
+def get_market_data_provider(config: Optional[Dict] = None) -> UnifiedMarketDataProvider:
+    """Get singleton instance of UnifiedMarketDataProvider."""
+    global _market_data_provider
+    if _market_data_provider is None:
+        _market_data_provider = UnifiedMarketDataProvider(config)
+    return _market_data_provider
+
+
+# Global instance untuk backward compatibility
+market_data_provider = get_market_data_provider()
