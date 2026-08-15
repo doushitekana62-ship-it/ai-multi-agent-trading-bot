@@ -1,6 +1,6 @@
 """
 Orchestrator - AI Decision Coordination Layer
-Dengan perbaikan untuk menangani sinyal mixed dan meningkatkan confidence
+FULLY INTEGRATED WITH AGENTS
 """
 
 import asyncio
@@ -8,6 +8,13 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
+
+# Import agents
+from agents.agent_sentiment import SentimentAgent, SentimentResult
+from agents.agent_technical import TechnicalAgent, TechnicalResult
+from agents.agent_decision import DecisionAgent, DecisionResult
+from agents.agent_reflector import ReflectorAgent, ReflectionResult, TradeRecord
+from agents.agent_forecast import ForecastAgent, ForecastResult
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +25,11 @@ class OrchestratorResult:
     timestamp: datetime
     symbol: str
     current_price: float
-    sentiment: Optional[Any]
-    technical: Optional[Any]
-    decision: Optional[Any]
-    reflection: Optional[Any]
-    forecast: Optional[Any]
+    sentiment: Optional[SentimentResult]
+    technical: Optional[TechnicalResult]
+    decision: Optional[DecisionResult]
+    reflection: Optional[ReflectionResult]
+    forecast: Optional[ForecastResult]
     consensus_action: str
     consensus_score: float
     agent_votes: Dict[str, str]
@@ -43,6 +50,16 @@ class Orchestrator:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
+        
+        # ============================================================
+        # INITIALIZE AGENTS - FIXED
+        # ============================================================
+        
+        self.sentiment_agent = SentimentAgent()
+        self.technical_agent = TechnicalAgent()
+        self.decision_agent = DecisionAgent()
+        self.reflector_agent = ReflectorAgent()
+        self.forecast_agent = ForecastAgent()
         
         # Voting thresholds
         self.voting_thresholds = {
@@ -78,7 +95,7 @@ class Orchestrator:
         self.history: List[OrchestratorResult] = []
         self.max_history = int(config.get("max_history", 100))
         
-        logger.info("Orchestrator initialized successfully")
+        logger.info("Orchestrator initialized successfully with agents")
 
     # ============================================================
     # PUBLIC ANALYZE
@@ -90,36 +107,54 @@ class Orchestrator:
         market_data: Optional[Dict[str, Any]] = None
     ) -> OrchestratorResult:
         """
-        Menjalankan seluruh pipeline analisis.
+        Menjalankan seluruh pipeline analisis dengan agents.
         """
         logger.info("Starting analysis for %s", symbol)
         market_data = market_data.copy() if isinstance(market_data, dict) else {}
         
         try:
-            # STEP 1: Base agents
+            # ============================================================
+            # STEP 1: Base Agents (Sentiment + Technical) - PARALLEL
+            # ============================================================
+            
             sentiment_result, technical_result = await self._run_base_agents(
                 symbol, market_data
             )
             
-            # STEP 2: Decision
+            # ============================================================
+            # STEP 2: Decision Agent
+            # ============================================================
+            
             decision_result = await self._run_decision(
                 symbol, sentiment_result, technical_result, market_data
             )
             
-            # STEP 3: Forecast
+            # ============================================================
+            # STEP 3: Forecast Agent
+            # ============================================================
+            
             forecast_result = await self._run_forecast(
                 symbol, sentiment_result, technical_result, market_data
             )
             
-            # STEP 4: Reflection
+            # ============================================================
+            # STEP 4: Reflection Agent
+            # ============================================================
+            
             reflection_result = await self._run_reflection(symbol, market_data)
             
+            # ============================================================
             # STEP 5: Current price
+            # ============================================================
+            
             current_price = self._get_current_price(
                 market_data, technical_result, forecast_result
             )
             
+            # ============================================================
             # STEP 6: Weighted consensus
+            # ============================================================
+            
             consensus_action, consensus_score = self._perform_voting(
                 sentiment=sentiment_result,
                 technical=technical_result,
@@ -127,7 +162,10 @@ class Orchestrator:
                 forecast=forecast_result
             )
             
+            # ============================================================
             # STEP 7: Agent votes
+            # ============================================================
+            
             agent_votes = self._get_agent_votes(
                 sentiment=sentiment_result,
                 technical=technical_result,
@@ -135,7 +173,10 @@ class Orchestrator:
                 forecast=forecast_result
             )
             
+            # ============================================================
             # STEP 8: Final decision
+            # ============================================================
+            
             final_action, final_confidence, decision_score, confidence_components = \
                 self._determine_final_decision(
                     decision=decision_result,
@@ -146,21 +187,30 @@ class Orchestrator:
                     forecast=forecast_result
                 )
             
+            # ============================================================
             # STEP 9: Preliminary position size
+            # ============================================================
+            
             position_size = self._calculate_position_size(
                 confidence=final_confidence,
                 decision=decision_result,
                 action=final_action
             )
             
+            # ============================================================
             # STEP 10: Preliminary SL / TP
+            # ============================================================
+            
             stop_loss, take_profit = self._calculate_sl_tp(
                 technical=technical_result,
                 action=final_action,
                 current_price=current_price
             )
             
+            # ============================================================
             # STEP 11: Market scores
+            # ============================================================
+            
             market_scores = self._build_market_scores(
                 sentiment=sentiment_result,
                 technical=technical_result,
@@ -169,7 +219,10 @@ class Orchestrator:
                 consensus_score=consensus_score
             )
             
+            # ============================================================
             # STEP 12: Execution reason
+            # ============================================================
+            
             consensus_strength = abs(consensus_score)
             agreement = self._calculate_agent_agreement(agent_votes)
             
@@ -186,7 +239,10 @@ class Orchestrator:
             else:
                 execution_reason = f"Executing {final_action} with {final_confidence:.1%} confidence"
             
+            # ============================================================
             # STEP 13: Summary
+            # ============================================================
+            
             summary = self._generate_summary(
                 symbol=symbol,
                 current_price=current_price,
@@ -201,7 +257,10 @@ class Orchestrator:
                 execution_reason=execution_reason
             )
             
+            # ============================================================
             # STEP 14: Build result
+            # ============================================================
+            
             result = OrchestratorResult(
                 timestamp=datetime.now(timezone.utc),
                 symbol=symbol,
@@ -226,7 +285,10 @@ class Orchestrator:
                 execution_reason=execution_reason
             )
             
+            # ============================================================
             # STEP 15: Save history
+            # ============================================================
+            
             self.history.append(result)
             if len(self.history) > self.max_history:
                 self.history.pop(0)
@@ -241,25 +303,106 @@ class Orchestrator:
             return self._get_default_result(symbol)
 
     # ============================================================
-    # BASE AGENTS - MOCK IMPLEMENTATIONS
+    # BASE AGENTS - FULL IMPLEMENTATION
     # ============================================================
     
-    async def _run_base_agents(self, symbol: str, market_data: Dict) -> Tuple[Any, Any]:
-        """Run sentiment and technical agents in parallel."""
-        # Mock implementation - return None
-        return None, None
+    async def _run_base_agents(
+        self,
+        symbol: str,
+        market_data: Dict[str, Any]
+    ) -> Tuple[Optional[SentimentResult], Optional[TechnicalResult]]:
+        """
+        Run Sentiment + Technical agents in parallel.
+        """
+        tasks = [
+            asyncio.to_thread(self.sentiment_agent.analyze, symbol, market_data),
+            asyncio.to_thread(self.technical_agent.analyze, symbol, market_data),
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        sentiment_result = None
+        technical_result = None
+        
+        # Sentiment
+        if len(results) > 0 and not isinstance(results[0], Exception):
+            sentiment_result = results[0]
+        else:
+            error = results[0] if results else "Unknown error"
+            logger.error("Sentiment agent failed: %s", error)
+            
+        # Technical
+        if len(results) > 1 and not isinstance(results[1], Exception):
+            technical_result = results[1]
+        else:
+            error = results[1] if len(results) > 1 else "Unknown error"
+            logger.error("Technical agent failed: %s", error)
+            
+        return sentiment_result, technical_result
     
-    async def _run_decision(self, symbol: str, sentiment: Any, technical: Any, market_data: Dict) -> Any:
-        """Run decision agent."""
-        return None
+    async def _run_decision(
+        self,
+        symbol: str,
+        sentiment: Optional[SentimentResult],
+        technical: Optional[TechnicalResult],
+        market_data: Dict[str, Any]
+    ) -> Optional[DecisionResult]:
+        """Run Decision agent."""
+        try:
+            result = await asyncio.to_thread(
+                self.decision_agent.analyze,
+                symbol,
+                sentiment,
+                technical,
+                market_data
+            )
+            return result
+        except Exception as e:
+            logger.error("Decision agent failed: %s", e)
+            return None
     
-    async def _run_forecast(self, symbol: str, sentiment: Any, technical: Any, market_data: Dict) -> Any:
-        """Run forecast agent."""
-        return None
+    async def _run_forecast(
+        self,
+        symbol: str,
+        sentiment: Optional[SentimentResult],
+        technical: Optional[TechnicalResult],
+        market_data: Dict[str, Any]
+    ) -> Optional[ForecastResult]:
+        """Run Forecast agent."""
+        try:
+            result = await asyncio.to_thread(
+                self.forecast_agent.analyze,
+                symbol,
+                sentiment,
+                technical,
+                market_data
+            )
+            return result
+        except Exception as e:
+            logger.error("Forecast agent failed: %s", e)
+            return None
     
-    async def _run_reflection(self, symbol: str, market_data: Dict) -> Any:
-        """Run reflector agent."""
-        return None
+    async def _run_reflection(
+        self,
+        symbol: str,
+        market_data: Dict[str, Any]
+    ) -> Optional[ReflectionResult]:
+        """Run Reflector agent."""
+        try:
+            trades = market_data.get("recent_trades", [])
+            if trades is None or not isinstance(trades, list):
+                trades = []
+                
+            result = await asyncio.to_thread(
+                self.reflector_agent.analyze,
+                symbol,
+                trades,
+                None
+            )
+            return result
+        except Exception as e:
+            logger.error("Reflector agent failed: %s", e)
+            return None
 
     # ============================================================
     # VOTING
@@ -267,10 +410,10 @@ class Orchestrator:
     
     def _perform_voting(
         self,
-        sentiment: Any,
-        technical: Any,
-        decision: Any,
-        forecast: Any
+        sentiment: Optional[SentimentResult],
+        technical: Optional[TechnicalResult],
+        decision: Optional[DecisionResult],
+        forecast: Optional[ForecastResult]
     ) -> Tuple[str, float]:
         """Weighted consensus dengan dynamic weights."""
         weighted_total = 0.0
@@ -358,12 +501,12 @@ class Orchestrator:
     
     def _determine_final_decision(
         self,
-        decision: Any,
+        decision: Optional[DecisionResult],
         consensus_action: str,
         consensus_score: float,
-        sentiment: Any,
-        technical: Any,
-        forecast: Any
+        sentiment: Optional[SentimentResult],
+        technical: Optional[TechnicalResult],
+        forecast: Optional[ForecastResult]
     ) -> Tuple[str, float, float, Dict[str, float]]:
         """Enhanced final decision with confidence boosting."""
         
@@ -467,7 +610,7 @@ class Orchestrator:
     def _calculate_position_size(
         self,
         confidence: float,
-        decision: Any,
+        decision: Optional[DecisionResult],
         action: str
     ) -> float:
         """Enhanced position sizing dengan minimum threshold."""
@@ -502,7 +645,7 @@ class Orchestrator:
     
     def _calculate_sl_tp(
         self,
-        technical: Any,
+        technical: Optional[TechnicalResult],
         action: str,
         current_price: float
     ) -> Tuple[Optional[float], Optional[float]]:
@@ -554,7 +697,7 @@ class Orchestrator:
     # FORECAST -> SCORE
     # ============================================================
     
-    def _forecast_to_score(self, forecast: Any) -> float:
+    def _forecast_to_score(self, forecast: ForecastResult) -> float:
         """Convert ForecastResult to score -1 to +1."""
         if forecast is None:
             return 0.0
@@ -595,7 +738,13 @@ class Orchestrator:
     # AGENT VOTES
     # ============================================================
     
-    def _get_agent_votes(self, sentiment: Any, technical: Any, decision: Any, forecast: Any) -> Dict[str, str]:
+    def _get_agent_votes(
+        self,
+        sentiment: Optional[SentimentResult],
+        technical: Optional[TechnicalResult],
+        decision: Optional[DecisionResult],
+        forecast: Optional[ForecastResult]
+    ) -> Dict[str, str]:
         """Get votes from all agents."""
         votes = {}
         
@@ -735,7 +884,12 @@ class Orchestrator:
                 clean_levels.append(value)
         return sorted(set(clean_levels))
 
-    def _get_current_price(self, market_data: Dict, technical: Any, forecast: Any) -> float:
+    def _get_current_price(
+        self,
+        market_data: Dict[str, Any],
+        technical: Optional[TechnicalResult],
+        forecast: Optional[ForecastResult]
+    ) -> float:
         """Get current price from various sources."""
         # From market data
         if market_data:
@@ -771,10 +925,10 @@ class Orchestrator:
 
     def _build_market_scores(
         self,
-        sentiment: Any,
-        technical: Any,
-        decision: Any,
-        forecast: Any,
+        sentiment: Optional[SentimentResult],
+        technical: Optional[TechnicalResult],
+        decision: Optional[DecisionResult],
+        forecast: Optional[ForecastResult],
         consensus_score: float
     ) -> Dict[str, float]:
         """Build market scores dictionary."""
@@ -917,41 +1071,3 @@ class Orchestrator:
         if n <= 0:
             return []
         return self.history[-n:]
-
-
-# ============================================================
-# TEST
-# ============================================================
-
-if __name__ == "__main__":
-    import json
-    
-    async def main():
-        logging.basicConfig(level=logging.INFO)
-        
-        print("=" * 70)
-        print("TESTING ORCHESTRATOR")
-        print("=" * 70)
-        
-        orchestrator = Orchestrator({
-            "enable_dynamic_weights": True,
-            "max_position_size": 0.20,
-            "default_position_size": 0.05,
-        })
-        
-        # Mock market data
-        market_data = {
-            "current_price": 62760.21,
-            "recent_trades": []
-        }
-        
-        result = await orchestrator.analyze("BTC-USD", market_data)
-        
-        print("\n--- RESULT ---")
-        print(f"Action: {result.final_action}")
-        print(f"Confidence: {result.final_confidence:.2%}")
-        print(f"Position: {result.position_size:.2%}")
-        print(f"Reason: {result.execution_reason}")
-        print(f"\nSummary:\n{result.summary}")
-        
-    asyncio.run(main())
