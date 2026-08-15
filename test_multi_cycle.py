@@ -1,8 +1,5 @@
 """
 test_multi_cycle.py - Multi-Cycle Test 50 Cycles (WITH FORCE SIGNAL)
-
-Untuk testing, kita paksa sinyal BUY/SELL pada cycle tertentu
-untuk memastikan pipeline eksekusi berjalan.
 """
 
 import asyncio
@@ -16,7 +13,6 @@ from pathlib import Path
 
 from integration.trading_engine import TradingIntegrationEngine
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -25,9 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 class MultiCycleTester:
-    """
-    Multi-Cycle Tester - Menjalankan 50 trading cycle.
-    """
     
     def __init__(self, config: Optional[Dict] = None):
         self.config = config or {}
@@ -35,11 +28,10 @@ class MultiCycleTester:
         self.symbol = self.config.get("symbol", "BTC-USD")
         self.base_price = self.config.get("base_price", 62760.21)
         self.price_volatility = self.config.get("price_volatility", 0.002)
-        self.force_signal = self.config.get("force_signal", True)  # ← DEFAULT TRUE
+        self.force_signal = self.config.get("force_signal", True)
         self.output_dir = Path(self.config.get("output_dir", "test_results"))
         self.output_dir.mkdir(exist_ok=True)
         
-        # Results storage
         self.results: List[Dict] = []
         self.trade_history: List[Dict] = []
         self.cycle_stats = {
@@ -52,29 +44,23 @@ class MultiCycleTester:
             "errors": 0
         }
         
-        # Historical price data
         self.historical_prices: List[float] = []
         self._initialize_historical_data()
         
-        # Engine
         self.engine = None
         
-        logger.info(f"MultiCycleTester initialized: {self.cycles} cycles for {self.symbol}")
+        logger.info(f"MultiCycleTester initialized: {self.cycles} cycles")
         logger.info(f"Force Signal: {self.force_signal}")
     
     def _initialize_historical_data(self):
-        """Initialize historical price data (100 days)."""
         price = self.base_price * 0.95
         for i in range(100):
             drift = random.gauss(0, 0.001) + 0.0002 * math.sin(i / 20)
             price = price * (1 + drift)
             self.historical_prices.append(price)
-        
         self.base_price = self.historical_prices[-1]
-        logger.info(f"Historical data initialized: {len(self.historical_prices)} prices")
     
     def _generate_price_path(self) -> List[float]:
-        """Generate price path."""
         prices = []
         price = self.base_price
         
@@ -94,7 +80,6 @@ class MultiCycleTester:
         return prices
     
     def _generate_full_ohlcv(self, current_price: float, cycle: int) -> List[Dict]:
-        """Generate FULL OHLCV data dengan 100 candles."""
         ohlcv = []
         now = datetime.now(timezone.utc)
         
@@ -125,15 +110,12 @@ class MultiCycleTester:
         return ohlcv
     
     async def run_single_cycle(self, cycle: int, price: float) -> Dict:
-        """Jalankan satu trading cycle."""
         logger.info(f"\n{'='*60}")
         logger.info(f"CYCLE #{cycle + 1}/{self.cycles} | {self.symbol} | Price: ${price:.2f}")
         logger.info(f"{'='*60}")
         
-        # Generate FULL OHLCV (100 candles)
         ohlcv = self._generate_full_ohlcv(price, cycle)
         
-        # Update historical prices
         self.historical_prices.append(price)
         if len(self.historical_prices) > 200:
             self.historical_prices = self.historical_prices[-100:]
@@ -152,20 +134,14 @@ class MultiCycleTester:
         }
         
         # ============================================================
-        # FORCE SIGNAL - Untuk testing pipeline eksekusi
+        # FORCE SIGNAL
         # ============================================================
         if self.force_signal:
-            # Pattern: BUY pada cycle kelipatan 5, SELL pada cycle kelipatan 7
+            # BUY pada cycle kelipatan 5, SELL pada cycle kelipatan 7
             if cycle % 5 == 0 and cycle % 7 != 0:
-                # BUY signal
-                market_data["sentiment_score"] = 0.8
-                market_data["technical_score"] = 0.7
                 market_data["_force_action"] = "BUY"
                 logger.info(f"🔴 FORCE SIGNAL: BUY on cycle {cycle + 1}")
             elif cycle % 7 == 0:
-                # SELL signal
-                market_data["sentiment_score"] = -0.7
-                market_data["technical_score"] = -0.8
                 market_data["_force_action"] = "SELL"
                 logger.info(f"🔴 FORCE SIGNAL: SELL on cycle {cycle + 1}")
         
@@ -175,7 +151,6 @@ class MultiCycleTester:
             result["price"] = price
             result["timestamp"] = datetime.now(timezone.utc).isoformat()
             return result
-            
         except Exception as e:
             logger.error(f"Error in cycle {cycle + 1}: {e}")
             return {
@@ -187,16 +162,12 @@ class MultiCycleTester:
             }
     
     async def run(self):
-        """Jalankan semua cycle."""
         logger.info("\n" + "="*70)
         logger.info(f"MULTI-CYCLE TEST: {self.cycles} CYCLES")
         logger.info(f"Symbol: {self.symbol}")
-        logger.info(f"Base Price: ${self.base_price:.2f}")
-        logger.info(f"Volatility: {self.price_volatility:.2%}")
         logger.info(f"Force Signal: {self.force_signal}")
         logger.info("="*70 + "\n")
         
-        # Config
         config = {
             "mode": "paper",
             "use_unified_data": True,
@@ -234,17 +205,14 @@ class MultiCycleTester:
         self.engine = TradingIntegrationEngine(config)
         self.engine.start()
         
-        # Generate price path
         price_path = self._generate_price_path()
         
-        # Run cycles
         start_time = datetime.now()
         
         for i, price in enumerate(price_path):
             result = await self.run_single_cycle(i, price)
             self.results.append(result)
             
-            # Update stats
             self.cycle_stats["total"] += 1
             
             action = result.get("action", "UNKNOWN")
@@ -288,7 +256,6 @@ class MultiCycleTester:
         self._print_summary(duration)
     
     def _save_results(self):
-        """Simpan hasil ke file."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         results_file = self.output_dir / f"multi_cycle_results_{timestamp}.json"
@@ -298,7 +265,6 @@ class MultiCycleTester:
                     "symbol": self.symbol,
                     "cycles": self.cycles,
                     "base_price": self.base_price,
-                    "volatility": self.price_volatility,
                     "force_signal": self.force_signal,
                     "timestamp": datetime.now().isoformat()
                 },
@@ -335,7 +301,6 @@ class MultiCycleTester:
         logger.info(f"📁 Summary saved to: {summary_file}")
     
     def _print_summary(self, duration: float):
-        """Print summary ke console."""
         print("\n" + "="*70)
         print("MULTI-CYCLE TEST COMPLETED")
         print("="*70)
@@ -363,13 +328,12 @@ class MultiCycleTester:
 
 
 async def main():
-    """Main entry point."""
     tester = MultiCycleTester({
         "cycles": 50,
         "symbol": "BTC-USD",
         "base_price": 62760.21,
         "price_volatility": 0.002,
-        "force_signal": True,  # ← AKTIFKAN FORCE SIGNAL
+        "force_signal": True,
         "output_dir": "test_results"
     })
     
