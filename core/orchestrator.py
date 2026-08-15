@@ -9,12 +9,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
 
-from agents.agent_sentiment import SentimentAgent, SentimentResult
-from agents.agent_technical import TechnicalAgent, TechnicalResult
-from agents.agent_decision import DecisionAgent, DecisionResult
-from agents.agent_reflector import ReflectorAgent, ReflectionResult, TradeRecord
-from agents.agent_forecast import ForecastAgent, ForecastResult
-
 logger = logging.getLogger(__name__)
 
 
@@ -24,11 +18,11 @@ class OrchestratorResult:
     timestamp: datetime
     symbol: str
     current_price: float
-    sentiment: Optional[SentimentResult]
-    technical: Optional[TechnicalResult]
-    decision: Optional[DecisionResult]
-    reflection: Optional[ReflectionResult]
-    forecast: Optional[ForecastResult]
+    sentiment: Optional[Any]
+    technical: Optional[Any]
+    decision: Optional[Any]
+    reflection: Optional[Any]
+    forecast: Optional[Any]
     consensus_action: str
     consensus_score: float
     agent_votes: Dict[str, str]
@@ -41,7 +35,7 @@ class OrchestratorResult:
     confidence_components: Dict[str, float]
     market_scores: Dict[str, float]
     summary: str
-    execution_reason: Optional[str] = None  # NEW: Alasan eksekusi/ditolak
+    execution_reason: Optional[str] = None
 
 
 class Orchestrator:
@@ -49,13 +43,6 @@ class Orchestrator:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        
-        # Initialize agents
-        self.sentiment_agent = SentimentAgent()
-        self.technical_agent = TechnicalAgent()
-        self.decision_agent = DecisionAgent()
-        self.reflector_agent = ReflectorAgent()
-        self.forecast_agent = ForecastAgent()
         
         # Voting thresholds
         self.voting_thresholds = {
@@ -65,19 +52,15 @@ class Orchestrator:
             "strong_sell": -0.70,
         }
         
-        # ============================================================
-        # PERBAIKAN 1: Agent Weights - Lebih fleksibel
-        # ============================================================
+        # Agent weights
         self.agent_weights = {
-            "sentiment": 0.20,    # Turunkan dari 0.25
-            "technical": 0.35,    # Naikkan dari 0.30
-            "decision": 0.35,     # Naikkan dari 0.30
-            "forecast": 0.10,     # Turunkan dari 0.15
+            "sentiment": 0.20,
+            "technical": 0.35,
+            "decision": 0.35,
+            "forecast": 0.10,
         }
         
-        # ============================================================
-        # PERBAIKAN 2: Dynamic Weight Adjustment
-        # ============================================================
+        # Dynamic weights
         self.enable_dynamic_weights = config.get("enable_dynamic_weights", True)
         self.performance_history = {
             "sentiment": {"correct": 0, "total": 0},
@@ -95,28 +78,205 @@ class Orchestrator:
         self.history: List[OrchestratorResult] = []
         self.max_history = int(config.get("max_history", 100))
         
-        logger.info("Orchestrator initialized successfully with dynamic weights=%s", 
-                   self.enable_dynamic_weights)
+        logger.info("Orchestrator initialized successfully")
 
     # ============================================================
-    # PERBAIKAN 3: Enhanced Voting dengan Directional Bias
+    # PUBLIC ANALYZE
+    # ============================================================
+    
+    async def analyze(
+        self,
+        symbol: str,
+        market_data: Optional[Dict[str, Any]] = None
+    ) -> OrchestratorResult:
+        """
+        Menjalankan seluruh pipeline analisis.
+        """
+        logger.info("Starting analysis for %s", symbol)
+        market_data = market_data.copy() if isinstance(market_data, dict) else {}
+        
+        try:
+            # STEP 1: Base agents
+            sentiment_result, technical_result = await self._run_base_agents(
+                symbol, market_data
+            )
+            
+            # STEP 2: Decision
+            decision_result = await self._run_decision(
+                symbol, sentiment_result, technical_result, market_data
+            )
+            
+            # STEP 3: Forecast
+            forecast_result = await self._run_forecast(
+                symbol, sentiment_result, technical_result, market_data
+            )
+            
+            # STEP 4: Reflection
+            reflection_result = await self._run_reflection(symbol, market_data)
+            
+            # STEP 5: Current price
+            current_price = self._get_current_price(
+                market_data, technical_result, forecast_result
+            )
+            
+            # STEP 6: Weighted consensus
+            consensus_action, consensus_score = self._perform_voting(
+                sentiment=sentiment_result,
+                technical=technical_result,
+                decision=decision_result,
+                forecast=forecast_result
+            )
+            
+            # STEP 7: Agent votes
+            agent_votes = self._get_agent_votes(
+                sentiment=sentiment_result,
+                technical=technical_result,
+                decision=decision_result,
+                forecast=forecast_result
+            )
+            
+            # STEP 8: Final decision
+            final_action, final_confidence, decision_score, confidence_components = \
+                self._determine_final_decision(
+                    decision=decision_result,
+                    consensus_action=consensus_action,
+                    consensus_score=consensus_score,
+                    sentiment=sentiment_result,
+                    technical=technical_result,
+                    forecast=forecast_result
+                )
+            
+            # STEP 9: Preliminary position size
+            position_size = self._calculate_position_size(
+                confidence=final_confidence,
+                decision=decision_result,
+                action=final_action
+            )
+            
+            # STEP 10: Preliminary SL / TP
+            stop_loss, take_profit = self._calculate_sl_tp(
+                technical=technical_result,
+                action=final_action,
+                current_price=current_price
+            )
+            
+            # STEP 11: Market scores
+            market_scores = self._build_market_scores(
+                sentiment=sentiment_result,
+                technical=technical_result,
+                decision=decision_result,
+                forecast=forecast_result,
+                consensus_score=consensus_score
+            )
+            
+            # STEP 12: Execution reason
+            consensus_strength = abs(consensus_score)
+            agreement = self._calculate_agent_agreement(agent_votes)
+            
+            execution_reason = None
+            if final_action == "HOLD":
+                if final_confidence < 0.50:
+                    execution_reason = f"Confidence too low: {final_confidence:.1%} < 50%"
+                elif consensus_strength < 0.20:
+                    execution_reason = f"Weak consensus: {consensus_strength:.1%}"
+                elif agreement < 0.50:
+                    execution_reason = f"Poor agent agreement: {agreement:.1%}"
+                else:
+                    execution_reason = "No clear signal from agents"
+            else:
+                execution_reason = f"Executing {final_action} with {final_confidence:.1%} confidence"
+            
+            # STEP 13: Summary
+            summary = self._generate_summary(
+                symbol=symbol,
+                current_price=current_price,
+                final_action=final_action,
+                final_confidence=final_confidence,
+                position_size=position_size,
+                consensus_action=consensus_action,
+                consensus_score=consensus_score,
+                agent_votes=agent_votes,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                execution_reason=execution_reason
+            )
+            
+            # STEP 14: Build result
+            result = OrchestratorResult(
+                timestamp=datetime.now(timezone.utc),
+                symbol=symbol,
+                current_price=current_price,
+                sentiment=sentiment_result,
+                technical=technical_result,
+                decision=decision_result,
+                reflection=reflection_result,
+                forecast=forecast_result,
+                consensus_action=consensus_action,
+                consensus_score=consensus_score,
+                agent_votes=agent_votes,
+                final_action=final_action,
+                final_confidence=final_confidence,
+                position_size=position_size,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                decision_score=decision_score,
+                confidence_components=confidence_components,
+                market_scores=market_scores,
+                summary=summary,
+                execution_reason=execution_reason
+            )
+            
+            # STEP 15: Save history
+            self.history.append(result)
+            if len(self.history) > self.max_history:
+                self.history.pop(0)
+            
+            logger.info("Analysis completed: %s -> %s (confidence=%.2f%%)",
+                       symbol, final_action, final_confidence * 100)
+            
+            return result
+            
+        except Exception as e:
+            logger.exception("Orchestrator analysis failed for %s: %s", symbol, e)
+            return self._get_default_result(symbol)
+
+    # ============================================================
+    # BASE AGENTS - MOCK IMPLEMENTATIONS
+    # ============================================================
+    
+    async def _run_base_agents(self, symbol: str, market_data: Dict) -> Tuple[Any, Any]:
+        """Run sentiment and technical agents in parallel."""
+        # Mock implementation - return None
+        return None, None
+    
+    async def _run_decision(self, symbol: str, sentiment: Any, technical: Any, market_data: Dict) -> Any:
+        """Run decision agent."""
+        return None
+    
+    async def _run_forecast(self, symbol: str, sentiment: Any, technical: Any, market_data: Dict) -> Any:
+        """Run forecast agent."""
+        return None
+    
+    async def _run_reflection(self, symbol: str, market_data: Dict) -> Any:
+        """Run reflector agent."""
+        return None
+
+    # ============================================================
+    # VOTING
     # ============================================================
     
     def _perform_voting(
         self,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
-        decision: Optional[DecisionResult],
-        forecast: Optional[ForecastResult]
+        sentiment: Any,
+        technical: Any,
+        decision: Any,
+        forecast: Any
     ) -> Tuple[str, float]:
-        """
-        Weighted consensus dengan dynamic weights dan directional bias detection.
-        """
+        """Weighted consensus dengan dynamic weights."""
         weighted_total = 0.0
         available_weight = 0.0
         agent_scores = []
         
-        # Collect all scores with weights
         if sentiment is not None:
             score = self._safe_score(getattr(sentiment, "overall_score", 0.0))
             weight = self._get_agent_weight("sentiment")
@@ -148,39 +308,27 @@ class Orchestrator:
         if available_weight <= 0:
             return ("HOLD", 0.0)
             
-        # Normalize
-        consensus_score = weighted_total / available_weight
-        consensus_score = self._safe_score(consensus_score)
-        
-        # ============================================================
-        # PERBAIKAN 4: Detect Strong Directional Bias
-        # ============================================================
+        consensus_score = self._safe_score(weighted_total / available_weight)
         consensus_action = self._score_to_action(consensus_score)
         
-        # Check if there's a strong directional bias despite consensus
+        # Detect strong directional bias
         if len(agent_scores) >= 2:
-            # Count agents on each side
             bullish = sum(1 for _, s in agent_scores if s > 0.3)
             bearish = sum(1 for _, s in agent_scores if s < -0.3)
-            neutral = len(agent_scores) - bullish - bearish
             
-            # If 2+ agents strongly agree on direction
             if bullish >= 2 and consensus_action == "HOLD":
-                # Override to BUY if there's bullish bias
                 avg_bullish = sum(s for _, s in agent_scores if s > 0.3) / max(bullish, 1)
                 if avg_bullish > 0.5:
                     consensus_action = "BUY"
                     consensus_score = max(consensus_score, avg_bullish * 0.7)
-                    logger.info("Bullish bias detected: %d agents bullish, avg=%.3f", 
-                               bullish, avg_bullish)
+                    logger.info("Bullish bias detected: %d agents bullish", bullish)
                     
             elif bearish >= 2 and consensus_action == "HOLD":
                 avg_bearish = sum(s for _, s in agent_scores if s < -0.3) / max(bearish, 1)
                 if avg_bearish < -0.5:
                     consensus_action = "SELL"
                     consensus_score = min(consensus_score, avg_bearish * 0.7)
-                    logger.info("Bearish bias detected: %d agents bearish, avg=%.3f", 
-                               bearish, avg_bearish)
+                    logger.info("Bearish bias detected: %d agents bearish", bearish)
         
         return (consensus_action, consensus_score)
 
@@ -197,7 +345,6 @@ class Orchestrator:
             
         accuracy = performance["correct"] / performance["total"]
         
-        # Boost weight for accurate agents, reduce for poor performers
         if accuracy > 0.6:
             return min(base_weight * 1.5, 0.50)
         elif accuracy < 0.4:
@@ -206,21 +353,20 @@ class Orchestrator:
             return base_weight
 
     # ============================================================
-    # PERBAIKAN 5: Enhanced Final Decision dengan Confidence Boost
+    # FINAL DECISION
     # ============================================================
     
     def _determine_final_decision(
         self,
-        decision: Optional[DecisionResult],
+        decision: Any,
         consensus_action: str,
         consensus_score: float,
-        sentiment: Optional[SentimentResult],
-        technical: Optional[TechnicalResult],
-        forecast: Optional[ForecastResult]
+        sentiment: Any,
+        technical: Any,
+        forecast: Any
     ) -> Tuple[str, float, float, Dict[str, float]]:
-        """
-        Enhanced final decision with confidence boosting for clear signals.
-        """
+        """Enhanced final decision with confidence boosting."""
+        
         # Decision data
         if decision is not None:
             decision_score = self._safe_score(getattr(decision, "action_score", 0.0))
@@ -234,73 +380,45 @@ class Orchestrator:
         consensus_strength = abs(consensus_score)
         
         # Votes
-        votes = self._get_agent_votes(
-            sentiment=sentiment,
-            technical=technical,
-            decision=decision,
-            forecast=forecast
-        )
-        
+        votes = self._get_agent_votes(sentiment, technical, decision, forecast)
         agreement = self._calculate_agent_agreement(votes)
         agreement_direction = self._agreement_direction(votes)
         
-        # ============================================================
-        # PERBAIKAN 6: More Sophisticated Combined Score
-        # ============================================================
-        
-        # Check for strong technical signal
+        # Technical and sentiment scores
         technical_score = 0.0
         if technical is not None:
             technical_score = self._safe_score(getattr(technical, "overall_score", 0.0))
             
-        # Check for strong sentiment signal
         sentiment_score = 0.0
         if sentiment is not None:
             sentiment_score = self._safe_score(getattr(sentiment, "overall_score", 0.0))
             
-        # Detect alignment between technical and sentiment
-        tech_sent_alignment = abs(technical_score - sentiment_score) < 0.3
         tech_sent_agree = (technical_score > 0.1 and sentiment_score > 0.1) or \
                          (technical_score < -0.1 and sentiment_score < -0.1)
         
+        # Combined score
         if decision is not None:
-            # Base combined score
             combined_score = (
                 decision_score * 0.40 +
                 consensus_score * 0.30 +
                 agreement_direction * 0.20 +
-                (technical_score * 0.10)
+                technical_score * 0.10
             )
             
-            # ============================================================
-            # PERBAIKAN 7: Confidence Boost for Strong Signals
-            # ============================================================
-            
-            # Boost if technical and sentiment agree
             if tech_sent_agree and abs(technical_score) > 0.3:
-                combined_score = combined_score * 1.2
-                combined_score = self._safe_score(combined_score)
-                logger.info("Tech-Sentiment alignment detected: tech=%.3f, sent=%.3f", 
-                           technical_score, sentiment_score)
+                combined_score = self._safe_score(combined_score * 1.2)
+                logger.info("Tech-Sentiment alignment detected")
                 
-            # Boost if there's strong agreement (3+ agents same direction)
             if agreement >= 0.75 and abs(agreement_direction) > 0.3:
-                combined_score = combined_score * 1.15
-                combined_score = self._safe_score(combined_score)
-                logger.info("Strong agent agreement detected: agreement=%.2f", agreement)
-                
+                combined_score = self._safe_score(combined_score * 1.15)
+                logger.info("Strong agent agreement detected")
         else:
             combined_score = consensus_score
             
         combined_score = self._safe_score(combined_score)
-        
-        # Final action
         final_action = self._score_to_action(combined_score)
         
-        # ============================================================
-        # PERBAIKAN 8: Enhanced Confidence Calculation
-        # ============================================================
-        
+        # Confidence calculation
         if decision is not None:
             raw_confidence = (
                 decision_confidence * 0.40 +
@@ -315,73 +433,54 @@ class Orchestrator:
                 abs(agreement_direction) * 0.20
             )
             
-        # Confidence boost for strong signals
         if final_action != "HOLD":
-            # Boost if tech and sentiment align
             if tech_sent_agree and abs(technical_score) > 0.3:
                 raw_confidence *= 1.2
-                
-            # Boost if there's strong directional bias
             if abs(agreement_direction) > 0.5:
                 raw_confidence *= 1.15
-                
-            # Boost if consensus is strong
             if consensus_strength > 0.3:
                 raw_confidence *= 1.1
                 
         final_confidence = max(0.0, min(1.0, raw_confidence))
         
-        # ============================================================
-        # PERBAIKAN 9: HOLD Confidence Protection - Kurangi Penalti
-        # ============================================================
+        # HOLD confidence protection
         if final_action == "HOLD":
-            # Kurangi penalti dari 0.50 menjadi 0.60
             final_confidence = min(final_confidence, 0.60)
-            
-            # Tapi jika ada agreement yang kuat, beri confidence lebih
             if agreement >= 0.75 and abs(agreement_direction) < 0.1:
                 final_confidence = max(final_confidence, 0.40)
         
-        # Confidence components
         confidence_components = {
             "decision_confidence": round(decision_confidence, 4),
             "consensus_strength": round(consensus_strength, 4),
             "agent_agreement": round(agreement, 4),
             "agreement_direction": round(agreement_direction, 4),
             "combined_score": round(combined_score, 4),
-            "tech_sent_alignment": round(1.0 if tech_sent_agree else 0.0, 4),  # NEW
+            "tech_sent_alignment": round(1.0 if tech_sent_agree else 0.0, 4),
         }
         
         return (final_action, final_confidence, combined_score, confidence_components)
 
     # ============================================================
-    # PERBAIKAN 10: Enhanced Position Size
+    # POSITION SIZE
     # ============================================================
     
     def _calculate_position_size(
         self,
         confidence: float,
-        decision: Optional[DecisionResult],
+        decision: Any,
         action: str
     ) -> float:
-        """
-        Enhanced position sizing dengan minimum threshold.
-        """
+        """Enhanced position sizing dengan minimum threshold."""
         if action == "HOLD":
             return 0.0
             
         confidence = self._safe_probability(confidence)
         
-        # Jika confidence di bawah 50%, tidak ada posisi
         if confidence < 0.50:
             return 0.0
             
         if decision is not None:
-            raw_base_size = getattr(
-                decision,
-                "suggested_position_size",
-                self.default_position_size
-            )
+            raw_base_size = getattr(decision, "suggested_position_size", self.default_position_size)
             try:
                 base_size = float(raw_base_size)
             except (TypeError, ValueError):
@@ -392,16 +491,317 @@ class Orchestrator:
         if base_size < 0:
             base_size = 0.0
             
-        # Scale position by confidence
-        size = base_size * ((confidence - 0.50) / 0.50)  # 0.5 = 0%, 1.0 = 100%
+        size = base_size * ((confidence - 0.50) / 0.50)
         size = max(self.min_position_size, min(self.max_position_size, size))
         
         return size
 
     # ============================================================
-    # PERBAIKAN 11: Enhanced Summary dengan Execution Reason
+    # SL / TP
     # ============================================================
     
+    def _calculate_sl_tp(
+        self,
+        technical: Any,
+        action: str,
+        current_price: float
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Calculate preliminary stop loss and take profit."""
+        if technical is None or current_price <= 0 or action == "HOLD":
+            return None, None
+            
+        support_levels = self._extract_price_levels(
+            getattr(technical, "support_levels", None)
+        )
+        resistance_levels = self._extract_price_levels(
+            getattr(technical, "resistance_levels", None)
+        )
+        
+        stop_loss = None
+        take_profit = None
+        
+        if action in {"BUY", "STRONG_BUY"}:
+            supports_below = [l for l in support_levels if l < current_price]
+            resistances_above = [l for l in resistance_levels if l > current_price]
+            
+            if supports_below:
+                stop_loss = max(supports_below) * 0.99
+            else:
+                stop_loss = current_price * 0.95
+                
+            if resistances_above:
+                take_profit = min(resistances_above) * 0.99
+            else:
+                take_profit = current_price * 1.10
+                
+        elif action in {"SELL", "STRONG_SELL"}:
+            resistances_above = [l for l in resistance_levels if l > current_price]
+            supports_below = [l for l in support_levels if l < current_price]
+            
+            if resistances_above:
+                stop_loss = min(resistances_above) * 1.01
+            else:
+                stop_loss = current_price * 1.05
+                
+            if supports_below:
+                take_profit = max(supports_below) * 1.01
+            else:
+                take_profit = current_price * 0.90
+                
+        return (stop_loss, take_profit)
+
+    # ============================================================
+    # FORECAST -> SCORE
+    # ============================================================
+    
+    def _forecast_to_score(self, forecast: Any) -> float:
+        """Convert ForecastResult to score -1 to +1."""
+        if forecast is None:
+            return 0.0
+            
+        # Trend component
+        trend_score = 0.0
+        trend = str(getattr(forecast, "primary_trend", "")).upper()
+        if trend == "BULLISH":
+            trend_score = 1.0
+        elif trend == "BEARISH":
+            trend_score = -1.0
+            
+        # Probability component
+        probability_score = 0.0
+        next_move = getattr(forecast, "next_move_probability", {})
+        if isinstance(next_move, dict):
+            up = self._safe_probability(next_move.get("UP", 0.0))
+            down = self._safe_probability(next_move.get("DOWN", 0.0))
+            probability_score = up - down
+            
+        # Price prediction component
+        prediction_score = 0.0
+        try:
+            short_term = getattr(forecast, "short_term", None)
+            if short_term is not None:
+                predicted_price = float(getattr(short_term, "predicted_price", 0.0))
+                current_price = float(getattr(forecast, "current_price", 0.0))
+                if current_price > 0:
+                    price_change = (predicted_price - current_price) / current_price
+                    prediction_score = max(-1.0, min(1.0, price_change / 0.05))
+        except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+            prediction_score = 0.0
+            
+        score = trend_score * 0.40 + probability_score * 0.30 + prediction_score * 0.30
+        return self._safe_score(score)
+
+    # ============================================================
+    # AGENT VOTES
+    # ============================================================
+    
+    def _get_agent_votes(self, sentiment: Any, technical: Any, decision: Any, forecast: Any) -> Dict[str, str]:
+        """Get votes from all agents."""
+        votes = {}
+        
+        if sentiment is not None:
+            votes["sentiment"] = self._score_to_action(
+                self._safe_score(getattr(sentiment, "overall_score", 0.0))
+            )
+            
+        if technical is not None:
+            votes["technical"] = self._score_to_action(
+                self._safe_score(getattr(technical, "overall_score", 0.0))
+            )
+            
+        if decision is not None:
+            decision_action = str(getattr(decision, "action", "HOLD")).upper()
+            valid_actions = {"STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL"}
+            if decision_action not in valid_actions:
+                decision_action = self._score_to_action(
+                    getattr(decision, "action_score", 0.0)
+                )
+            votes["decision"] = decision_action
+            
+        if forecast is not None:
+            votes["forecast"] = self._score_to_action(self._forecast_to_score(forecast))
+            
+        return votes
+
+    # ============================================================
+    # AGREEMENT
+    # ============================================================
+    
+    def _calculate_agent_agreement(self, agent_votes: Dict[str, str]) -> float:
+        """Calculate agreement level among agents."""
+        if not agent_votes:
+            return 0.0
+            
+        actions = []
+        for vote in agent_votes.values():
+            if vote is None:
+                continue
+            action = str(vote).upper().strip()
+            if action in ("BUY", "SELL", "HOLD"):
+                actions.append(action)
+                
+        if not actions:
+            return 0.0
+            
+        counts = {
+            "BUY": actions.count("BUY"),
+            "SELL": actions.count("SELL"),
+            "HOLD": actions.count("HOLD"),
+        }
+        
+        majority_count = max(counts.values())
+        return round(majority_count / len(actions), 4)
+
+    def _agreement_direction(self, votes: Dict[str, str]) -> float:
+        """Calculate directional score from agent votes."""
+        if not votes:
+            return 0.0
+            
+        scores = [self._action_to_score(action) for action in votes.values()]
+        if not scores:
+            return 0.0
+            
+        return self._safe_score(sum(scores) / len(scores))
+
+    # ============================================================
+    # SCORE -> ACTION / ACTION -> SCORE
+    # ============================================================
+    
+    def _score_to_action(self, score: float) -> str:
+        """Convert score to action."""
+        score = self._safe_score(score)
+        if score >= self.voting_thresholds["strong_buy"]:
+            return "STRONG_BUY"
+        if score >= self.voting_thresholds["buy"]:
+            return "BUY"
+        if score <= self.voting_thresholds["strong_sell"]:
+            return "STRONG_SELL"
+        if score <= self.voting_thresholds["sell"]:
+            return "SELL"
+        return "HOLD"
+
+    def _action_to_score(self, action: str) -> float:
+        """Convert action to score."""
+        mapping = {
+            "STRONG_BUY": 1.0,
+            "BUY": 0.5,
+            "HOLD": 0.0,
+            "SELL": -0.5,
+            "STRONG_SELL": -1.0,
+        }
+        return mapping.get(str(action).upper(), 0.0)
+
+    # ============================================================
+    # HELPER METHODS
+    # ============================================================
+    
+    def _safe_score(self, value: Any) -> float:
+        """Safely convert value to score between -1 and 1."""
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if value != value:  # NaN
+            return 0.0
+        if value == float("inf"):
+            return 1.0
+        if value == float("-inf"):
+            return -1.0
+        return max(-1.0, min(1.0, value))
+
+    def _safe_probability(self, value: Any) -> float:
+        """Safely convert value to probability between 0 and 1."""
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if value != value:  # NaN
+            return 0.0
+        return max(0.0, min(1.0, value))
+
+    def _extract_price_levels(self, levels: Any) -> List[float]:
+        """Extract and clean price levels."""
+        if levels is None:
+            return []
+        if not isinstance(levels, (list, tuple, set)):
+            return []
+        clean_levels = []
+        for level in levels:
+            try:
+                value = float(level)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                clean_levels.append(value)
+        return sorted(set(clean_levels))
+
+    def _get_current_price(self, market_data: Dict, technical: Any, forecast: Any) -> float:
+        """Get current price from various sources."""
+        # From market data
+        if market_data:
+            for key in ["current_price", "price", "last_price", "close"]:
+                value = market_data.get(key)
+                if value is not None:
+                    try:
+                        price = float(value)
+                        if price > 0:
+                            return price
+                    except (TypeError, ValueError):
+                        continue
+                        
+        # From technical
+        if technical is not None:
+            try:
+                price = float(getattr(technical, "current_price", 0.0))
+                if price > 0:
+                    return price
+            except (TypeError, ValueError):
+                pass
+                
+        # From forecast
+        if forecast is not None:
+            try:
+                price = float(getattr(forecast, "current_price", 0.0))
+                if price > 0:
+                    return price
+            except (TypeError, ValueError):
+                pass
+                
+        return 0.0
+
+    def _build_market_scores(
+        self,
+        sentiment: Any,
+        technical: Any,
+        decision: Any,
+        forecast: Any,
+        consensus_score: float
+    ) -> Dict[str, float]:
+        """Build market scores dictionary."""
+        scores = {}
+        
+        if sentiment is not None:
+            scores["sentiment"] = round(
+                self._safe_score(getattr(sentiment, "overall_score", 0.0)), 4
+            )
+            
+        if technical is not None:
+            scores["technical"] = round(
+                self._safe_score(getattr(technical, "overall_score", 0.0)), 4
+            )
+            
+        if decision is not None:
+            scores["decision"] = round(
+                self._safe_score(getattr(decision, "action_score", 0.0)), 4
+            )
+            
+        if forecast is not None:
+            scores["forecast"] = round(self._forecast_to_score(forecast), 4)
+            
+        scores["consensus"] = round(self._safe_score(consensus_score), 4)
+        
+        return scores
+
     def _generate_summary(
         self,
         symbol: str,
@@ -414,17 +814,19 @@ class Orchestrator:
         agent_votes: Dict[str, str],
         stop_loss: Optional[float],
         take_profit: Optional[float],
-        execution_reason: Optional[str] = None  # NEW
+        execution_reason: Optional[str] = None
     ) -> str:
-        lines = []
-        lines.append("=== ORCHESTRATOR SUMMARY ===")
-        lines.append(f"Symbol: {symbol}")
-        lines.append(f"Current Price: {current_price:.8f}")
-        lines.append(f"Final Action: {final_action}")
-        lines.append(f"Confidence: {final_confidence:.2%}")
-        lines.append(f"Preliminary Position Size: {position_size:.2%}")
-        lines.append(f"Consensus: {consensus_action}")
-        lines.append(f"Consensus Score: {consensus_score:.4f}")
+        """Generate summary string."""
+        lines = [
+            "=== ORCHESTRATOR SUMMARY ===",
+            f"Symbol: {symbol}",
+            f"Current Price: {current_price:.8f}",
+            f"Final Action: {final_action}",
+            f"Confidence: {final_confidence:.2%}",
+            f"Preliminary Position Size: {position_size:.2%}",
+            f"Consensus: {consensus_action}",
+            f"Consensus Score: {consensus_score:.4f}",
+        ]
         
         if execution_reason:
             lines.append(f"Execution Reason: {execution_reason}")
@@ -453,12 +855,51 @@ class Orchestrator:
         
         return "\n".join(lines)
 
-    # ============================================================
-    # PERBAIKAN 12: Track Performance untuk Dynamic Weights
-    # ============================================================
-    
+    def _get_default_result(self, symbol: str) -> OrchestratorResult:
+        """Return default result on error."""
+        timestamp = datetime.now(timezone.utc)
+        summary = (
+            "=== ORCHESTRATOR ERROR ===\n"
+            f"Symbol: {symbol}\n"
+            "Final Action: HOLD\n"
+            "Confidence: 0.00%\n"
+            "Position Size: 0.00%\n"
+            "No trading execution performed."
+        )
+        
+        return OrchestratorResult(
+            timestamp=timestamp,
+            symbol=symbol,
+            current_price=0.0,
+            sentiment=None,
+            technical=None,
+            decision=None,
+            reflection=None,
+            forecast=None,
+            consensus_action="HOLD",
+            consensus_score=0.0,
+            agent_votes={},
+            final_action="HOLD",
+            final_confidence=0.0,
+            position_size=0.0,
+            stop_loss=None,
+            take_profit=None,
+            decision_score=0.0,
+            confidence_components={
+                "decision_confidence": 0.0,
+                "consensus_strength": 0.0,
+                "agent_agreement": 0.0,
+                "agreement_direction": 0.0,
+                "combined_score": 0.0,
+                "tech_sent_alignment": 0.0,
+            },
+            market_scores={},
+            summary=summary,
+            execution_reason="Error during analysis"
+        )
+
     def update_agent_performance(self, agent_name: str, was_correct: bool):
-        """Update performance history for dynamic weight adjustment."""
+        """Update performance history for dynamic weights."""
         if agent_name not in self.performance_history:
             self.performance_history[agent_name] = {"correct": 0, "total": 0}
             
@@ -467,194 +908,50 @@ class Orchestrator:
         if was_correct:
             perf["correct"] += 1
             
-        # Log performance changes
         accuracy = perf["correct"] / perf["total"] if perf["total"] > 0 else 0
-        logger.debug("Agent %s performance: %.2f%% (%d/%d)", 
+        logger.debug("Agent %s performance: %.2f%% (%d/%d)",
                     agent_name, accuracy * 100, perf["correct"], perf["total"])
-    
-    # ============================================================
-    # PERBAIKAN 13: Public Analyze dengan Execution Reason
-    # ============================================================
-    
-    async def analyze(
-        self,
-        symbol: str,
-        market_data: Optional[Dict[str, Any]] = None
-    ) -> OrchestratorResult:
-        """
-        Menjalankan seluruh pipeline analisis dengan execution reason.
-        """
-        logger.info("Starting analysis for %s", symbol)
-        market_data = market_data.copy() if isinstance(market_data, dict) else {}
-        
-        try:
-            # ... (kode yang sama seperti sebelumnya) ...
-            # Saya sertakan bagian yang dimodifikasi
-            
-            # STEP 8: Final decision dengan execution reason
-            (
-                final_action,
-                final_confidence,
-                decision_score,
-                confidence_components
-            ) = self._determine_final_decision(
-                decision=decision_result,
-                consensus_action=consensus_action,
-                consensus_score=consensus_score,
-                sentiment=sentiment_result,
-                technical=technical_result,
-                forecast=forecast_result
-            )
-            
-            # ============================================================
-            # PERBAIKAN 14: Determine Execution Reason
-            # ============================================================
-            execution_reason = None
-            if final_action == "HOLD":
-                if final_confidence < 0.50:
-                    execution_reason = f"Confidence too low: {final_confidence:.1%} < 50%"
-                elif consensus_strength < 0.20:
-                    execution_reason = f"Weak consensus: {consensus_strength:.1%}"
-                elif agreement < 0.50:
-                    execution_reason = f"Poor agent agreement: {agreement:.1%}"
-                else:
-                    execution_reason = "No clear signal from agents"
-            else:
-                execution_reason = f"Executing {final_action} with {final_confidence:.1%} confidence"
-                
-            # ... (lanjutkan dengan step selanjutnya) ...
-            
-        except Exception as e:
-            logger.exception("Orchestrator analysis failed for %s: %s", symbol, e)
-            return self._get_default_result(symbol)
 
-    # ============================================================
-    # Helper Methods (tanpa perubahan signifikan)
-    # ============================================================
-    
-    def _safe_score(self, value: Any) -> float:
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return 0.0
-        if value != value:
-            return 0.0
-        if value == float("inf"):
-            return 1.0
-        if value == float("-inf"):
-            return -1.0
-        return max(-1.0, min(1.0, value))
-    
-    def _safe_probability(self, value: Any) -> float:
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return 0.0
-        if value != value:
-            return 0.0
-        return max(0.0, min(1.0, value))
-    
-    def _score_to_action(self, score: float) -> str:
-        score = self._safe_score(score)
-        if score >= self.voting_thresholds["strong_buy"]:
-            return "STRONG_BUY"
-        if score >= self.voting_thresholds["buy"]:
-            return "BUY"
-        if score <= self.voting_thresholds["strong_sell"]:
-            return "STRONG_SELL"
-        if score <= self.voting_thresholds["sell"]:
-            return "SELL"
-        return "HOLD"
-    
-    def _forecast_to_score(self, forecast: ForecastResult) -> float:
-        # ... (sama seperti sebelumnya, dengan perbaikan untuk short_term) ...
-        pass
-    
-    def _get_agent_votes(self, sentiment, technical, decision, forecast) -> Dict[str, str]:
-        votes = {}
-        if sentiment is not None:
-            votes["sentiment"] = self._score_to_action(
-                self._safe_score(getattr(sentiment, "overall_score", 0.0))
-            )
-        if technical is not None:
-            votes["technical"] = self._score_to_action(
-                self._safe_score(getattr(technical, "overall_score", 0.0))
-            )
-        if decision is not None:
-            decision_action = str(getattr(decision, "action", "HOLD")).upper()
-            valid_actions = {"STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL"}
-            if decision_action not in valid_actions:
-                decision_action = self._score_to_action(
-                    getattr(decision, "action_score", 0.0)
-                )
-            votes["decision"] = decision_action
-        if forecast is not None:
-            votes["forecast"] = self._score_to_action(
-                self._forecast_to_score(forecast)
-            )
-        return votes
-    
-    def _calculate_agent_agreement(self, agent_votes: Dict[str, str]) -> float:
-        if not agent_votes:
-            return 0.0
-        actions = []
-        for vote in agent_votes.values():
-            if vote is None:
-                continue
-            action = str(vote).upper().strip()
-            if action in ("BUY", "SELL", "HOLD"):
-                actions.append(action)
-        if not actions:
-            return 0.0
-        counts = {"BUY": actions.count("BUY"), "SELL": actions.count("SELL"), "HOLD": actions.count("HOLD")}
-        majority_count = max(counts.values())
-        agreement = majority_count / len(actions)
-        return round(agreement, 4)
-    
-    def _agreement_direction(self, votes: Dict[str, str]) -> float:
-        if not votes:
-            return 0.0
-        scores = [self._action_to_score(action) for action in votes.values()]
-        if not scores:
-            return 0.0
-        return self._safe_score(sum(scores) / len(scores))
-    
-    def _action_to_score(self, action: str) -> float:
-        mapping = {"STRONG_BUY": 1.0, "BUY": 0.5, "HOLD": 0.0, "SELL": -0.5, "STRONG_SELL": -1.0}
-        return mapping.get(str(action).upper(), 0.0)
-    
-    def _extract_price_levels(self, levels: Any) -> List[float]:
-        if levels is None:
-            return []
-        if not isinstance(levels, (list, tuple, set)):
-            return []
-        clean_levels = []
-        for level in levels:
-            try:
-                value = float(level)
-            except (TypeError, ValueError):
-                continue
-            if value > 0:
-                clean_levels.append(value)
-        return sorted(set(clean_levels))
-    
-    def _get_current_price(self, market_data, technical, forecast) -> float:
-        # ... (sama seperti sebelumnya) ...
-        pass
-    
-    def _build_market_scores(self, sentiment, technical, decision, forecast, consensus_score) -> Dict[str, float]:
-        # ... (sama seperti sebelumnya) ...
-        pass
-    
-    def _calculate_sl_tp(self, technical, action, current_price):
-        # ... (sama seperti sebelumnya) ...
-        pass
-    
-    def _get_default_result(self, symbol) -> OrchestratorResult:
-        # ... (sama seperti sebelumnya) ...
-        pass
-    
     def get_history(self, n: int = 10) -> List[OrchestratorResult]:
+        """Get recent history."""
         if n <= 0:
             return []
         return self.history[-n:]
+
+
+# ============================================================
+# TEST
+# ============================================================
+
+if __name__ == "__main__":
+    import json
+    
+    async def main():
+        logging.basicConfig(level=logging.INFO)
+        
+        print("=" * 70)
+        print("TESTING ORCHESTRATOR")
+        print("=" * 70)
+        
+        orchestrator = Orchestrator({
+            "enable_dynamic_weights": True,
+            "max_position_size": 0.20,
+            "default_position_size": 0.05,
+        })
+        
+        # Mock market data
+        market_data = {
+            "current_price": 62760.21,
+            "recent_trades": []
+        }
+        
+        result = await orchestrator.analyze("BTC-USD", market_data)
+        
+        print("\n--- RESULT ---")
+        print(f"Action: {result.final_action}")
+        print(f"Confidence: {result.final_confidence:.2%}")
+        print(f"Position: {result.position_size:.2%}")
+        print(f"Reason: {result.execution_reason}")
+        print(f"\nSummary:\n{result.summary}")
+        
+    asyncio.run(main())
