@@ -1,14 +1,10 @@
 """
-test_multi_cycle.py - Multi-Cycle Test 50 Cycles
+test_multi_cycle.py - Multi-Cycle Test 50 Cycles (FIXED)
 
-Menjalankan 50 trading cycle berturut-turut tanpa mengubah arsitektur.
-Menggunakan data market yang sama untuk setiap cycle (harga bergerak sedikit).
-
-Tujuan:
-1. Validasi stabilitas sistem dalam jangka panjang
-2. Melihat konsistensi keputusan
-3. Mengumpulkan data untuk Reflector Agent
-4. Menguji Paper Trading Engine dengan multiple positions
+Perbaikan:
+1. Menambahkan historical data (100 candlestick) untuk setiap cycle
+2. Menggunakan data yang konsisten
+3. Memastikan agent mendapatkan data yang cukup
 """
 
 import asyncio
@@ -33,13 +29,6 @@ logger = logging.getLogger(__name__)
 class MultiCycleTester:
     """
     Multi-Cycle Tester - Menjalankan 50 trading cycle.
-    
-    Fitur:
-    - 50 cycle berturut-turut
-    - Harga bergerak dengan random walk
-    - Record semua hasil
-    - Simpan ke file untuk analisis
-    - Tidak mengubah arsitektur existing
     """
     
     def __init__(self, config: Optional[Dict] = None):
@@ -65,26 +54,39 @@ class MultiCycleTester:
             "errors": 0
         }
         
+        # Historical price data (untuk agent)
+        self.historical_prices: List[float] = []
+        self._initialize_historical_data()
+        
         # Engine
         self.engine = None
         
         logger.info(f"MultiCycleTester initialized: {self.cycles} cycles for {self.symbol}")
     
+    def _initialize_historical_data(self):
+        """Initialize historical price data (100 days)."""
+        price = self.base_price * 0.95
+        for i in range(100):
+            # Generate realistic historical data
+            drift = random.gauss(0, 0.001) + 0.0002 * math.sin(i / 20)
+            price = price * (1 + drift)
+            self.historical_prices.append(price)
+        
+        # Update base price to last historical price
+        self.base_price = self.historical_prices[-1]
+        logger.info(f"Historical data initialized: {len(self.historical_prices)} prices, base_price: ${self.base_price:.2f}")
+    
     def _generate_price_path(self) -> List[float]:
-        """Generate price path untuk 50 cycle dengan random walk dan trend."""
+        """Generate price path untuk 50 cycle dengan trend."""
         prices = []
         price = self.base_price
         
-        # Cycle 0-15: Uptrend, 15-30: Downtrend, 30-50: Sideways dengan volatility
         for i in range(self.cycles):
             if i < 15:
-                # Uptrend: +0.3% per cycle
                 drift = 0.003 + random.gauss(0, 0.001)
             elif i < 30:
-                # Downtrend: -0.3% per cycle
                 drift = -0.003 + random.gauss(0, 0.001)
             else:
-                # Sideways dengan volatility tinggi
                 drift = random.gauss(0, 0.005)
             
             price = price * (1 + drift)
@@ -94,31 +96,58 @@ class MultiCycleTester:
         
         return prices
     
-    def _generate_ohlcv_for_cycle(self, price: float, cycle: int) -> List[Dict]:
-        """Generate OHLCV data untuk satu cycle."""
-        open_price = price * (1 + random.gauss(0, 0.001))
-        high_price = price * (1 + abs(random.gauss(0, 0.002)))
-        low_price = price * (1 - abs(random.gauss(0, 0.002)))
-        close_price = price
-        volume = 1000 + 500 * (1 + math.sin(cycle / 10))
+    def _generate_full_ohlcv(self, current_price: float, cycle: int) -> List[Dict]:
+        """
+        Generate FULL OHLCV data dengan 100 candles.
+        Ini penting agar Technical Agent bisa menghitung indikator.
+        """
+        ohlcv = []
+        now = datetime.now(timezone.utc)
         
-        return [{
-            "timestamp": datetime.now(timezone.utc) - timedelta(hours=24),
-            "open": round(open_price, 2),
-            "high": round(high_price, 2),
-            "low": round(low_price, 2),
-            "close": round(close_price, 2),
-            "volume": round(volume, 2)
-        }]
+        # Gunakan historical data sebagai basis
+        base_prices = self.historical_prices[-90:] if len(self.historical_prices) >= 90 else self.historical_prices
+        
+        # Tambahkan data terbaru
+        all_prices = base_prices + [current_price]
+        
+        # Buat 100 candlestick
+        for i in range(100):
+            idx = min(i, len(all_prices) - 1)
+            price = all_prices[idx] if idx < len(all_prices) else current_price
+            
+            # Fluktuasi kecil untuk membuat data realistis
+            open_price = price * (1 + random.gauss(0, 0.0005))
+            high_price = price * (1 + abs(random.gauss(0, 0.001)))
+            low_price = price * (1 - abs(random.gauss(0, 0.001)))
+            close_price = price
+            volume = 1000 + 500 * (1 + math.sin(i / 10)) + 200 * math.sin(i / 3)
+            
+            candle_time = now - timedelta(hours=(100 - i) * 1)
+            
+            ohlcv.append({
+                "timestamp": candle_time.isoformat(),
+                "open": round(open_price, 2),
+                "high": round(high_price, 2),
+                "low": round(low_price, 2),
+                "close": round(close_price, 2),
+                "volume": round(volume, 2)
+            })
+        
+        return ohlcv
     
     async def run_single_cycle(self, cycle: int, price: float) -> Dict:
-        """Jalankan satu trading cycle."""
+        """Jalankan satu trading cycle dengan FULL OHLCV data."""
         logger.info(f"\n{'='*60}")
         logger.info(f"CYCLE #{cycle + 1}/{self.cycles} | {self.symbol} | Price: ${price:.2f}")
         logger.info(f"{'='*60}")
         
-        # Generate market data
-        ohlcv = self._generate_ohlcv_for_cycle(price, cycle)
+        # Generate FULL OHLCV (100 candles)
+        ohlcv = self._generate_full_ohlcv(price, cycle)
+        
+        # Update historical prices
+        self.historical_prices.append(price)
+        if len(self.historical_prices) > 200:
+            self.historical_prices = self.historical_prices[-100:]
         
         market_data = {
             "symbol": self.symbol,
@@ -128,12 +157,12 @@ class MultiCycleTester:
             "high_24h": price * (1 + 0.01 * random.random()),
             "low_24h": price * (1 - 0.01 * random.random()),
             "fear_greed_index": 40 + 20 * math.sin(cycle / 10),
-            "ohlcv": ohlcv,
+            "ohlcv": ohlcv,  # ← FULL DATA (100 candles)
             "volatility": self.price_volatility * (1 + 0.5 * math.sin(cycle / 7)),
             "market_phase": ["BULLISH", "BEARISH", "NEUTRAL", "VOLATILE"][cycle % 4],
         }
         
-        # Jika force_signal aktif, tambahkan sinyal buatan
+        # Jika force_signal aktif
         if self.force_signal and cycle % 5 == 0:
             market_data["sentiment_score"] = 0.7
             market_data["technical_score"] = 0.6
@@ -141,12 +170,9 @@ class MultiCycleTester:
         
         try:
             result = await self.engine.analyze_and_execute(self.symbol, market_data)
-            
-            # Record result
             result["cycle"] = cycle + 1
             result["price"] = price
             result["timestamp"] = datetime.now(timezone.utc).isoformat()
-            
             return result
             
         except Exception as e:
@@ -168,7 +194,7 @@ class MultiCycleTester:
         logger.info(f"Volatility: {self.price_volatility:.2%}")
         logger.info("="*70 + "\n")
         
-        # Initialize engine (sekali saja)
+        # Config dengan threshold rendah
         config = {
             "mode": "paper",
             "use_unified_data": True,
@@ -176,7 +202,7 @@ class MultiCycleTester:
             "orchestrator": {
                 "enable_dynamic_weights": True,
                 "max_position_size": 0.20,
-                "min_confidence": 0.20,      # Rendah untuk testing
+                "min_confidence": 0.20,
                 "debug_enabled": False
             },
             "risk_engine": {
@@ -231,7 +257,6 @@ class MultiCycleTester:
             
             if status == "PAPER_EXECUTED":
                 self.cycle_stats["executed"] += 1
-                # Record trade
                 self.trade_history.append({
                     "cycle": i + 1,
                     "price": price,
@@ -245,7 +270,6 @@ class MultiCycleTester:
             elif status == "ERROR":
                 self.cycle_stats["errors"] += 1
             
-            # Log progress setiap 10 cycle
             if (i + 1) % 10 == 0:
                 logger.info(f"\n📊 PROGRESS: {i+1}/{self.cycles} cycles completed")
                 logger.info(f"   Executed: {self.cycle_stats['executed']}")
@@ -255,20 +279,14 @@ class MultiCycleTester:
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
-        # Stop engine
         self.engine.stop()
-        
-        # Save results
         self._save_results()
-        
-        # Print summary
         self._print_summary(duration)
     
     def _save_results(self):
         """Simpan hasil ke file."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Full results
         results_file = self.output_dir / f"multi_cycle_results_{timestamp}.json"
         with open(results_file, "w") as f:
             json.dump({
@@ -286,7 +304,6 @@ class MultiCycleTester:
         
         logger.info(f"\n📁 Results saved to: {results_file}")
         
-        # Summary file (ringkas)
         summary_file = self.output_dir / f"multi_cycle_summary_{timestamp}.txt"
         with open(summary_file, "w") as f:
             f.write("="*70 + "\n")
