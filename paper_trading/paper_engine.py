@@ -1,5 +1,6 @@
+```python
 """
-Paper Trading Engine v2
+Paper Trading Engine v3
 
 Tugas:
 1. Menjalankan simulasi BUY / SELL
@@ -8,7 +9,9 @@ Tugas:
 4. Mengelola Stop Loss / Take Profit
 5. Mengelola balance dan equity
 6. Menyimpan trade history
-7. Tidak mengambil keputusan trading sendiri
+7. Menyimpan order history
+8. Menyediakan statistik trading
+9. Tidak mengambil keputusan trading sendiri
 
 Decision flow:
 
@@ -25,11 +28,12 @@ PaperTradingEngine
 
 import logging
 import uuid
-from datetime import datetime,timezone
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 
 logger = logging.getLogger(__name__)
+
 
 class PaperTradingEngine:
 
@@ -38,6 +42,36 @@ class PaperTradingEngine:
         initial_balance: float = 10000.0,
         max_position_size: float = 0.20,
     ):
+        """
+        Initialize Paper Trading Engine.
+
+        Args:
+            initial_balance:
+                Modal awal simulasi.
+
+            max_position_size:
+                Maksimum persentase portfolio
+                yang boleh digunakan dalam satu posisi.
+        """
+
+        # ------------------------------------------------------
+        # NORMALIZE CONFIGURATION
+        # ------------------------------------------------------
+
+        # TradingIntegrationEngine kemungkinan mengirim
+        # configuration dictionary.
+        #
+        # Contoh:
+        #
+        # PaperTradingEngine({
+        #     "initial_balance": 10000,
+        #     "max_position_size": 0.20
+        # })
+        #
+        # Kita dukung format tersebut di sini tanpa
+        # mengganggu penggunaan normal:
+        #
+        # PaperTradingEngine(10000)
 
         if isinstance(initial_balance, dict):
 
@@ -45,13 +79,17 @@ class PaperTradingEngine:
 
             initial_balance = config.get(
                 "initial_balance",
-                10000.0
+                10000.0,
             )
 
             max_position_size = config.get(
                 "max_position_size",
-                0.20
+                0.20,
             )
+
+        # ------------------------------------------------------
+        # CORE ACCOUNT
+        # ------------------------------------------------------
 
         self.initial_balance = float(
             initial_balance
@@ -65,142 +103,127 @@ class PaperTradingEngine:
             max_position_size
         )
 
-        self.positions: Dict[str, Dict[str, Any]] = {}
+        # ------------------------------------------------------
+        # POSITIONS
+        # ------------------------------------------------------
 
-        self.trade_history: List[Dict[str, Any]] = []
+        # symbol -> position
+        self.positions: Dict[
+            str,
+            Dict[str, Any]
+        ] = {}
 
-        self.order_history: List[Dict[str, Any]] = []
-    """
-    Initialize Paper Trading Engine.
+        # ------------------------------------------------------
+        # HISTORY
+        # ------------------------------------------------------
 
-    Supports:
+        self.trade_history: List[
+            Dict[str, Any]
+        ] = []
 
-    Direct arguments:
+        self.order_history: List[
+            Dict[str, Any]
+        ] = []
 
-        PaperTradingEngine(
-            initial_balance=10000,
-            max_position_size=0.20
+        # ------------------------------------------------------
+        # STATISTICS
+        # ------------------------------------------------------
+
+        self.total_realized_pnl = 0.0
+
+        self.total_trades = 0
+
+        self.winning_trades = 0
+
+        self.losing_trades = 0
+
+        logger.info(
+            "Paper Trading Engine initialized | "
+            "Balance=$%.2f | "
+            "Max Position=%.2f%%",
+            self.balance,
+            self.max_position_size * 100,
         )
 
-    Configuration dictionary:
+    # ==========================================================
+    # TIME
+    # ==========================================================
 
-        PaperTradingEngine({
-            "initial_balance": 10000,
-            "max_position_size": 0.20
-        })
-    """
+    @staticmethod
+    def _utc_now() -> str:
+        """
+        Return timezone-aware UTC timestamp.
+        """
 
-    # ------------------------------------------------------
-    # SUPPORT CONFIG DICTIONARY
-    # ------------------------------------------------------
+        return datetime.now(
+            timezone.utc
+        ).isoformat()
 
-    if isinstance(initial_balance, dict):
-
-        config = initial_balance
-
-        initial_balance = config.get(
-            "initial_balance",
-            10000.0
-        )
-
-        max_position_size = config.get(
-            "max_position_size",
-            0.20
-        )
-
-    # ------------------------------------------------------
-    # NORMALIZE VALUES
-    # ------------------------------------------------------
-
-    self.initial_balance = float(
-        initial_balance
-    )
-
-    self.balance = float(
-        initial_balance
-    )
-
-    self.max_position_size = float(
-        max_position_size
-    )
-
-    # ------------------------------------------------------
-    # POSITIONS
-    # ------------------------------------------------------
-
-    self.positions: Dict[str, Dict[str, Any]] = {}
-
-    # ------------------------------------------------------
-    # TRADE HISTORY
-    # ------------------------------------------------------
-
-    self.trade_history: List[Dict[str, Any]] = []
-
-    # ------------------------------------------------------
-    # ORDER HISTORY
-    # ------------------------------------------------------
-
-    self.order_history: List[Dict[str, Any]] = []
-
-    # ------------------------------------------------------
-    # STATISTICS
-    # ------------------------------------------------------
-
-    self.total_realized_pnl = 0.0
-
-    self.total_trades = 0
-
-    self.winning_trades = 0
-
-    self.losing_trades = 0
-
-    logger.info(
-        "Paper Trading Engine initialized | "
-        "Balance=$%.2f | "
-        "Max Position=%.2f%%",
-        self.balance,
-        self.max_position_size * 100,
-    )
     # ==========================================================
     # PORTFOLIO
     # ==========================================================
 
     def get_balance(self) -> float:
-        """Return available cash balance."""
-        return self.balance
+        """
+        Return available cash balance.
+        """
 
-    def get_equity(self, prices: Optional[Dict[str, float]] = None) -> float:
+        return float(self.balance)
+
+    def get_equity(
+        self,
+        prices: Optional[
+            Dict[str, float]
+        ] = None,
+    ) -> float:
         """
         Return total portfolio equity.
 
         Equity =
-        balance + unrealized PnL
+            available balance
+            + unrealized PnL
         """
 
         prices = prices or {}
 
-        unrealized_pnl = self.get_total_unrealized_pnl(prices)
+        unrealized_pnl = (
+            self.get_total_unrealized_pnl(
+                prices
+            )
+        )
 
-        return self.balance + unrealized_pnl
+        return (
+            self.balance
+            + unrealized_pnl
+        )
 
     def get_total_unrealized_pnl(
         self,
-        prices: Dict[str, float]
+        prices: Dict[str, float],
     ) -> float:
-        """Calculate unrealized PnL across all positions."""
+        """
+        Calculate unrealized PnL
+        across all active positions.
+        """
 
         total = 0.0
 
-        for symbol, position in self.positions.items():
+        for symbol, position in (
+            self.positions.items()
+        ):
 
-            current_price = prices.get(symbol)
+            current_price = prices.get(
+                symbol
+            )
 
             if current_price is None:
                 continue
 
-            total += self.calculate_unrealized_pnl(
-                position,
-                current_price
+            total += (
+                self.calculate_unrealized_pnl(
+                    position,
+                    current_price,
+                )
             )
 
         return total
@@ -218,124 +241,269 @@ class PaperTradingEngine:
         confidence: float = 0.0,
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[
+            Dict[str, Any]
+        ] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Open LONG or SHORT position.
 
-        side:
-            BUY  -> LONG
-            SELL -> SHORT
+        BUY  -> LONG
+        SELL -> SHORT
 
-        position_size:
-            0.08 = 8% portfolio
+        Example:
+
+            position_size=0.08
+
+        berarti menggunakan 8%
+        dari equity sebagai capital posisi.
         """
 
         symbol = symbol.upper()
+
         side = side.upper()
 
-        if side not in ("BUY", "SELL"):
+        # ------------------------------------------------------
+        # VALIDATION
+        # ------------------------------------------------------
+
+        if side not in (
+            "BUY",
+            "SELL",
+        ):
+
             logger.warning(
-                f"Invalid side: {side}"
+                "Invalid side: %s",
+                side,
             )
+
+            return None
+
+        try:
+
+            price = float(price)
+
+            position_size = float(
+                position_size
+            )
+
+            confidence = float(
+                confidence
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            logger.warning(
+                "Invalid numeric input."
+            )
+
             return None
 
         if price <= 0:
+
             logger.warning(
                 "Price must be greater than zero."
             )
+
             return None
 
         if position_size <= 0:
+
             logger.warning(
                 "Position size must be greater than zero."
             )
+
             return None
 
-        if position_size > self.max_position_size:
-            logger.warning(
-                f"Position size {position_size:.2%} "
-                f"exceeds maximum {self.max_position_size:.2%}"
-            )
-            return None
-
-        # Jangan membuka posisi kedua pada symbol yang sama
-        if symbol in self.positions:
+        if position_size > (
+            self.max_position_size
+        ):
 
             logger.warning(
-                f"{symbol} already has an active position."
+                "Position size %.2f%% exceeds "
+                "maximum %.2f%%",
+                position_size * 100,
+                self.max_position_size * 100,
             )
 
             return None
 
         # ------------------------------------------------------
-        # Calculate capital
+        # ONE POSITION PER SYMBOL
+        # ------------------------------------------------------
+
+        if symbol in self.positions:
+
+            logger.warning(
+                "%s already has an active position.",
+                symbol,
+            )
+
+            return None
+
+        # ------------------------------------------------------
+        # CAPITAL
         # ------------------------------------------------------
 
         equity = self.get_equity()
 
-        capital = equity * position_size
+        capital = (
+            equity * position_size
+        )
 
-        if capital > self.balance:
+        if capital <= 0:
 
             logger.warning(
-                f"Insufficient balance | "
-                f"Required=${capital:.2f} | "
-                f"Balance=${self.balance:.2f}"
+                "Calculated position capital "
+                "must be greater than zero."
             )
 
             return None
 
-        quantity = capital / price
+        if capital > self.balance:
 
-        position_id = str(uuid.uuid4())
+            logger.warning(
+                "Insufficient balance | "
+                "Required=$%.2f | "
+                "Balance=$%.2f",
+                capital,
+                self.balance,
+            )
+
+            return None
+
+        quantity = (
+            capital / price
+        )
+
+        # ------------------------------------------------------
+        # POSITION
+        # ------------------------------------------------------
+
+        position_id = str(
+            uuid.uuid4()
+        )
+
+        position_type = (
+            "LONG"
+            if side == "BUY"
+            else "SHORT"
+        )
 
         position = {
-            "position_id": position_id,
-            "symbol": symbol,
-            "side": side,
-            "position_type": (
-                "LONG"
-                if side == "BUY"
-                else "SHORT"
-            ),
-            "entry_price": float(price),
-            "quantity": float(quantity),
-            "capital": float(capital),
-            "position_size": float(position_size),
-            "confidence": float(confidence),
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "opened_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": metadata or {},
-            "unrealized_pnl": 0.0,
-            "unrealized_pnl_percent": 0.0,
+
+            "position_id":
+                position_id,
+
+            "symbol":
+                symbol,
+
+            "side":
+                side,
+
+            "position_type":
+                position_type,
+
+            "entry_price":
+                float(price),
+
+            "quantity":
+                float(quantity),
+
+            "capital":
+                float(capital),
+
+            "position_size":
+                float(position_size),
+
+            "confidence":
+                float(confidence),
+
+            "stop_loss":
+                (
+                    float(stop_loss)
+                    if stop_loss is not None
+                    else None
+                ),
+
+            "take_profit":
+                (
+                    float(take_profit)
+                    if take_profit is not None
+                    else None
+                ),
+
+            "opened_at":
+                self._utc_now(),
+
+            "metadata":
+                metadata or {},
+
+            "unrealized_pnl":
+                0.0,
+
+            "unrealized_pnl_percent":
+                0.0,
         }
 
-        # Reserve capital
+        # ------------------------------------------------------
+        # RESERVE CAPITAL
+        # ------------------------------------------------------
+
         self.balance -= capital
 
-        self.positions[symbol] = position
+        self.positions[
+            symbol
+        ] = position
+
+        # ------------------------------------------------------
+        # ORDER HISTORY
+        # ------------------------------------------------------
 
         order = {
-            "order_id": str(uuid.uuid4()),
-            "position_id": position_id,
-            "symbol": symbol,
-            "side": side,
-            "action": "OPEN",
-            "price": float(price),
-            "quantity": float(quantity),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "status": "FILLED",
+
+            "order_id":
+                str(uuid.uuid4()),
+
+            "position_id":
+                position_id,
+
+            "symbol":
+                symbol,
+
+            "side":
+                side,
+
+            "action":
+                "OPEN",
+
+            "price":
+                float(price),
+
+            "quantity":
+                float(quantity),
+
+            "created_at":
+                self._utc_now(),
+
+            "status":
+                "FILLED",
         }
 
-        self.order_history.append(order)
+        self.order_history.append(
+            order
+        )
 
         logger.info(
-            f"OPEN {position['position_type']} | "
-            f"{symbol} | "
-            f"Qty={quantity:.8f} | "
-            f"Price=${price:.2f}"
+            "OPEN %s | %s | "
+            "Qty=%.8f | Price=$%.2f",
+            position_type,
+            symbol,
+            quantity,
+            price,
         )
 
         return position.copy()
@@ -356,24 +524,58 @@ class PaperTradingEngine:
 
         symbol = symbol.upper()
 
-        if symbol not in self.positions:
+        try:
+
+            price = float(price)
+
+        except (
+            TypeError,
+            ValueError,
+        ):
 
             logger.warning(
-                f"No active position for {symbol}"
+                "Invalid closing price."
             )
 
             return None
 
-        position = self.positions[symbol]
+        if price <= 0:
 
-        entry_price = position["entry_price"]
+            logger.warning(
+                "Closing price must be greater than zero."
+            )
 
-        quantity = position["quantity"]
+            return None
+
+        # ------------------------------------------------------
+        # CHECK POSITION
+        # ------------------------------------------------------
+
+        if symbol not in self.positions:
+
+            logger.warning(
+                "No active position for %s",
+                symbol,
+            )
+
+            return None
+
+        position = self.positions[
+            symbol
+        ]
+
+        entry_price = (
+            position["entry_price"]
+        )
+
+        quantity = (
+            position["quantity"]
+        )
 
         side = position["side"]
 
         # ------------------------------------------------------
-        # Calculate PnL
+        # CALCULATE PNL
         # ------------------------------------------------------
 
         if side == "BUY":
@@ -388,45 +590,97 @@ class PaperTradingEngine:
                 entry_price - price
             ) * quantity
 
+        capital = (
+            position["capital"]
+        )
+
         pnl_percent = (
-            pnl / position["capital"]
-            if position["capital"] > 0
+            pnl / capital
+            if capital > 0
             else 0.0
         )
 
-        # Return capital + profit/loss
+        # ------------------------------------------------------
+        # RETURN CAPITAL + PNL
+        # ------------------------------------------------------
+
         returned_capital = (
-            position["capital"] + pnl
+            capital + pnl
         )
 
-        self.balance += returned_capital
+        self.balance += (
+            returned_capital
+        )
 
         # ------------------------------------------------------
-        # Trade record
+        # TRADE RECORD
         # ------------------------------------------------------
 
         trade = {
-            "trade_id": str(uuid.uuid4()),
-            "position_id": position["position_id"],
-            "symbol": symbol,
-            "side": side,
-            "position_type": position["position_type"],
-            "entry_price": entry_price,
-            "exit_price": float(price),
-            "quantity": quantity,
-            "position_size": position["position_size"],
-            "confidence": position["confidence"],
-            "pnl": float(pnl),
-            "pnl_percent": float(pnl_percent),
-            "reason": reason,
-            "entry_time": position["opened_at"],
-            "exit_time": datetime.now(timezone.utc).isoformat(),
-            "metadata": position.get("metadata", {}),
+
+            "trade_id":
+                str(uuid.uuid4()),
+
+            "position_id":
+                position["position_id"],
+
+            "symbol":
+                symbol,
+
+            "side":
+                side,
+
+            "position_type":
+                position["position_type"],
+
+            "entry_price":
+                entry_price,
+
+            "exit_price":
+                float(price),
+
+            "quantity":
+                quantity,
+
+            "position_size":
+                position["position_size"],
+
+            "confidence":
+                position["confidence"],
+
+            "pnl":
+                float(pnl),
+
+            "pnl_percent":
+                float(pnl_percent),
+
+            "reason":
+                reason,
+
+            "entry_time":
+                position["opened_at"],
+
+            "exit_time":
+                self._utc_now(),
+
+            "metadata":
+                position.get(
+                    "metadata",
+                    {},
+                ),
         }
 
-        self.trade_history.append(trade)
+        self.trade_history.append(
+            trade
+        )
 
-        self.total_realized_pnl += pnl
+        # ------------------------------------------------------
+        # STATISTICS
+        # ------------------------------------------------------
+
+        self.total_realized_pnl += (
+            pnl
+        )
 
         self.total_trades += 1
 
@@ -438,7 +692,10 @@ class PaperTradingEngine:
 
             self.losing_trades += 1
 
-        # Order record
+        # ------------------------------------------------------
+        # CLOSE ORDER
+        # ------------------------------------------------------
+
         close_side = (
             "SELL"
             if side == "BUY"
@@ -446,28 +703,59 @@ class PaperTradingEngine:
         )
 
         order = {
-            "order_id": str(uuid.uuid4()),
-            "position_id": position["position_id"],
-            "symbol": symbol,
-            "side": close_side,
-            "action": "CLOSE",
-            "price": float(price),
-            "quantity": quantity,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "status": "FILLED",
-            "reason": reason,
+
+            "order_id":
+                str(uuid.uuid4()),
+
+            "position_id":
+                position["position_id"],
+
+            "symbol":
+                symbol,
+
+            "side":
+                close_side,
+
+            "action":
+                "CLOSE",
+
+            "price":
+                float(price),
+
+            "quantity":
+                quantity,
+
+            "created_at":
+                self._utc_now(),
+
+            "status":
+                "FILLED",
+
+            "reason":
+                reason,
         }
 
-        self.order_history.append(order)
+        self.order_history.append(
+            order
+        )
 
-        # Remove active position
-        del self.positions[symbol]
+        # ------------------------------------------------------
+        # REMOVE POSITION
+        # ------------------------------------------------------
+
+        del self.positions[
+            symbol
+        ]
 
         logger.info(
-            f"CLOSE {position['position_type']} | "
-            f"{symbol} | "
-            f"PnL=${pnl:.2f} ({pnl_percent:.2%}) | "
-            f"Reason={reason}"
+            "CLOSE %s | %s | "
+            "PnL=$%.2f (%.2f%%) | "
+            "Reason=%s",
+            position["position_type"],
+            symbol,
+            pnl,
+            pnl_percent * 100,
+            reason,
         )
 
         return trade.copy()
@@ -482,36 +770,88 @@ class PaperTradingEngine:
         current_price: float,
     ) -> Optional[Dict[str, Any]]:
         """
-        Update current price and check SL/TP.
+        Update current market price.
+
+        Also checks:
+            - Stop Loss
+            - Take Profit
+
+        If triggered, position is automatically closed.
         """
 
         symbol = symbol.upper()
 
-        if symbol not in self.positions:
+        try:
+
+            current_price = float(
+                current_price
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            logger.warning(
+                "Invalid current price."
+            )
+
             return None
 
-        position = self.positions[symbol]
+        if current_price <= 0:
 
-        pnl = self.calculate_unrealized_pnl(
-            position,
-            current_price
+            logger.warning(
+                "Current price must be greater than zero."
+            )
+
+            return None
+
+        if symbol not in self.positions:
+
+            return None
+
+        position = self.positions[
+            symbol
+        ]
+
+        # ------------------------------------------------------
+        # UNREALIZED PNL
+        # ------------------------------------------------------
+
+        pnl = (
+            self.calculate_unrealized_pnl(
+                position,
+                current_price,
+            )
+        )
+
+        capital = (
+            position["capital"]
         )
 
         pnl_percent = (
-            pnl / position["capital"]
-            if position["capital"] > 0
+            pnl / capital
+            if capital > 0
             else 0.0
         )
 
-        position["unrealized_pnl"] = pnl
+        position[
+            "unrealized_pnl"
+        ] = float(pnl)
 
-        position["unrealized_pnl_percent"] = pnl_percent
+        position[
+            "unrealized_pnl_percent"
+        ] = float(pnl_percent)
 
         # ------------------------------------------------------
         # STOP LOSS
         # ------------------------------------------------------
 
-        stop_loss = position.get("stop_loss")
+        stop_loss = (
+            position.get(
+                "stop_loss"
+            )
+        )
 
         if stop_loss is not None:
 
@@ -522,24 +862,28 @@ class PaperTradingEngine:
                     return self.close_position(
                         symbol,
                         current_price,
-                        "STOP_LOSS"
+                        "STOP_LOSS",
                     )
 
-            elif position["side"] == "SELL":
+            else:
 
                 if current_price >= stop_loss:
 
                     return self.close_position(
                         symbol,
                         current_price,
-                        "STOP_LOSS"
+                        "STOP_LOSS",
                     )
 
         # ------------------------------------------------------
         # TAKE PROFIT
         # ------------------------------------------------------
 
-        take_profit = position.get("take_profit")
+        take_profit = (
+            position.get(
+                "take_profit"
+            )
+        )
 
         if take_profit is not None:
 
@@ -550,17 +894,17 @@ class PaperTradingEngine:
                     return self.close_position(
                         symbol,
                         current_price,
-                        "TAKE_PROFIT"
+                        "TAKE_PROFIT",
                     )
 
-            elif position["side"] == "SELL":
+            else:
 
                 if current_price <= take_profit:
 
                     return self.close_position(
                         symbol,
                         current_price,
-                        "TAKE_PROFIT"
+                        "TAKE_PROFIT",
                     )
 
         return None
@@ -574,20 +918,32 @@ class PaperTradingEngine:
         position: Dict[str, Any],
         current_price: float,
     ) -> float:
-        """Calculate unrealized PnL."""
+        """
+        Calculate unrealized PnL.
+        """
 
-        entry_price = position["entry_price"]
+        entry_price = float(
+            position["entry_price"]
+        )
 
-        quantity = position["quantity"]
+        quantity = float(
+            position["quantity"]
+        )
+
+        current_price = float(
+            current_price
+        )
 
         if position["side"] == "BUY":
 
             return (
-                current_price - entry_price
+                current_price
+                - entry_price
             ) * quantity
 
         return (
-            entry_price - current_price
+            entry_price
+            - current_price
         ) * quantity
 
     # ==========================================================
@@ -597,6 +953,7 @@ class PaperTradingEngine:
     def get_win_rate(self) -> float:
 
         if self.total_trades == 0:
+
             return 0.0
 
         return (
@@ -604,15 +961,23 @@ class PaperTradingEngine:
             / self.total_trades
         )
 
+    # ==========================================================
+    # SUMMARY
+    # ==========================================================
+
     def get_summary(
         self,
-        prices: Optional[Dict[str, float]] = None,
+        prices: Optional[
+            Dict[str, float]
+        ] = None,
     ) -> Dict[str, Any]:
 
         prices = prices or {}
 
         unrealized_pnl = (
-            self.get_total_unrealized_pnl(prices)
+            self.get_total_unrealized_pnl(
+                prices
+            )
         )
 
         equity = (
@@ -620,71 +985,91 @@ class PaperTradingEngine:
             + unrealized_pnl
         )
 
+        total_pnl = (
+            self.total_realized_pnl
+            + unrealized_pnl
+        )
+
         return {
-            "mode": "paper",
 
-            "initial_balance": self.initial_balance,
+            "mode":
+                "paper",
 
-            "balance": round(
-                self.balance,
-                4
-            ),
+            "initial_balance":
+                round(
+                    self.initial_balance,
+                    4,
+                ),
 
-            "equity": round(
-                equity,
-                4
-            ),
+            "balance":
+                round(
+                    self.balance,
+                    4,
+                ),
 
-            "realized_pnl": round(
-                self.total_realized_pnl,
-                4
-            ),
+            "equity":
+                round(
+                    equity,
+                    4,
+                ),
 
-            "unrealized_pnl": round(
-                unrealized_pnl,
-                4
-            ),
+            "realized_pnl":
+                round(
+                    self.total_realized_pnl,
+                    4,
+                ),
 
-            "total_pnl": round(
-                self.total_realized_pnl
-                + unrealized_pnl,
-                4
-            ),
+            "unrealized_pnl":
+                round(
+                    unrealized_pnl,
+                    4,
+                ),
 
-            "return_percent": round(
-                (
+            "total_pnl":
+                round(
+                    total_pnl,
+                    4,
+                ),
+
+            "return_percent":
+                round(
                     (
-                        equity
-                        - self.initial_balance
+                        (
+                            equity
+                            - self.initial_balance
+                        )
+                        / self.initial_balance
                     )
-                    / self.initial_balance
-                )
-                * 100,
-                4
-            ),
+                    * 100,
+                    4,
+                ),
 
-            "active_positions": len(
-                self.positions
-            ),
+            "active_positions":
+                len(
+                    self.positions
+                ),
 
-            "total_trades": self.total_trades,
+            "total_trades":
+                self.total_trades,
 
-            "winning_trades": (
-                self.winning_trades
-            ),
+            "winning_trades":
+                self.winning_trades,
 
-            "losing_trades": (
-                self.losing_trades
-            ),
+            "losing_trades":
+                self.losing_trades,
 
-            "win_rate": round(
-                self.get_win_rate(),
-                4
-            ),
+            "win_rate":
+                round(
+                    self.get_win_rate(),
+                    4,
+                ),
 
-            "positions": list(
-                self.positions.values()
-            ),
+            "positions":
+                [
+                    position.copy()
+                    for position
+                    in self.positions.values()
+                ],
         }
 
     # ==========================================================
@@ -696,35 +1081,62 @@ class PaperTradingEngine:
         limit: int = 50,
     ) -> List[Dict[str, Any]]:
 
-        return self.trade_history[-limit:]
+        if limit <= 0:
+
+            return []
+
+        return self.trade_history[
+            -limit:
+        ]
 
     def get_order_history(
         self,
         limit: int = 50,
     ) -> List[Dict[str, Any]]:
 
-        return self.order_history[-limit:]
+        if limit <= 0:
+
+            return []
+
+        return self.order_history[
+            -limit:
+        ]
+
+    # ==========================================================
+    # POSITION
+    # ==========================================================
 
     def get_position(
         self,
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
 
-        return self.positions.get(
+        position = self.positions.get(
             symbol.upper()
         )
+
+        if position is None:
+
+            return None
+
+        return position.copy()
 
     # ==========================================================
     # RESET
     # ==========================================================
 
     def reset(self):
+        """
+        Reset entire paper trading account.
+        """
 
         logger.warning(
             "RESETTING PAPER TRADING ENGINE"
         )
 
-        self.balance = self.initial_balance
+        self.balance = (
+            self.initial_balance
+        )
 
         self.positions.clear()
 
@@ -748,82 +1160,208 @@ class PaperTradingEngine:
 if __name__ == "__main__":
 
     logging.basicConfig(
-        level=logging.INFO
+        level=logging.INFO,
+        format=(
+            "%(levelname)s:"
+            "%(name)s:"
+            "%(message)s"
+        ),
     )
 
     engine = PaperTradingEngine(
-        initial_balance=10000
+        initial_balance=10000.0,
+        max_position_size=0.20,
     )
 
-    print("\n" + "=" * 70)
-    print("PAPER TRADING ENGINE TEST")
-    print("=" * 70)
+    print(
+        "\n"
+        + "=" * 70
+    )
 
-    # ----------------------------------------------------------
-    # TEST BUY
-    # ----------------------------------------------------------
+    print(
+        "PAPER TRADING ENGINE TEST"
+    )
 
-    print("\nTEST 1 — OPEN LONG")
+    print(
+        "=" * 70
+    )
+
+    # ==========================================================
+    # TEST 1 — OPEN LONG
+    # ==========================================================
+
+    print(
+        "\nTEST 1 — OPEN LONG"
+    )
 
     position = engine.open_position(
+
         symbol="BTC-USD",
+
         side="BUY",
+
         price=62760.21,
+
         position_size=0.08,
+
         confidence=0.78,
+
         stop_loss=61000,
+
         take_profit=65000,
+
         metadata={
-            "source": "decision_engine",
-            "strategy": "AI_SCALPING"
-        }
+            "source":
+                "decision_engine",
+
+            "strategy":
+                "AI_SCALPING",
+        },
     )
 
     print(position)
 
-    # ----------------------------------------------------------
-    # PRICE UPDATE
-    # ----------------------------------------------------------
+    # ==========================================================
+    # TEST 2 — PRICE UPDATE
+    # ==========================================================
 
-    print("\nTEST 2 — PRICE UPDATE")
+    print(
+        "\nTEST 2 — PRICE UPDATE"
+    )
 
     engine.update_price(
         "BTC-USD",
-        64000
+        64000,
     )
 
     print(
         engine.get_summary(
-            {"BTC-USD": 64000}
+            {
+                "BTC-USD":
+                    64000,
+            }
         )
     )
 
-    # ----------------------------------------------------------
-    # CLOSE
-    # ----------------------------------------------------------
+    # ==========================================================
+    # TEST 3 — CLOSE LONG
+    # ==========================================================
 
-    print("\nTEST 3 — CLOSE LONG")
+    print(
+        "\nTEST 3 — CLOSE LONG"
+    )
 
     trade = engine.close_position(
         "BTC-USD",
         64500,
-        "MANUAL_TEST"
+        "MANUAL_TEST",
     )
 
     print(trade)
 
-    # ----------------------------------------------------------
-    # SUMMARY
-    # ----------------------------------------------------------
+    # ==========================================================
+    # TEST 4 — FINAL SUMMARY
+    # ==========================================================
 
-    print("\nTEST 4 — FINAL SUMMARY")
+    print(
+        "\nTEST 4 — FINAL SUMMARY"
+    )
 
     print(
         engine.get_summary()
     )
 
-    print("\nTRADE HISTORY")
+    # ==========================================================
+    # TEST 5 — SHORT
+    # ==========================================================
 
-    for trade in engine.get_trade_history():
+    print(
+        "\nTEST 5 — OPEN SHORT"
+    )
+
+    short_position = (
+        engine.open_position(
+
+            symbol="BTC-USD",
+
+            side="SELL",
+
+            price=64500,
+
+            position_size=0.07,
+
+            confidence=0.81,
+
+            stop_loss=66000,
+
+            take_profit=62000,
+
+            metadata={
+                "source":
+                    "decision_engine",
+
+                "strategy":
+                    "AI_SCALPING",
+            },
+        )
+    )
+
+    print(short_position)
+
+    # ==========================================================
+    # TEST 6 — SHORT PROFIT
+    # ==========================================================
+
+    print(
+        "\nTEST 6 — CLOSE SHORT"
+    )
+
+    short_trade = (
+        engine.close_position(
+            "BTC-USD",
+            63000,
+            "MANUAL_SHORT_TEST",
+        )
+    )
+
+    print(short_trade)
+
+    # ==========================================================
+    # FINAL SUMMARY
+    # ==========================================================
+
+    print(
+        "\nFINAL SUMMARY"
+    )
+
+    print(
+        engine.get_summary()
+    )
+
+    # ==========================================================
+    # TRADE HISTORY
+    # ==========================================================
+
+    print(
+        "\nTRADE HISTORY"
+    )
+
+    for trade in (
+        engine.get_trade_history()
+    ):
 
         print(trade)
+
+    print(
+        "\n"
+        + "=" * 70
+    )
+
+    print(
+        "PAPER ENGINE TEST COMPLETE"
+    )
+
+    print(
+        "=" * 70
+    )
+```
