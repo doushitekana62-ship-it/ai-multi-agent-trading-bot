@@ -1,7 +1,7 @@
 """
-Trading Integration Engine
+Trading Integration Engine v3
 
-Menghubungkan seluruh pipeline trading:
+FULL PAPER TRADING PIPELINE
 
 MARKET DATA
     ↓
@@ -14,17 +14,28 @@ DECISION ENGINE
 EXECUTION GATE
     ↓
 PAPER TRADING ENGINE
+    ↓
+POSITION MONITOR
+    ↓
+SL / TP
+    ↓
+TRADE RESULT
 
-IMPORTANT:
-- Default execution = PAPER
-- Tidak melakukan live trading
-- Semua keputusan harus melewati seluruh layer
+IMPORTANT SAFETY:
+- PAPER MODE ONLY
+- Tidak ada live trading
+- Semua entry harus melewati seluruh decision pipeline
+- PaperTradingEngine hanya mengeksekusi keputusan
+- PaperTradingEngine tidak mengambil keputusan BUY/SELL
 """
 
 import asyncio
+import inspect
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+
 
 from core.orchestrator import Orchestrator
 from core.risk_engine import RiskEngine
@@ -39,7 +50,10 @@ logger = logging.getLogger(__name__)
 
 class TradingIntegrationEngine:
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None
+    ):
 
         self.config = config or {}
 
@@ -47,37 +61,84 @@ class TradingIntegrationEngine:
         # SAFETY
         # ==========================================================
 
-        self.mode = self.config.get("mode", "paper")
+        self.mode = str(
+            self.config.get(
+                "mode",
+                "paper"
+            )
+        ).lower()
 
-        # Hard safety:
-        # Integration engine ini tidak mengizinkan live execution.
         if self.mode != "paper":
             raise ValueError(
                 "TradingIntegrationEngine hanya mendukung PAPER mode."
             )
 
         # ==========================================================
+        # CONFIGURATION
+        # ==========================================================
+
+        self.orchestrator_config = self.config.get(
+            "orchestrator",
+            {}
+        )
+
+        self.risk_config = self.config.get(
+            "risk_engine",
+            {}
+        )
+
+        self.decision_config = self.config.get(
+            "decision_engine",
+            {}
+        )
+
+        self.execution_config = self.config.get(
+            "execution_gate",
+            {}
+        )
+
+        self.paper_config = self.config.get(
+            "paper_trading",
+            {}
+        )
+
+        # ==========================================================
         # COMPONENTS
         # ==========================================================
 
         self.orchestrator = Orchestrator(
-            self.config.get("orchestrator", {})
+            self.orchestrator_config
         )
 
         self.risk_engine = RiskEngine(
-            self.config.get("risk_engine", {})
+            self.risk_config
         )
 
         self.decision_engine = DecisionEngine(
-            self.config.get("decision_engine", {})
+            self.decision_config
         )
 
-        self.execution_gate = ExecutionGate(
-            self.config.get("execution_gate", {})
+        # ----------------------------------------------------------
+        # Execution Gate
+        #
+        # Jangan langsung:
+        #
+        # ExecutionGate({})
+        #
+        # karena versi ExecutionGate kita menggunakan parameter
+        # threshold secara langsung.
+        # ----------------------------------------------------------
+
+        self.execution_gate = self._build_execution_gate(
+            self.execution_config
         )
+
+        # ----------------------------------------------------------
+        # Paper Engine
+        # ----------------------------------------------------------
 
         self.paper_engine = PaperTradingEngine(
-            self.config.get("paper_trading", {})
+            self.paper_config
         )
 
         # ==========================================================
@@ -86,15 +147,78 @@ class TradingIntegrationEngine:
 
         self.running = False
 
-        self.last_cycle: Optional[Dict[str, Any]] = None
+        self.last_cycle: Optional[
+            Dict[str, Any]
+        ] = None
 
         self.total_cycles = 0
+
         self.executed_trades = 0
+
         self.blocked_trades = 0
+
+        self.closed_trades = 0
 
         logger.info(
             "Trading Integration Engine initialized | MODE=%s",
             self.mode
+        )
+
+    # ==============================================================
+    # EXECUTION GATE BUILDER
+    # ==============================================================
+
+    def _build_execution_gate(
+        self,
+        config: Dict[str, Any]
+    ):
+
+        """
+        Membuat ExecutionGate secara aman.
+
+        Default:
+            min_confidence = 0.60
+            min_risk_reward = 1.50
+            max_position_size = 0.20
+        """
+
+        config = config or {}
+
+        min_confidence = float(
+            config.get(
+                "min_confidence",
+                0.60
+            )
+        )
+
+        min_risk_reward = float(
+            config.get(
+                "min_risk_reward",
+                1.50
+            )
+        )
+
+        max_position_size = float(
+            config.get(
+                "max_position_size",
+                0.20
+            )
+        )
+
+        logger.info(
+            "Execution Gate config | "
+            "min_confidence=%.2f | "
+            "min_rr=%.2f | "
+            "max_position=%.2f",
+            min_confidence,
+            min_risk_reward,
+            max_position_size
+        )
+
+        return ExecutionGate(
+            min_confidence=min_confidence,
+            min_risk_reward=min_risk_reward,
+            max_position_size=max_position_size
         )
 
     # ==============================================================
@@ -104,15 +228,23 @@ class TradingIntegrationEngine:
     async def analyze_and_execute(
         self,
         symbol: str,
-        market_data: Optional[Dict[str, Any]] = None
+        market_data: Optional[
+            Dict[str, Any]
+        ] = None
     ) -> Dict[str, Any]:
+
+        symbol = symbol.upper()
 
         self.total_cycles += 1
 
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
 
         logger.info(
-            "=================================================="
+            "=" * 70
         )
 
         logger.info(
@@ -122,18 +254,83 @@ class TradingIntegrationEngine:
         )
 
         logger.info(
-            "=================================================="
+            "=" * 70
         )
 
-        # ----------------------------------------------------------
+        # ==========================================================
+        # MARKET PRICE
+        # ==========================================================
+
+        current_price = self._extract_market_price(
+            market_data
+        )
+
+        if current_price <= 0:
+
+            return self._build_error_result(
+                symbol,
+                timestamp,
+                "MARKET_DATA",
+                "Invalid or missing current_price."
+            )
+
+        # ==========================================================
+        # POSITION MONITOR
+        # ==========================================================
+
+        position = self.paper_engine.get_position(
+            symbol
+        )
+
+        position_update = None
+
+        if position is not None:
+
+            logger.info(
+                "POSITION MONITOR | %s | %s | "
+                "entry=%.2f | current=%.2f",
+                symbol,
+                position.get(
+                    "position_type"
+                ),
+                position.get(
+                    "entry_price",
+                    0.0
+                ),
+                current_price
+            )
+
+            position_update = (
+                self.paper_engine.update_price(
+                    symbol,
+                    current_price
+                )
+            )
+
+            if position_update is not None:
+
+                self.closed_trades += 1
+
+                logger.info(
+                    "POSITION CLOSED | %s | reason=%s",
+                    symbol,
+                    position_update.get(
+                        "reason",
+                        "UNKNOWN"
+                    )
+                )
+
+        # ==========================================================
         # 1. ORCHESTRATOR
-        # ----------------------------------------------------------
+        # ==========================================================
 
         try:
 
-            orchestrator_result = await self.orchestrator.analyze(
-                symbol,
-                market_data
+            orchestrator_result = (
+                await self.orchestrator.analyze(
+                    symbol,
+                    market_data
+                )
             )
 
         except Exception as e:
@@ -145,80 +342,131 @@ class TradingIntegrationEngine:
             return self._build_error_result(
                 symbol,
                 timestamp,
-                "ORCHESTRATOR_ERROR",
+                "ORCHESTRATOR",
                 str(e)
             )
 
-        # ----------------------------------------------------------
-        # Extract orchestrator data
-        # ----------------------------------------------------------
+        # ==========================================================
+        # EXTRACT ORCHESTRATOR RESULT
+        # ==========================================================
 
-        current_price = getattr(
-            orchestrator_result,
-            "current_price",
-            0.0
+        orchestrator_dict = (
+            self._serialize_object(
+                orchestrator_result
+            )
         )
 
-        action = getattr(
+        action = self._get_value(
             orchestrator_result,
             "final_action",
-            "HOLD"
+            self._get_value(
+                orchestrator_result,
+                "action",
+                "HOLD"
+            )
         )
 
-        confidence = getattr(
-            orchestrator_result,
-            "final_confidence",
-            0.0
+        confidence = float(
+            self._get_value(
+                orchestrator_result,
+                "final_confidence",
+                self._get_value(
+                    orchestrator_result,
+                    "confidence",
+                    0.0
+                )
+            )
         )
 
-        position_size = getattr(
-            orchestrator_result,
-            "position_size",
-            0.0
+        position_size = float(
+            self._get_value(
+                orchestrator_result,
+                "position_size",
+                0.0
+            )
         )
 
-        consensus_score = getattr(
-            orchestrator_result,
-            "consensus_score",
-            0.0
+        consensus_score = float(
+            self._get_value(
+                orchestrator_result,
+                "consensus_score",
+                0.0
+            )
         )
 
-        stop_loss = getattr(
+        stop_loss = self._get_value(
             orchestrator_result,
             "stop_loss",
             None
         )
 
-        take_profit = getattr(
+        take_profit = self._get_value(
             orchestrator_result,
             "take_profit",
             None
         )
 
+        action = str(
+            action
+        ).upper()
+
         logger.info(
-            "ORCHESTRATOR | %s | confidence=%.2f | consensus=%.4f",
+            "ORCHESTRATOR | action=%s | "
+            "confidence=%.2f | "
+            "consensus=%.4f",
             action,
             confidence,
             consensus_score
         )
 
-        # ----------------------------------------------------------
+        # ==========================================================
         # HOLD
-        # ----------------------------------------------------------
+        # ==========================================================
 
         if action == "HOLD":
 
             result = {
+
                 "timestamp": timestamp,
+
                 "symbol": symbol,
-                "status": "NO_TRADE",
+
+                "status": (
+                    "POSITION_UPDATED"
+                    if position_update
+                    else "NO_TRADE"
+                ),
+
                 "stage": "ORCHESTRATOR",
+
                 "action": "HOLD",
+
                 "confidence": confidence,
+
                 "position_size": 0.0,
-                "reason": "Orchestrator returned HOLD",
-                "orchestrator": self._serialize_object(
-                    orchestrator_result
+
+                "current_price": current_price,
+
+                "position_update": (
+                    self._serialize_object(
+                        position_update
+                    )
+                ),
+
+                "orchestrator": orchestrator_dict,
+
+                "paper_summary": (
+                    self.paper_engine.get_summary(
+                        {
+                            symbol:
+                            current_price
+                        }
+                    )
+                ),
+
+                "reason": (
+                    "Position monitored; "
+                    "Orchestrator returned HOLD."
                 )
             }
 
@@ -232,27 +480,16 @@ class TradingIntegrationEngine:
 
         try:
 
-            risk_result = self.risk_engine.evaluate(
-                symbol=symbol,
-                action=action,
-                confidence=confidence,
-                position_size=position_size,
-                current_price=current_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit
-            )
-
-        except TypeError:
-
-            # Compatibility fallback untuk RiskEngine
-            risk_result = self.risk_engine.evaluate(
-                symbol,
-                action,
-                confidence,
-                position_size,
-                current_price,
-                stop_loss,
-                take_profit
+            risk_result = (
+                self._evaluate_risk(
+                    symbol=symbol,
+                    action=action,
+                    confidence=confidence,
+                    position_size=position_size,
+                    current_price=current_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit
+                )
             )
 
         except Exception as e:
@@ -264,33 +501,29 @@ class TradingIntegrationEngine:
             return self._build_error_result(
                 symbol,
                 timestamp,
-                "RISK_ENGINE_ERROR",
+                "RISK_ENGINE",
                 str(e)
             )
 
-        risk_dict = self._serialize_object(risk_result)
-
-        risk_score = self._get_value(
-            risk_result,
-            "risk_score",
-            1.0
+        risk_dict = self._serialize_object(
+            risk_result
         )
 
-        risk_reward_ratio = self._get_value(
-            risk_result,
-            "risk_reward_ratio",
-            0.0
+        risk_score = float(
+            self._get_value(
+                risk_result,
+                "risk_score",
+                1.0
+            )
         )
 
-        logger.info(
-            "RISK ENGINE | score=%.4f | RR=%.2f",
-            risk_score,
-            risk_reward_ratio
+        risk_reward_ratio = float(
+            self._get_value(
+                risk_result,
+                "risk_reward_ratio",
+                0.0
+            )
         )
-
-        # ----------------------------------------------------------
-        # Risk rejection
-        # ----------------------------------------------------------
 
         risk_approved = self._get_bool(
             risk_result,
@@ -298,20 +531,39 @@ class TradingIntegrationEngine:
             False
         )
 
+        logger.info(
+            "RISK ENGINE | approved=%s | "
+            "risk=%.4f | RR=%.2f",
+            risk_approved,
+            risk_score,
+            risk_reward_ratio
+        )
+
         if not risk_approved:
 
             self.blocked_trades += 1
 
             result = {
+
                 "timestamp": timestamp,
+
                 "symbol": symbol,
+
                 "status": "RISK_REJECTED",
+
                 "stage": "RISK_ENGINE",
+
                 "action": "HOLD",
+
                 "confidence": confidence,
+
                 "position_size": 0.0,
+
                 "risk": risk_dict,
-                "reason": "Risk engine rejected trade"
+
+                "reason": (
+                    "Risk engine rejected trade."
+                )
             }
 
             self.last_cycle = result
@@ -324,28 +576,17 @@ class TradingIntegrationEngine:
 
         try:
 
-            decision_result = self.decision_engine.evaluate(
-                symbol=symbol,
-                action=action,
-                confidence=confidence,
-                position_size=position_size,
-                risk_score=risk_score,
-                consensus_score=consensus_score,
-                risk_reward_ratio=risk_reward_ratio,
-                current_price=current_price
-            )
-
-        except TypeError:
-
-            decision_result = self.decision_engine.evaluate(
-                symbol,
-                action,
-                confidence,
-                position_size,
-                risk_score,
-                consensus_score,
-                risk_reward_ratio,
-                current_price
+            decision_result = (
+                self._evaluate_decision(
+                    symbol=symbol,
+                    action=action,
+                    confidence=confidence,
+                    position_size=position_size,
+                    risk_score=risk_score,
+                    consensus_score=consensus_score,
+                    risk_reward_ratio=risk_reward_ratio,
+                    current_price=current_price
+                )
             )
 
         except Exception as e:
@@ -357,12 +598,14 @@ class TradingIntegrationEngine:
             return self._build_error_result(
                 symbol,
                 timestamp,
-                "DECISION_ENGINE_ERROR",
+                "DECISION_ENGINE",
                 str(e)
             )
 
-        decision_dict = self._serialize_object(
-            decision_result
+        decision_dict = (
+            self._serialize_object(
+                decision_result
+            )
         )
 
         decision_approved = self._get_bool(
@@ -371,28 +614,36 @@ class TradingIntegrationEngine:
             False
         )
 
-        decision_action = self._get_value(
-            decision_result,
-            "action",
-            "HOLD"
+        decision_action = str(
+            self._get_value(
+                decision_result,
+                "action",
+                "HOLD"
+            )
+        ).upper()
+
+        decision_confidence = float(
+            self._get_value(
+                decision_result,
+                "confidence",
+                confidence
+            )
         )
 
-        decision_confidence = self._get_value(
-            decision_result,
-            "confidence",
-            confidence
-        )
-
-        decision_position_size = self._get_value(
-            decision_result,
-            "position_size",
-            position_size
+        decision_position_size = float(
+            self._get_value(
+                decision_result,
+                "position_size",
+                position_size
+            )
         )
 
         logger.info(
-            "DECISION ENGINE | %s | approved=%s",
+            "DECISION ENGINE | action=%s | "
+            "approved=%s | confidence=%.2f",
             decision_action,
-            decision_approved
+            decision_approved,
+            decision_confidence
         )
 
         if not decision_approved:
@@ -400,16 +651,28 @@ class TradingIntegrationEngine:
             self.blocked_trades += 1
 
             result = {
+
                 "timestamp": timestamp,
+
                 "symbol": symbol,
+
                 "status": "DECISION_REJECTED",
+
                 "stage": "DECISION_ENGINE",
+
                 "action": "HOLD",
+
                 "confidence": decision_confidence,
+
                 "position_size": 0.0,
+
                 "risk": risk_dict,
+
                 "decision": decision_dict,
-                "reason": "Decision engine rejected trade"
+
+                "reason": (
+                    "Decision engine rejected trade."
+                )
             }
 
             self.last_cycle = result
@@ -420,33 +683,39 @@ class TradingIntegrationEngine:
         # 4. EXECUTION GATE
         # ==========================================================
 
-        execution_allowed_config = self.config.get(
-            "execution_allowed",
-            True
+        execution_allowed = bool(
+            self.config.get(
+                "execution_allowed",
+                True
+            )
         )
 
         try:
 
-            gate_result = self.execution_gate.evaluate(
-                symbol=symbol,
-                action=decision_action,
-                confidence=decision_confidence,
-                position_size=decision_position_size,
-                risk_reward_ratio=risk_reward_ratio,
-                approved=decision_approved,
-                execution_allowed=execution_allowed_config
+            gate_result = (
+                self.execution_gate.evaluate(
+                    symbol=symbol,
+                    action=decision_action,
+                    confidence=decision_confidence,
+                    position_size=decision_position_size,
+                    risk_reward_ratio=risk_reward_ratio,
+                    approved=decision_approved,
+                    execution_allowed=execution_allowed
+                )
             )
 
         except TypeError:
 
-            gate_result = self.execution_gate.evaluate(
-                symbol,
-                decision_action,
-                decision_confidence,
-                decision_position_size,
-                risk_reward_ratio,
-                decision_approved,
-                execution_allowed_config
+            gate_result = (
+                self.execution_gate.evaluate(
+                    symbol,
+                    decision_action,
+                    decision_confidence,
+                    decision_position_size,
+                    risk_reward_ratio,
+                    decision_approved,
+                    execution_allowed
+                )
             )
 
         except Exception as e:
@@ -458,12 +727,14 @@ class TradingIntegrationEngine:
             return self._build_error_result(
                 symbol,
                 timestamp,
-                "EXECUTION_GATE_ERROR",
+                "EXECUTION_GATE",
                 str(e)
             )
 
-        gate_dict = self._serialize_object(
-            gate_result
+        gate_dict = (
+            self._serialize_object(
+                gate_result
+            )
         )
 
         gate_allowed = self._get_bool(
@@ -482,20 +753,31 @@ class TradingIntegrationEngine:
             self.blocked_trades += 1
 
             result = {
+
                 "timestamp": timestamp,
+
                 "symbol": symbol,
+
                 "status": "EXECUTION_BLOCKED",
+
                 "stage": "EXECUTION_GATE",
+
                 "action": "HOLD",
+
                 "confidence": decision_confidence,
+
                 "position_size": 0.0,
+
                 "risk": risk_dict,
+
                 "decision": decision_dict,
+
                 "execution_gate": gate_dict,
+
                 "reason": self._get_value(
                     gate_result,
                     "reason",
-                    "Execution gate blocked trade"
+                    "Execution gate blocked trade."
                 )
             }
 
@@ -504,32 +786,81 @@ class TradingIntegrationEngine:
             return result
 
         # ==========================================================
-        # 5. PAPER TRADING
+        # 5. PAPER EXECUTION
         # ==========================================================
 
         if self.mode != "paper":
 
             raise RuntimeError(
-                "Safety violation: non-paper execution requested."
+                "SAFETY VIOLATION: "
+                "Non-paper execution requested."
             )
 
-        logger.info(
-            "PAPER EXECUTION | %s | %s | %.2f%%",
-            symbol,
-            decision_action,
-            decision_position_size * 100
+        # ----------------------------------------------------------
+        # Prevent duplicate position
+        # ----------------------------------------------------------
+
+        existing_position = (
+            self.paper_engine.get_position(
+                symbol
+            )
         )
+
+        if existing_position is not None:
+
+            logger.warning(
+                "ENTRY BLOCKED | %s already has "
+                "an active position.",
+                symbol
+            )
+
+            self.blocked_trades += 1
+
+            result = {
+
+                "timestamp": timestamp,
+
+                "symbol": symbol,
+
+                "status": "POSITION_EXISTS",
+
+                "stage": "PAPER_TRADING",
+
+                "action": "HOLD",
+
+                "current_price": current_price,
+
+                "existing_position": (
+                    self._serialize_object(
+                        existing_position
+                    )
+                ),
+
+                "reason": (
+                    "Active position already exists."
+                )
+            }
+
+            self.last_cycle = result
+
+            return result
+
+        # ==========================================================
+        # EXECUTE
+        # ==========================================================
 
         try:
 
-            paper_result = self._execute_paper(
-                symbol=symbol,
-                action=decision_action,
-                position_size=decision_position_size,
-                confidence=decision_confidence,
-                current_price=current_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit
+            paper_result = (
+                self._execute_paper(
+                    symbol=symbol,
+                    action=decision_action,
+                    position_size=decision_position_size,
+                    confidence=decision_confidence,
+                    current_price=current_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit
+                )
             )
 
         except Exception as e:
@@ -541,25 +872,58 @@ class TradingIntegrationEngine:
             return self._build_error_result(
                 symbol,
                 timestamp,
-                "PAPER_EXECUTION_ERROR",
+                "PAPER_TRADING",
                 str(e)
             )
 
-        paper_dict = self._serialize_object(
-            paper_result
-        )
+        if paper_result is None:
+
+            self.blocked_trades += 1
+
+            result = {
+
+                "timestamp": timestamp,
+
+                "symbol": symbol,
+
+                "status": "PAPER_REJECTED",
+
+                "stage": "PAPER_TRADING",
+
+                "action": "HOLD",
+
+                "reason": (
+                    "Paper engine rejected "
+                    "the position."
+                )
+            }
+
+            self.last_cycle = result
+
+            return result
+
+        # ==========================================================
+        # SUCCESS
+        # ==========================================================
 
         self.executed_trades += 1
 
-        # ==========================================================
-        # FINAL RESULT
-        # ==========================================================
+        paper_dict = (
+            self._serialize_object(
+                paper_result
+            )
+        )
 
         result = {
+
             "timestamp": timestamp,
+
             "symbol": symbol,
+
             "status": "PAPER_EXECUTED",
+
             "stage": "PAPER_TRADING",
+
             "mode": "paper",
 
             "action": decision_action,
@@ -575,132 +939,219 @@ class TradingIntegrationEngine:
             "take_profit": take_profit,
 
             "pipeline": {
-                "orchestrator": self._serialize_object(
-                    orchestrator_result
-                ),
 
-                "risk_engine": risk_dict,
+                "orchestrator":
+                    orchestrator_dict,
 
-                "decision_engine": decision_dict,
+                "risk_engine":
+                    risk_dict,
 
-                "execution_gate": gate_dict,
+                "decision_engine":
+                    decision_dict,
 
-                "paper_trading": paper_dict
-            }
+                "execution_gate":
+                    gate_dict,
+
+                "paper_trading":
+                    paper_dict
+            },
+
+            "paper_summary":
+                self.paper_engine.get_summary(
+                    {
+                        symbol:
+                        current_price
+                    }
+                )
         }
 
         self.last_cycle = result
 
         logger.info(
-            "PAPER TRADE COMPLETED | %s | %s",
+            "PAPER TRADE COMPLETED | "
+            "%s | %s | %.2f%%",
             symbol,
-            decision_action
+            decision_action,
+            decision_position_size * 100
         )
 
         return result
 
     # ==============================================================
-    # PAPER EXECUTION ADAPTER
+    # RISK ADAPTER
+    # ==============================================================
+
+    def _evaluate_risk(
+        self,
+        symbol,
+        action,
+        confidence,
+        position_size,
+        current_price,
+        stop_loss,
+        take_profit
+    ):
+
+        try:
+
+            return self.risk_engine.evaluate(
+                symbol=symbol,
+                action=action,
+                confidence=confidence,
+                position_size=position_size,
+                current_price=current_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit
+            )
+
+        except TypeError:
+
+            return self.risk_engine.evaluate(
+                symbol,
+                action,
+                confidence,
+                position_size,
+                current_price,
+                stop_loss,
+                take_profit
+            )
+
+    # ==============================================================
+    # DECISION ADAPTER
+    # ==============================================================
+
+    def _evaluate_decision(
+        self,
+        symbol,
+        action,
+        confidence,
+        position_size,
+        risk_score,
+        consensus_score,
+        risk_reward_ratio,
+        current_price
+    ):
+
+        try:
+
+            return self.decision_engine.evaluate(
+                symbol=symbol,
+                action=action,
+                confidence=confidence,
+                position_size=position_size,
+                risk_score=risk_score,
+                consensus_score=consensus_score,
+                risk_reward_ratio=risk_reward_ratio,
+                current_price=current_price
+            )
+
+        except TypeError:
+
+            return self.decision_engine.evaluate(
+                symbol,
+                action,
+                confidence,
+                position_size,
+                risk_score,
+                consensus_score,
+                risk_reward_ratio,
+                current_price
+            )
+
+    # ==============================================================
+    # PAPER EXECUTION
     # ==============================================================
 
     def _execute_paper(
         self,
-        symbol: str,
-        action: str,
-        position_size: float,
-        confidence: float,
-        current_price: float,
-        stop_loss: Optional[float],
-        take_profit: Optional[float]
+        symbol,
+        action,
+        position_size,
+        confidence,
+        current_price,
+        stop_loss,
+        take_profit
     ):
 
-        """
-        Adapter antara Integration Engine dan PaperTradingEngine.
+        if not hasattr(
+            self.paper_engine,
+            "open_position"
+        ):
 
-        Karena implementasi PaperTradingEngine bisa memiliki
-        signature berbeda, kita coba beberapa interface umum.
-        """
-
-        # ----------------------------------------------------------
-        # Preferred interface
-        # ----------------------------------------------------------
-
-        if hasattr(self.paper_engine, "open_position"):
-
-            return self.paper_engine.open_position(
-                symbol=symbol,
-                side=action,
-                position_size=position_size,
-                confidence=confidence,
-                price=current_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                metadata={
-                    "source": "integration_engine",
-                    "strategy": "AI_SCALPING",
-                    "mode": "paper"
-                }
+            raise AttributeError(
+                "PaperTradingEngine harus "
+                "memiliki open_position()."
             )
 
-        # ----------------------------------------------------------
-        # Alternative interface
-        # ----------------------------------------------------------
+        return self.paper_engine.open_position(
 
-        if hasattr(self.paper_engine, "execute_order"):
+            symbol=symbol,
 
-            quantity = (
-                self._get_portfolio_value()
-                * position_size
-                / current_price
-            )
+            side=action,
 
-            return self.paper_engine.execute_order(
-                symbol=symbol,
-                side=action,
-                quantity=quantity,
-                price=current_price
-            )
+            price=current_price,
 
-        raise AttributeError(
-            "PaperTradingEngine tidak memiliki "
-            "open_position() atau execute_order()."
+            position_size=position_size,
+
+            confidence=confidence,
+
+            stop_loss=stop_loss,
+
+            take_profit=take_profit,
+
+            metadata={
+
+                "source":
+                    "trading_integration_engine",
+
+                "strategy":
+                    "AI_SCALPING",
+
+                "mode":
+                    "paper"
+            }
         )
 
     # ==============================================================
-    # PORTFOLIO
+    # MARKET DATA
     # ==============================================================
 
-    def _get_portfolio_value(self) -> float:
+    @staticmethod
+    def _extract_market_price(
+        market_data
+    ) -> float:
 
-        if hasattr(
-            self.paper_engine,
-            "get_portfolio_value"
-        ):
+        if not market_data:
+            return 0.0
 
-            return self.paper_engine.get_portfolio_value()
+        price = market_data.get(
+            "current_price"
+        )
 
-        if hasattr(
-            self.paper_engine,
-            "get_summary"
-        ):
+        if price is None:
 
-            summary = self.paper_engine.get_summary()
-
-            return summary.get(
-                "equity",
-                summary.get(
-                    "balance",
-                    10000.0
-                )
+            price = market_data.get(
+                "price",
+                0.0
             )
 
-        return 10000.0
+        try:
+
+            return float(price)
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            return 0.0
 
     # ==============================================================
     # SERIALIZATION
     # ==============================================================
 
-    def _serialize_object(self, obj):
+    @staticmethod
+    def _serialize_object(obj):
 
         if obj is None:
             return None
@@ -708,14 +1159,31 @@ class TradingIntegrationEngine:
         if isinstance(obj, dict):
             return obj
 
-        if hasattr(obj, "to_dict"):
+        if isinstance(obj, list):
+
+            return [
+                TradingIntegrationEngine
+                ._serialize_object(item)
+                for item in obj
+            ]
+
+        if hasattr(
+            obj,
+            "to_dict"
+        ):
 
             try:
+
                 return obj.to_dict()
+
             except Exception:
+
                 pass
 
-        if hasattr(obj, "__dict__"):
+        if hasattr(
+            obj,
+            "__dict__"
+        ):
 
             result = {}
 
@@ -726,14 +1194,18 @@ class TradingIntegrationEngine:
                     datetime
                 ):
 
-                    result[key] = value.isoformat()
+                    result[key] = (
+                        value.isoformat()
+                    )
 
                 elif hasattr(
                     value,
                     "value"
                 ):
 
-                    result[key] = value.value
+                    result[key] = (
+                        value.value
+                    )
 
                 else:
 
@@ -744,7 +1216,7 @@ class TradingIntegrationEngine:
         return obj
 
     # ==============================================================
-    # HELPERS
+    # VALUE HELPERS
     # ==============================================================
 
     @staticmethod
@@ -757,7 +1229,11 @@ class TradingIntegrationEngine:
         if obj is None:
             return default
 
-        if isinstance(obj, dict):
+        if isinstance(
+            obj,
+            dict
+        ):
+
             return obj.get(
                 key,
                 default
@@ -776,13 +1252,17 @@ class TradingIntegrationEngine:
         default=False
     ):
 
-        value = TradingIntegrationEngine._get_value(
-            obj,
-            key,
-            default
+        return bool(
+            TradingIntegrationEngine._get_value(
+                obj,
+                key,
+                default
+            )
         )
 
-        return bool(value)
+    # ==============================================================
+    # ERROR
+    # ==============================================================
 
     def _build_error_result(
         self,
@@ -795,13 +1275,27 @@ class TradingIntegrationEngine:
         self.blocked_trades += 1
 
         result = {
-            "timestamp": timestamp,
-            "symbol": symbol,
-            "status": "ERROR",
-            "stage": stage,
-            "action": "HOLD",
-            "position_size": 0.0,
-            "error": error
+
+            "timestamp":
+                timestamp,
+
+            "symbol":
+                symbol,
+
+            "status":
+                "ERROR",
+
+            "stage":
+                stage,
+
+            "action":
+                "HOLD",
+
+            "position_size":
+                0.0,
+
+            "error":
+                str(error)
         }
 
         self.last_cycle = result
@@ -812,53 +1306,69 @@ class TradingIntegrationEngine:
     # STATUS
     # ==============================================================
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(
+        self
+    ) -> Dict[str, Any]:
 
-        paper_summary = {}
+        try:
 
-        if hasattr(
-            self.paper_engine,
-            "get_summary"
-        ):
+            summary = (
+                self.paper_engine.get_summary()
+            )
 
-            try:
-                paper_summary = (
-                    self.paper_engine.get_summary()
-                )
-            except Exception as e:
+        except Exception:
 
-                logger.error(
-                    "Unable to get paper summary: %s",
-                    e
-                )
+            summary = {}
 
         return {
-            "mode": self.mode,
 
-            "running": self.running,
+            "mode":
+                self.mode,
 
-            "total_cycles": self.total_cycles,
+            "running":
+                self.running,
 
-            "executed_trades": self.executed_trades,
+            "total_cycles":
+                self.total_cycles,
 
-            "blocked_trades": self.blocked_trades,
+            "executed_trades":
+                self.executed_trades,
 
-            "paper_trading": paper_summary,
+            "closed_trades":
+                self.closed_trades,
 
-            "last_cycle": self.last_cycle
+            "blocked_trades":
+                self.blocked_trades,
+
+            "paper_trading":
+                summary,
+
+            "last_cycle":
+                self.last_cycle
         }
 
     # ==============================================================
-    # START / STOP
+    # START
     # ==============================================================
 
     def start(self):
 
+        if self.mode != "paper":
+
+            raise RuntimeError(
+                "Only PAPER mode is allowed."
+            )
+
         self.running = True
 
         logger.info(
-            "Trading Integration Engine STARTED"
+            "Trading Integration Engine STARTED | "
+            "MODE=PAPER"
         )
+
+    # ==============================================================
+    # STOP
+    # ==============================================================
 
     def stop(self):
 
@@ -869,39 +1379,90 @@ class TradingIntegrationEngine:
         )
 
 
-# ==============================================================
+# ==================================================================
 # TEST
-# ==============================================================
+# ==================================================================
 
 async def main():
 
     logging.basicConfig(
-        level=logging.INFO
+        level=logging.INFO,
+        format=(
+            "%(asctime)s | "
+            "%(levelname)s | "
+            "%(name)s | "
+            "%(message)s"
+        )
     )
 
     print()
     print("=" * 70)
-    print("AI TRADING INTEGRATION ENGINE TEST")
+    print(
+        "AI TRADING INTEGRATION ENGINE v3 TEST"
+    )
     print("=" * 70)
-    print()
 
-    engine = TradingIntegrationEngine({
-        "mode": "paper",
+    # ==============================================================
+    # CONFIG
+    # ==============================================================
 
-        # PAPER execution diperbolehkan
-        "execution_allowed": True,
+    config = {
+
+        "mode":
+            "paper",
+
+        "execution_allowed":
+            True,
+
+        "execution_gate": {
+
+            "min_confidence":
+                0.60,
+
+            "min_risk_reward":
+                1.50,
+
+            "max_position_size":
+                0.20
+        },
 
         "paper_trading": {
-            "initial_balance": 10000.0
+
+            "initial_balance":
+                10000.0,
+
+            "max_position_size":
+                0.20
         }
-    })
+    }
+
+    # ==============================================================
+    # CREATE ENGINE
+    # ==============================================================
+
+    engine = TradingIntegrationEngine(
+        config
+    )
 
     engine.start()
 
+    # ==============================================================
+    # TEST CYCLE
+    # ==============================================================
+
+    print()
+    print("=" * 70)
+    print("TEST — FULL PIPELINE")
+    print("=" * 70)
+
     result = await engine.analyze_and_execute(
+
         symbol="BTC-USD",
+
         market_data={
-            "current_price": 62760.21
+
+            "current_price":
+                62760.21
         }
     )
 
@@ -910,8 +1471,6 @@ async def main():
     print("FINAL RESULT")
     print("=" * 70)
 
-    import json
-
     print(
         json.dumps(
             result,
@@ -919,6 +1478,10 @@ async def main():
             default=str
         )
     )
+
+    # ==============================================================
+    # STATUS
+    # ==============================================================
 
     print()
     print("=" * 70)
@@ -938,4 +1501,6 @@ async def main():
 
 if __name__ == "__main__":
 
-    asyncio.run(main())
+    asyncio.run(
+        main()
+    )
