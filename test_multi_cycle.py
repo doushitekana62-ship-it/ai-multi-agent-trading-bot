@@ -47,7 +47,8 @@ class MultiCycleTester:
         self.cycles = self.config.get("cycles", 50)
         self.symbol = self.config.get("symbol", "BTC-USD")
         self.base_price = self.config.get("base_price", 62760.21)
-        self.price_volatility = self.config.get("price_volatility", 0.002)  # 0.2% per cycle
+        self.price_volatility = self.config.get("price_volatility", 0.002)
+        self.force_signal = self.config.get("force_signal", False)
         self.output_dir = Path(self.config.get("output_dir", "test_results"))
         self.output_dir.mkdir(exist_ok=True)
         
@@ -70,29 +71,31 @@ class MultiCycleTester:
         logger.info(f"MultiCycleTester initialized: {self.cycles} cycles for {self.symbol}")
     
     def _generate_price_path(self) -> List[float]:
-        """Generate price path untuk 50 cycle dengan random walk."""
+        """Generate price path untuk 50 cycle dengan random walk dan trend."""
         prices = []
         price = self.base_price
         
+        # Cycle 0-15: Uptrend, 15-30: Downtrend, 30-50: Sideways dengan volatility
         for i in range(self.cycles):
-            # Random walk dengan drift kecil
-            drift = random.gauss(0, self.price_volatility)
-            # Kadang-kadang ada trend kecil
-            if i < 25:
-                drift += 0.0005  # Slight bullish bias first half
+            if i < 15:
+                # Uptrend: +0.3% per cycle
+                drift = 0.003 + random.gauss(0, 0.001)
+            elif i < 30:
+                # Downtrend: -0.3% per cycle
+                drift = -0.003 + random.gauss(0, 0.001)
             else:
-                drift -= 0.0005  # Slight bearish bias second half
+                # Sideways dengan volatility tinggi
+                drift = random.gauss(0, 0.005)
             
             price = price * (1 + drift)
-            # Pastikan harga positif
-            price = max(price, self.base_price * 0.80)
+            price = max(price, self.base_price * 0.70)
+            price = min(price, self.base_price * 1.30)
             prices.append(price)
         
         return prices
     
     def _generate_ohlcv_for_cycle(self, price: float, cycle: int) -> List[Dict]:
         """Generate OHLCV data untuk satu cycle."""
-        # Simulasi OHLCV berdasarkan price
         open_price = price * (1 + random.gauss(0, 0.001))
         high_price = price * (1 + abs(random.gauss(0, 0.002)))
         low_price = price * (1 - abs(random.gauss(0, 0.002)))
@@ -130,6 +133,12 @@ class MultiCycleTester:
             "market_phase": ["BULLISH", "BEARISH", "NEUTRAL", "VOLATILE"][cycle % 4],
         }
         
+        # Jika force_signal aktif, tambahkan sinyal buatan
+        if self.force_signal and cycle % 5 == 0:
+            market_data["sentiment_score"] = 0.7
+            market_data["technical_score"] = 0.6
+            market_data["_force_action"] = "BUY"
+        
         try:
             result = await self.engine.analyze_and_execute(self.symbol, market_data)
             
@@ -160,39 +169,39 @@ class MultiCycleTester:
         logger.info("="*70 + "\n")
         
         # Initialize engine (sekali saja)
-config = {
-    "mode": "paper",
-    "use_unified_data": True,
-    "execution_allowed": True,
-    "orchestrator": {
-        "enable_dynamic_weights": True,
-        "max_position_size": 0.20,
-        "min_confidence": 0.20,      # Rendah untuk testing
-        "debug_enabled": False
-    },
-    "risk_engine": {
-        "minimum_confidence": 0.20,
-        "max_position_size": 0.20,
-        "minimum_risk_reward": 1.0,
-        "max_daily_loss": 0.10       # Lebih longgar
-    },
-    "decision_engine": {
-        "min_confidence": 0.20,
-        "min_consensus": 0.10,
-        "min_directional_edge": 0.05,
-        "min_risk_reward": 1.0,
-        "live_trading_enabled": False
-    },
-    "execution_gate": {
-        "min_confidence": 0.20,
-        "min_risk_reward": 1.0,
-        "max_position_size": 0.20
-    },
-    "paper_trading": {
-        "initial_balance": 10000.0,
-        "max_position_size": 0.20
-    }
-}
+        config = {
+            "mode": "paper",
+            "use_unified_data": True,
+            "execution_allowed": True,
+            "orchestrator": {
+                "enable_dynamic_weights": True,
+                "max_position_size": 0.20,
+                "min_confidence": 0.20,      # Rendah untuk testing
+                "debug_enabled": False
+            },
+            "risk_engine": {
+                "minimum_confidence": 0.20,
+                "max_position_size": 0.20,
+                "minimum_risk_reward": 1.0,
+                "max_daily_loss": 0.10
+            },
+            "decision_engine": {
+                "min_confidence": 0.20,
+                "min_consensus": 0.10,
+                "min_directional_edge": 0.05,
+                "min_risk_reward": 1.0,
+                "live_trading_enabled": False
+            },
+            "execution_gate": {
+                "min_confidence": 0.20,
+                "min_risk_reward": 1.0,
+                "max_position_size": 0.20
+            },
+            "paper_trading": {
+                "initial_balance": 10000.0,
+                "max_position_size": 0.20
+            }
+        }
         
         self.engine = TradingIntegrationEngine(config)
         self.engine.start()
@@ -298,7 +307,7 @@ config = {
             
             if self.trade_history:
                 f.write("TRADE HISTORY:\n")
-                for trade in self.trade_history[-10:]:  # Last 10 trades
+                for trade in self.trade_history[-10:]:
                     f.write(f"  Cycle #{trade['cycle']:2d}: {trade['action']} @ ${trade['price']:.2f} (conf: {trade['confidence']:.2%})\n")
         
         logger.info(f"📁 Summary saved to: {summary_file}")
@@ -323,7 +332,7 @@ config = {
         
         if self.trade_history:
             print(f"\n📈 TRADE HISTORY (Total: {len(self.trade_history)} trades):")
-            for trade in self.trade_history[-5:]:  # Last 5 trades
+            for trade in self.trade_history[-5:]:
                 print(f"   Cycle #{trade['cycle']:2d}: {trade['action']} @ ${trade['price']:.2f} (conf: {trade['confidence']:.2%})")
         
         print("\n" + "="*70)
@@ -338,6 +347,7 @@ async def main():
         "symbol": "BTC-USD",
         "base_price": 62760.21,
         "price_volatility": 0.002,
+        "force_signal": False,
         "output_dir": "test_results"
     })
     
