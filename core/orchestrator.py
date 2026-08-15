@@ -57,9 +57,7 @@ class OrchestratorResult:
 
 
 class Orchestrator:
-    """
-    Central coordinator untuk seluruh AI agents dengan Unified Market Data.
-    """
+    """Central coordinator untuk seluruh AI agents dengan Unified Market Data."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
@@ -137,7 +135,7 @@ class Orchestrator:
         logger.info("Orchestrator initialized with Unified Market Data")
 
     # ============================================================
-    # PUBLIC ANALYZE
+    # PUBLIC ANALYZE - DENGAN FORCE SIGNAL
     # ============================================================
 
     async def analyze(
@@ -152,10 +150,31 @@ class Orchestrator:
         symbol = symbol.upper()
 
         # ============================================================
+        # STEP 0: FORCE SIGNAL - Untuk testing pipeline eksekusi
+        # ============================================================
+        market_data = market_data or {}
+        
+        force_action = market_data.get("_force_action")
+        if force_action and force_action in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"]:
+            logger.info(f"⚠️ FORCE SIGNAL DETECTED: {force_action} for {symbol}")
+            
+            current_price = market_data.get("current_price", 0)
+            if current_price <= 0:
+                current_price = market_data.get("unified_price", 0)
+            if current_price <= 0:
+                current_price = 60000.0  # fallback
+            
+            return self._create_forced_result(
+                symbol=symbol,
+                action=force_action,
+                current_price=current_price,
+                market_data=market_data
+            )
+
+        # ============================================================
         # STEP 1: GET UNIFIED MARKET SNAPSHOT
         # ============================================================
 
-        market_data = market_data or {}
         unified_snapshot = None
 
         if self.use_unified_data:
@@ -356,6 +375,94 @@ class Orchestrator:
         except Exception as e:
             logger.exception("Orchestrator analysis failed for %s: %s", symbol, e)
             return self._get_default_result(symbol)
+
+    # ============================================================
+    # FORCE RESULT
+    # ============================================================
+
+    def _create_forced_result(
+        self,
+        symbol: str,
+        action: str,
+        current_price: float,
+        market_data: Dict[str, Any]
+    ) -> OrchestratorResult:
+        """
+        Create forced result untuk testing pipeline eksekusi.
+        """
+        timestamp = datetime.now(timezone.utc)
+        
+        action = action.upper()
+        is_buy = action in ["BUY", "STRONG_BUY"]
+        is_sell = action in ["SELL", "STRONG_SELL"]
+        
+        confidence = 0.85
+        position_size = 0.08
+        score = 0.85 if is_buy else -0.85
+        
+        agent_votes = {
+            "sentiment": action,
+            "technical": action,
+            "decision": action,
+            "forecast": action,
+        }
+        
+        stop_loss = None
+        take_profit = None
+        if current_price > 0:
+            if is_buy:
+                stop_loss = current_price * 0.95
+                take_profit = current_price * 1.05
+            elif is_sell:
+                stop_loss = current_price * 1.05
+                take_profit = current_price * 0.95
+        
+        summary = (
+            f"=== FORCED SIGNAL ===\n"
+            f"Symbol: {symbol}\n"
+            f"Action: {action}\n"
+            f"Confidence: {confidence:.2%}\n"
+            f"Position Size: {position_size:.2%}\n"
+            f"This is a forced test signal for pipeline validation."
+        )
+        
+        return OrchestratorResult(
+            timestamp=timestamp,
+            symbol=symbol,
+            current_price=current_price,
+            unified_snapshot=None,
+            sentiment=None,
+            technical=None,
+            decision=None,
+            reflection=None,
+            forecast=None,
+            consensus_action=action,
+            consensus_score=score,
+            agent_votes=agent_votes,
+            final_action=action,
+            final_confidence=confidence,
+            position_size=position_size,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            decision_score=score,
+            confidence_components={
+                "decision_confidence": confidence,
+                "consensus_strength": 0.85,
+                "agent_agreement": 1.0,
+                "agreement_direction": score,
+                "combined_score": score,
+            },
+            market_scores={
+                "sentiment": score,
+                "technical": score,
+                "decision": score,
+                "forecast": score,
+                "consensus": score,
+            },
+            summary=summary,
+            execution_reason=f"FORCED SIGNAL: {action}",
+            hold_reason=None
+        )
 
     # ============================================================
     # AGENT RUNNERS
@@ -741,7 +848,7 @@ class Orchestrator:
             value = float(value)
         except (TypeError, ValueError):
             return 0.0
-        if value != value:
+        if value != value:  # NaN
             return 0.0
         if value == float("inf"):
             return 1.0
@@ -754,7 +861,7 @@ class Orchestrator:
             value = float(value)
         except (TypeError, ValueError):
             return 0.0
-        if value != value:
+        if value != value:  # NaN
             return 0.0
         return max(0.0, min(1.0, value))
 
@@ -781,7 +888,7 @@ class Orchestrator:
     ) -> float:
         # From market data
         if market_data:
-            for key in ["current_price", "price", "last_price", "close"]:
+            for key in ["current_price", "price", "last_price", "close", "unified_price"]:
                 value = market_data.get(key)
                 if value is not None:
                     try:
