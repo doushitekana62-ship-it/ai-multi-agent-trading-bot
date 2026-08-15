@@ -266,7 +266,7 @@ class MultiCycleTester:
         logger.info("="*70 + "\n")
         
         # ============================================================
-        # CONFIG - DENGAN MIMIC TRADER
+        # CONFIG - DENGAN MIMIC TRADER (SUDAH DIPERBAIKI)
         # ============================================================
         config = {
             "mode": "paper",
@@ -295,12 +295,14 @@ class MultiCycleTester:
                 "minimum_confidence": 0.20,
                 "max_position_size": 0.25,
                 "minimum_risk_reward": 0.8,
-                "max_daily_loss": 0.15
+                "max_daily_loss": 0.15,
+                "max_risk_score": 1.0,  # ← TAMBAHKAN
             },
             "decision_engine": {
                 "min_confidence": 0.20,
                 "min_consensus": 0.05,
                 "min_directional_edge": 0.03,
+                "max_risk_score": 1.0,  # ← TAMBAHKAN
                 "min_risk_reward": 0.8,
                 "live_trading_enabled": True
             },
