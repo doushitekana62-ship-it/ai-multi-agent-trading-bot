@@ -1,4 +1,3 @@
-```python
 """
 Paper Trading Engine v3
 
