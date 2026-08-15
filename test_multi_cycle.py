@@ -1,10 +1,8 @@
 """
-test_multi_cycle.py - Multi-Cycle Test 50 Cycles (FIXED)
+test_multi_cycle.py - Multi-Cycle Test 50 Cycles (WITH FORCE SIGNAL)
 
-Perbaikan:
-1. Menambahkan historical data (100 candlestick) untuk setiap cycle
-2. Menggunakan data yang konsisten
-3. Memastikan agent mendapatkan data yang cukup
+Untuk testing, kita paksa sinyal BUY/SELL pada cycle tertentu
+untuk memastikan pipeline eksekusi berjalan.
 """
 
 import asyncio
@@ -37,7 +35,7 @@ class MultiCycleTester:
         self.symbol = self.config.get("symbol", "BTC-USD")
         self.base_price = self.config.get("base_price", 62760.21)
         self.price_volatility = self.config.get("price_volatility", 0.002)
-        self.force_signal = self.config.get("force_signal", False)
+        self.force_signal = self.config.get("force_signal", True)  # ← DEFAULT TRUE
         self.output_dir = Path(self.config.get("output_dir", "test_results"))
         self.output_dir.mkdir(exist_ok=True)
         
@@ -54,7 +52,7 @@ class MultiCycleTester:
             "errors": 0
         }
         
-        # Historical price data (untuk agent)
+        # Historical price data
         self.historical_prices: List[float] = []
         self._initialize_historical_data()
         
@@ -62,22 +60,21 @@ class MultiCycleTester:
         self.engine = None
         
         logger.info(f"MultiCycleTester initialized: {self.cycles} cycles for {self.symbol}")
+        logger.info(f"Force Signal: {self.force_signal}")
     
     def _initialize_historical_data(self):
         """Initialize historical price data (100 days)."""
         price = self.base_price * 0.95
         for i in range(100):
-            # Generate realistic historical data
             drift = random.gauss(0, 0.001) + 0.0002 * math.sin(i / 20)
             price = price * (1 + drift)
             self.historical_prices.append(price)
         
-        # Update base price to last historical price
         self.base_price = self.historical_prices[-1]
-        logger.info(f"Historical data initialized: {len(self.historical_prices)} prices, base_price: ${self.base_price:.2f}")
+        logger.info(f"Historical data initialized: {len(self.historical_prices)} prices")
     
     def _generate_price_path(self) -> List[float]:
-        """Generate price path untuk 50 cycle dengan trend."""
+        """Generate price path."""
         prices = []
         price = self.base_price
         
@@ -97,25 +94,17 @@ class MultiCycleTester:
         return prices
     
     def _generate_full_ohlcv(self, current_price: float, cycle: int) -> List[Dict]:
-        """
-        Generate FULL OHLCV data dengan 100 candles.
-        Ini penting agar Technical Agent bisa menghitung indikator.
-        """
+        """Generate FULL OHLCV data dengan 100 candles."""
         ohlcv = []
         now = datetime.now(timezone.utc)
         
-        # Gunakan historical data sebagai basis
         base_prices = self.historical_prices[-90:] if len(self.historical_prices) >= 90 else self.historical_prices
-        
-        # Tambahkan data terbaru
         all_prices = base_prices + [current_price]
         
-        # Buat 100 candlestick
         for i in range(100):
             idx = min(i, len(all_prices) - 1)
             price = all_prices[idx] if idx < len(all_prices) else current_price
             
-            # Fluktuasi kecil untuk membuat data realistis
             open_price = price * (1 + random.gauss(0, 0.0005))
             high_price = price * (1 + abs(random.gauss(0, 0.001)))
             low_price = price * (1 - abs(random.gauss(0, 0.001)))
@@ -136,7 +125,7 @@ class MultiCycleTester:
         return ohlcv
     
     async def run_single_cycle(self, cycle: int, price: float) -> Dict:
-        """Jalankan satu trading cycle dengan FULL OHLCV data."""
+        """Jalankan satu trading cycle."""
         logger.info(f"\n{'='*60}")
         logger.info(f"CYCLE #{cycle + 1}/{self.cycles} | {self.symbol} | Price: ${price:.2f}")
         logger.info(f"{'='*60}")
@@ -157,16 +146,28 @@ class MultiCycleTester:
             "high_24h": price * (1 + 0.01 * random.random()),
             "low_24h": price * (1 - 0.01 * random.random()),
             "fear_greed_index": 40 + 20 * math.sin(cycle / 10),
-            "ohlcv": ohlcv,  # ← FULL DATA (100 candles)
+            "ohlcv": ohlcv,
             "volatility": self.price_volatility * (1 + 0.5 * math.sin(cycle / 7)),
             "market_phase": ["BULLISH", "BEARISH", "NEUTRAL", "VOLATILE"][cycle % 4],
         }
         
-        # Jika force_signal aktif
-        if self.force_signal and cycle % 5 == 0:
-            market_data["sentiment_score"] = 0.7
-            market_data["technical_score"] = 0.6
-            market_data["_force_action"] = "BUY"
+        # ============================================================
+        # FORCE SIGNAL - Untuk testing pipeline eksekusi
+        # ============================================================
+        if self.force_signal:
+            # Pattern: BUY pada cycle kelipatan 5, SELL pada cycle kelipatan 7
+            if cycle % 5 == 0 and cycle % 7 != 0:
+                # BUY signal
+                market_data["sentiment_score"] = 0.8
+                market_data["technical_score"] = 0.7
+                market_data["_force_action"] = "BUY"
+                logger.info(f"🔴 FORCE SIGNAL: BUY on cycle {cycle + 1}")
+            elif cycle % 7 == 0:
+                # SELL signal
+                market_data["sentiment_score"] = -0.7
+                market_data["technical_score"] = -0.8
+                market_data["_force_action"] = "SELL"
+                logger.info(f"🔴 FORCE SIGNAL: SELL on cycle {cycle + 1}")
         
         try:
             result = await self.engine.analyze_and_execute(self.symbol, market_data)
@@ -192,9 +193,10 @@ class MultiCycleTester:
         logger.info(f"Symbol: {self.symbol}")
         logger.info(f"Base Price: ${self.base_price:.2f}")
         logger.info(f"Volatility: {self.price_volatility:.2%}")
+        logger.info(f"Force Signal: {self.force_signal}")
         logger.info("="*70 + "\n")
         
-        # Config dengan threshold rendah
+        # Config
         config = {
             "mode": "paper",
             "use_unified_data": True,
@@ -275,6 +277,8 @@ class MultiCycleTester:
                 logger.info(f"   Executed: {self.cycle_stats['executed']}")
                 logger.info(f"   Blocked: {self.cycle_stats['blocked']}")
                 logger.info(f"   HOLD: {self.cycle_stats['hold']}")
+                logger.info(f"   BUY: {self.cycle_stats['buy']}")
+                logger.info(f"   SELL: {self.cycle_stats['sell']}")
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -295,6 +299,7 @@ class MultiCycleTester:
                     "cycles": self.cycles,
                     "base_price": self.base_price,
                     "volatility": self.price_volatility,
+                    "force_signal": self.force_signal,
                     "timestamp": datetime.now().isoformat()
                 },
                 "summary": self.cycle_stats,
@@ -311,8 +316,8 @@ class MultiCycleTester:
             f.write("="*70 + "\n\n")
             f.write(f"Symbol: {self.symbol}\n")
             f.write(f"Cycles: {self.cycles}\n")
-            f.write(f"Base Price: ${self.base_price:.2f}\n")
-            f.write(f"Volatility: {self.price_volatility:.2%}\n\n")
+            f.write(f"Force Signal: {self.force_signal}\n")
+            f.write(f"Base Price: ${self.base_price:.2f}\n\n")
             f.write("STATISTICS:\n")
             f.write(f"  Total Cycles: {self.cycle_stats['total']}\n")
             f.write(f"  HOLD Decisions: {self.cycle_stats['hold']} ({self.cycle_stats['hold']/self.cycles*100:.1f}%)\n")
@@ -324,8 +329,8 @@ class MultiCycleTester:
             
             if self.trade_history:
                 f.write("TRADE HISTORY:\n")
-                for trade in self.trade_history[-10:]:
-                    f.write(f"  Cycle #{trade['cycle']:2d}: {trade['action']} @ ${trade['price']:.2f} (conf: {trade['confidence']:.2%})\n")
+                for trade in self.trade_history:
+                    f.write(f"  Cycle #{trade['cycle']:2d}: {trade['action']} @ ${trade['price']:.2f} (conf: {trade['confidence']:.2%}, size: {trade['position_size']:.2%})\n")
         
         logger.info(f"📁 Summary saved to: {summary_file}")
     
@@ -349,7 +354,7 @@ class MultiCycleTester:
         
         if self.trade_history:
             print(f"\n📈 TRADE HISTORY (Total: {len(self.trade_history)} trades):")
-            for trade in self.trade_history[-5:]:
+            for trade in self.trade_history[-10:]:
                 print(f"   Cycle #{trade['cycle']:2d}: {trade['action']} @ ${trade['price']:.2f} (conf: {trade['confidence']:.2%})")
         
         print("\n" + "="*70)
@@ -364,7 +369,7 @@ async def main():
         "symbol": "BTC-USD",
         "base_price": 62760.21,
         "price_volatility": 0.002,
-        "force_signal": False,
+        "force_signal": True,  # ← AKTIFKAN FORCE SIGNAL
         "output_dir": "test_results"
     })
     
