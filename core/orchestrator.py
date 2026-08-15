@@ -1511,83 +1511,43 @@ class Orchestrator:
     # AGREEMENT
     # ========================================================
 
-    def _calculate_agreement(
-        self,
-        votes: Dict[str, str]
-    ) -> float:
+   def _calculate_agent_agreement(self, agent_votes):
+    """
+    Menghitung tingkat kesepakatan agent berdasarkan action.
+    HOLD/HOLD/HOLD/HOLD = 1.0
+    BUY/BUY/BUY/HOLD = 0.75
+    BUY/SELL/HOLD/HOLD = 0.50
+    """
 
-        """
-        Mengukur directional agreement.
+    if not agent_votes:
+        return 0.0
 
-        HOLD tidak dihitung sebagai bullish/bearish.
+    actions = []
 
-        Contoh:
+    for vote in agent_votes.values():
+        if vote is None:
+            continue
 
-            BUY
-            STRONG_BUY
-            BUY
-            SELL
+        action = str(vote).upper().strip()
 
-        bullish = 3
-        bearish = 1
+        if action in ("BUY", "SELL", "HOLD"):
+            actions.append(action)
 
-        agreement = 3 / 4 = 0.75
-        """
+    if not actions:
+        return 0.0
 
-        if not votes:
+    # Majority agreement
+    counts = {
+        "BUY": actions.count("BUY"),
+        "SELL": actions.count("SELL"),
+        "HOLD": actions.count("HOLD"),
+    }
 
-            return 0.0
+    majority_count = max(counts.values())
 
-        scores = [
+    agreement = majority_count / len(actions)
 
-            self._action_to_score(
-                action
-            )
-
-            for action in votes.values()
-        ]
-
-        if not scores:
-
-            return 0.0
-
-        bullish = sum(
-            1
-            for score in scores
-            if score > 0
-        )
-
-        bearish = sum(
-            1
-            for score in scores
-            if score < 0
-        )
-
-        total_directional = (
-            bullish
-            +
-            bearish
-        )
-
-        # ----------------------------------------------------
-        # Semua HOLD
-        # ----------------------------------------------------
-
-        if total_directional == 0:
-
-            return 0.0
-
-        dominant = max(
-            bullish,
-            bearish
-        )
-
-        return (
-            dominant
-            /
-            len(scores)
-        )
-
+    return round(agreement, 4)
     # ========================================================
     # AGREEMENT DIRECTION
     # ========================================================
