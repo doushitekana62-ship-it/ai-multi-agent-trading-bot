@@ -618,27 +618,29 @@ async def test_engine():
       "orchestrator": {
         "enable_dynamic_weights": True,
         "max_position_size": 0.20,
-        "min_confidence": 0.35,  # ← TURUNKAN DARI 0.40 KE 0.35
+        "min_confidence": 0.25,  # ← TURUNKAN DARI 0.40 KE 0.35
         "debug_enabled": True
     },
          "risk_engine": {
-        "minimum_confidence": 0.35,  # ← TURUNKAN
+        "minimum_confidence": 0.25,  # ← TURUNKAN
         "max_position_size": 0.20,
-        "minimum_risk_reward": 1.50,
-        "max_daily_loss": 0.03
+        "minimum_risk_reward": 0.80,
+        "max_daily_loss": 0.03,
+        "max_risk_score": 1.0,
     },
         
         "decision_engine": {
         "min_confidence": 0.35,  # ← TURUNKAN
-        "min_consensus": 0.15,
-        "min_directional_edge": 0.10,
-        "min_risk_reward": 1.50,
-        "live_trading_enabled": False
+        "min_consensus": 0.05,
+        "min_directional_edge": 0.05,
+        "max_risk_score": 1.0,
+        "min_risk_reward": 0.80,
+        "live_trading_enabled": True
     },
         
        "execution_gate": {
-        "min_confidence": 0.35,  # ← TURUNKAN
-        "min_risk_reward": 1.50,
+        "min_confidence": 0.25,  # ← TURUNKAN
+        "min_risk_reward": 0.80,
         "max_position_size": 0.20
     },
         
