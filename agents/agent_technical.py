@@ -615,40 +615,19 @@ class TechnicalAgent:
         Fallback:
             100d / 1d
         """
+try:
+    ticker = yf.Ticker(symbol)
 
-        try:
+    df = ticker.history(period='100d', interval='1h')
 
-          ticker = yf.Ticker(symbol)
+    if df.empty:
+        df = ticker.history(period='100d')
 
-# Gunakan data 100 hari / 1 jam secara konsisten
-df = ticker.history(
-    period="100d",
-    interval="1h",
-    auto_adjust=False
-)
+    return df
 
-if df.empty:
-    logger.warning(
-        f"No hourly data available for {symbol}, "
-        f"falling back to daily data"
-    )
-
-    df = ticker.history(
-        period="100d",
-        interval="1d",
-        auto_adjust=False
-    )
-
-return df
-
-        except Exception as e:
-
-            logger.error(
-                f"Error fetching data "
-                f"for {symbol}: {e}"
-            )
-
-            return None
+except Exception as e:
+    logger.error(f"Error fetching data for {symbol}: {e}")
+    return None
 
     # ========================================================
     # CANDLESTICK PATTERNS
