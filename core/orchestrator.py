@@ -1511,25 +1511,22 @@ class Orchestrator:
     # AGREEMENT
     # ========================================================
 
-   def _calculate_agent_agreement(self, agent_votes):
+def _calculate_agent_agreement(self, agent_votes: Dict[str, str]) -> float:
     """
     Menghitung tingkat kesepakatan agent berdasarkan action.
+    
     HOLD/HOLD/HOLD/HOLD = 1.0
     BUY/BUY/BUY/HOLD = 0.75
     BUY/SELL/HOLD/HOLD = 0.50
     """
-
     if not agent_votes:
         return 0.0
 
     actions = []
-
     for vote in agent_votes.values():
         if vote is None:
             continue
-
         action = str(vote).upper().strip()
-
         if action in ("BUY", "SELL", "HOLD"):
             actions.append(action)
 
@@ -1542,11 +1539,10 @@ class Orchestrator:
         "SELL": actions.count("SELL"),
         "HOLD": actions.count("HOLD"),
     }
-
+    
     majority_count = max(counts.values())
-
     agreement = majority_count / len(actions)
-
+    
     return round(agreement, 4)
     # ========================================================
     # AGREEMENT DIRECTION
