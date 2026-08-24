@@ -27,7 +27,7 @@ jobs:
   paper-tests:
     name: Paper trading audit
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PYTHONPATH: .
       TEST_SCOPE: ${{ inputs.test_scope || 'full' }}
@@ -43,15 +43,21 @@ jobs:
       - name: Install CI test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest requests ccxt
+          python -m pip install pytest pytest-timeout requests ccxt numpy pandas scipy scikit-learn textblob ta
 
-      - name: Verify exchange dependency
+      - name: Verify exchange and AI dependencies
         run: |
           python - <<'PY'
-          import ccxt
+          import ccxt, numpy, pandas, scipy, sklearn
+          from textblob import TextBlob
           from exchange_integration.indodax_bridge import IndodaxBridge
-          print(f"ccxt version: {ccxt.__version__}")
-          print(f"Indodax bridge import: {IndodaxBridge.__name__}")
+          print(f"ccxt: {ccxt.__version__}")
+          print(f"numpy: {numpy.__version__}")
+          print(f"pandas: {pandas.__version__}")
+          print(f"scipy: {scipy.__version__}")
+          print(f"scikit-learn: {sklearn.__version__}")
+          print(f"TextBlob: {TextBlob}")
+          print(f"Indodax bridge: {IndodaxBridge.__name__}")
           PY
 
       - name: Compile trading source
@@ -66,7 +72,28 @@ jobs:
       - name: Run adaptive scalping tests
         if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
         run: |
-          pytest -q tests/test_adaptive_scalping.py
+          pytest -q tests/test_adaptive_scalping.py tests/test_scalping_controller.py
+
+      - name: Run stateful scalping market replay
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        run: |
+          pytest -q tests/test_scalping_market_replay.py
+
+      - name: Run scalping pipeline adapter tests
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        run: |
+          pytest -q tests/test_scalping_pipeline_adapter.py
+
+      - name: Run 50-cycle scalping execution audit
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        run: |
+          pytest -q tests/test_50_cycle_scalping.py
+
+      - name: Run extended real-market Indodax paper runtime
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        timeout-minutes: 8
+        run: |
+          pytest -q tests/test_live_market_paper_cycle.py -o log_cli=true --log-cli-level=INFO
 
       - name: Run Trading Librarian import test
         if: env.TEST_SCOPE == 'full'
@@ -85,8 +112,7 @@ jobs:
         run: |
           python - <<'PY'
           import requests
-          url = 'https://indodax.com/api/btc_idr/ticker'
-          response = requests.get(url, timeout=10)
+          response = requests.get('https://indodax.com/api/btc_idr/ticker', timeout=10)
           response.raise_for_status()
           payload = response.json()
           price = float(payload['ticker']['last'])
@@ -94,6 +120,14 @@ jobs:
           print(f"Indodax BTC/IDR public price: {price}")
           print("READ-ONLY: no credentials and no private order endpoint used.")
           PY
+
+      - name: Publish paper-cycle reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-trading-audit-reports
+          path: test_results/
+          if-no-files-found: warn
 
       - name: Audit result
         if: always()

@@ -1,30 +1,26 @@
-"""
-Paper Trading: Simulasi trading tanpa uang sungguhan
+"""Deterministic spot paper-trading engine.
 
-Fungsi:
-1. Simulasi eksekusi order
-2. Track portfolio
-3. Simulasi market data
-4. PnL tracking
+Paper trading uses the same public Indodax market prices that the future live
+adapter will use. It never sends a private order. Tests can inject prices with
+``set_test_price`` so execution behaviour is deterministic.
 """
+from __future__ import annotations
 
-import os
-import logging
 import json
-import random
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
-import pandas as pd
-import numpy as np
+import logging
+import os
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+import requests
+
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class PaperPosition:
-    """Position in paper trading"""
     symbol: str
     side: str
     entry_price: float
@@ -32,341 +28,232 @@ class PaperPosition:
     entry_time: datetime
     current_price: float
     unrealized_pnl: float
-    realized_pnl: float
+    realized_pnl: float = 0.0
+    entry_fee: float = 0.0
+
 
 class PaperTrading:
-    """
-    Paper Trading simulator
-    """
-    
-    def __init__(self, config: Dict = None):
-        """
-        Initialize Paper Trading
-        
-        Args:
-            config: Konfigurasi untuk paper trading
-        """
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        
-        # Account settings
-        self.initial_balance = self.config.get('initial_balance', 10000.0)
+        self.initial_balance = float(self.config.get("initial_balance", 10_000_000.0))
         self.balance = self.initial_balance
         self.portfolio_value = self.initial_balance
-        
-        # Positions
+        self.quote_currency = str(self.config.get("quote_currency", "IDR")).upper()
+        self.fee_rate = float(self.config.get("fee_rate", 0.0015))
+        self.slippage_rate = float(self.config.get("slippage_rate", 0.0002))
+        self.price_ttl_seconds = float(self.config.get("price_ttl_seconds", 2.0))
+        self.http_timeout = float(self.config.get("http_timeout", 5.0))
         self.positions: Dict[str, PaperPosition] = {}
-        self.trade_history: List[Dict] = []
-        
-        # Performance tracking
+        self.trade_history: List[Dict[str, Any]] = []
         self.total_pnl = 0.0
         self.total_trades = 0
         self.winning_trades = 0
         self.losing_trades = 0
-        
-        # Price simulation (for demo)
-        self.price_cache = {}
-        
-        # Load saved data if exists
+        self.price_cache: Dict[str, tuple[float, float]] = {}
+        self._test_prices: Dict[str, float] = {}
         self._load_data()
-        
-        logger.info(f"Paper Trading initialized with ${self.initial_balance:,.2f}")
-    
-    def execute_order(self, symbol: str, side: str, quantity: float,
-                      price: float) -> bool:
-        """
-        Execute a paper trade
-        
-        Args:
-            symbol: Symbol to trade
-            side: 'BUY' or 'SELL'
-            quantity: Quantity to trade
-            price: Execution price
-        
-        Returns:
-            bool: True if executed successfully
-        """
-        if quantity <= 0:
-            logger.warning(f"Invalid quantity: {quantity}")
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        value = symbol.upper().replace("-", "_").replace("/", "_")
+        if "_" not in value and value.endswith("IDR") and len(value) > 3:
+            value = f"{value[:-3]}_IDR"
+        return value.lower()
+
+    def _ticker_url(self, symbol: str) -> str:
+        return f"https://indodax.com/api/{self._normalize_symbol(symbol)}/ticker"
+
+    def set_test_price(self, symbol: str, price: float) -> None:
+        if price <= 0:
+            raise ValueError("Test price must be positive")
+        self._test_prices[symbol.upper()] = float(price)
+
+    def get_price(self, symbol: str) -> Optional[float]:
+        key = symbol.upper()
+        if key in self._test_prices:
+            return self._test_prices[key]
+        now = time.time()
+        cached = self.price_cache.get(key)
+        if cached and now - cached[0] < self.price_ttl_seconds:
+            return cached[1]
+        try:
+            response = requests.get(self._ticker_url(symbol), timeout=self.http_timeout)
+            response.raise_for_status()
+            payload = response.json()
+            ticker = payload.get("ticker", payload)
+            price = float(ticker["last"])
+            if price <= 0:
+                raise ValueError("non-positive market price")
+            self.price_cache[key] = (now, price)
+            return price
+        except Exception as exc:
+            logger.error("Market price unavailable for %s: %s", symbol, exc)
+            return None
+
+    def execute_order(self, symbol: str, side: str, quantity: float, price: float) -> bool:
+        symbol = symbol.upper()
+        side = side.upper()
+        quantity = float(quantity)
+        price = float(price)
+        if side not in {"BUY", "SELL"} or quantity <= 0 or price <= 0:
             return False
-        
-        # Calculate cost
-        cost = quantity * price
-        
-        if side.upper() == 'BUY':
-            # Check if enough balance
-            if cost > self.balance:
-                logger.warning(f"Insufficient balance: ${cost:.2f} > ${self.balance:.2f}")
+
+        if side == "BUY":
+            if symbol in self.positions:
+                logger.warning("Duplicate paper position rejected: %s", symbol)
                 return False
-            
-            # Update balance
-            self.balance -= cost
-            
-            # Create position
+            execution_price = price * (1 + self.slippage_rate)
+            gross = quantity * execution_price
+            fee = gross * self.fee_rate
+            total_cost = gross + fee
+            if total_cost > self.balance:
+                logger.warning("Insufficient balance for %s", symbol)
+                return False
+            self.balance -= total_cost
             self.positions[symbol] = PaperPosition(
-                symbol=symbol,
-                side='BUY',
-                entry_price=price,
-                quantity=quantity,
-                entry_time=datetime.now(),
-                current_price=price,
-                unrealized_pnl=0.0,
-                realized_pnl=0.0
+                symbol, "BUY", execution_price, quantity,
+                datetime.now(timezone.utc), execution_price, 0.0,
+                entry_fee=fee,
             )
-            
-            logger.info(f"BUY {quantity} {symbol} @ ${price:.2f}")
-            
-        elif side.upper() == 'SELL':
-            # Check if position exists
-            if symbol not in self.positions:
-                logger.warning(f"No position to sell: {symbol}")
-                return False
-            
-            position = self.positions[symbol]
-            
-            if position.side == 'BUY':
-                # Calculate PnL
-                pnl = (price - position.entry_price) * quantity
-                pnl_percent = ((price - position.entry_price) / position.entry_price) * 100
-                
-                # Update balance
-                self.balance += quantity * price
-                
-                # Track trade
-                self.total_pnl += pnl
-                self.total_trades += 1
-                
-                if pnl > 0:
-                    self.winning_trades += 1
-                else:
-                    self.losing_trades += 1
-                
-                # Record trade
-                trade_record = {
-                    'symbol': symbol,
-                    'side': side,
-                    'entry_price': position.entry_price,
-                    'exit_price': price,
-                    'quantity': quantity,
-                    'pnl': pnl,
-                    'pnl_percent': pnl_percent,
-                    'entry_time': position.entry_time.isoformat(),
-                    'exit_time': datetime.now().isoformat()
-                }
-                self.trade_history.append(trade_record)
-                
-                # Remove position
-                del self.positions[symbol]
-                
-                logger.info(f"SELL {quantity} {symbol} @ ${price:.2f} - PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
-                
-            else:
-                logger.warning("Cannot sell, position is not BUY")
-                return False
-        
-        # Update portfolio value
+            self._update_portfolio_value()
+            self._save_data()
+            return True
+
+        position = self.positions.get(symbol)
+        if position is None or quantity > position.quantity + 1e-12:
+            return False
+
+        original_quantity = position.quantity
+        execution_price = price * (1 - self.slippage_rate)
+        gross = quantity * execution_price
+        exit_fee = gross * self.fee_rate
+        allocated_entry_fee = position.entry_fee * (quantity / original_quantity)
+        gross_price_pnl = (execution_price - position.entry_price) * quantity
+        pnl = gross_price_pnl - allocated_entry_fee - exit_fee
+
+        self.balance += gross - exit_fee
+        self.total_pnl += pnl
+        self.total_trades += 1
+        if pnl > 0:
+            self.winning_trades += 1
+        elif pnl < 0:
+            self.losing_trades += 1
+
+        self.trade_history.append({
+            "symbol": symbol,
+            "side": "SELL",
+            "entry_price": position.entry_price,
+            "exit_price": execution_price,
+            "quantity": quantity,
+            "entry_fee": allocated_entry_fee,
+            "exit_fee": exit_fee,
+            "fee": allocated_entry_fee + exit_fee,
+            "gross_price_pnl": gross_price_pnl,
+            "pnl": pnl,
+            "pnl_percent": pnl / (position.entry_price * quantity) * 100,
+            "entry_time": position.entry_time.isoformat(),
+            "exit_time": datetime.now(timezone.utc).isoformat(),
+        })
+
+        if quantity >= original_quantity - 1e-12:
+            del self.positions[symbol]
+        else:
+            position.quantity -= quantity
+            position.entry_fee -= allocated_entry_fee
+
         self._update_portfolio_value()
-        
-        # Save data
         self._save_data()
-        
         return True
-    
-    def _update_portfolio_value(self):
-        """Update total portfolio value"""
+
+    def _update_portfolio_value(self) -> None:
         positions_value = 0.0
-        
         for symbol, position in self.positions.items():
             current_price = self.get_price(symbol)
-            if current_price:
-                position.current_price = current_price
-                positions_value += current_price * position.quantity
-                position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
-        
+            if current_price is None:
+                current_price = position.current_price
+            position.current_price = current_price
+            position.unrealized_pnl = (current_price - position.entry_price) * position.quantity - position.entry_fee
+            positions_value += current_price * position.quantity
         self.portfolio_value = self.balance + positions_value
-    
+
     def get_portfolio_value(self) -> float:
-        """Get current portfolio value"""
         self._update_portfolio_value()
         return self.portfolio_value
-    
-    def get_price(self, symbol: str) -> Optional[float]:
-        """
-        Get current price for a symbol
-        
-        Args:
-            symbol: Symbol to get price for
-        
-        Returns:
-            float: Current price or None
-        """
-        # Check cache first (avoid too many updates)
-        if symbol in self.price_cache:
-            cached_time, cached_price = self.price_cache[symbol]
-            if datetime.now() - cached_time < timedelta(seconds=5):
-                return cached_price
-        
-        # Try to get real price from yfinance
-        try:
-            import yfinance as yf
-            ticker = yf.Ticker(symbol)
-            current_price = ticker.history(period='1d')['Close'].iloc[-1]
-            
-            # Add random fluctuation for realism
-            if random.random() < 0.3:  # 30% chance of small movement
-                fluctuation = random.uniform(-0.005, 0.005)
-                current_price = current_price * (1 + fluctuation)
-            
-            # Cache the price
-            self.price_cache[symbol] = (datetime.now(), current_price)
-            
-            return current_price
-            
-        except Exception as e:
-            logger.error(f"Error getting price for {symbol}: {e}")
-            
-            # Fallback: generate random price
-            base_price = 100.0
-            if 'BTC' in symbol:
-                base_price = 30000.0
-            elif 'ETH' in symbol:
-                base_price = 2000.0
-            
-            # Add random walk
-            random_change = random.uniform(-0.02, 0.02)
-            current_price = base_price * (1 + random_change)
-            
-            return current_price
-    
-    def get_positions(self) -> List[Dict]:
-        """Get all current positions"""
-        positions = []
-        
-        for symbol, position in self.positions.items():
-            positions.append({
-                'symbol': position.symbol,
-                'side': position.side,
-                'entry_price': position.entry_price,
-                'current_price': position.current_price,
-                'quantity': position.quantity,
-                'unrealized_pnl': position.unrealized_pnl,
-                'pnl_percent': (position.unrealized_pnl / (position.entry_price * position.quantity)) * 100
-            })
-        
-        return positions
-    
-    def get_performance(self) -> Dict:
-        """Get performance metrics"""
-        win_rate = self.winning_trades / self.total_trades if self.total_trades > 0 else 0
-        
-        return {
-            'total_trades': self.total_trades,
-            'winning_trades': self.winning_trades,
-            'losing_trades': self.losing_trades,
-            'win_rate': win_rate,
-            'total_pnl': self.total_pnl,
-            'balance': self.balance,
-            'portfolio_value': self.portfolio_value,
-            'total_return': ((self.portfolio_value - self.initial_balance) / self.initial_balance) * 100
-        }
-    
-    def close_all_positions(self):
-        """Close all positions at current market price"""
-        for symbol in list(self.positions.keys()):
-            current_price = self.get_price(symbol)
-            if current_price:
-                position = self.positions[symbol]
-                self.execute_order(
-                    symbol=symbol,
-                    side='SELL',
-                    quantity=position.quantity,
-                    price=current_price
-                )
-    
-    def _save_data(self):
-        """Save trading data to file"""
-        try:
-            os.makedirs('data', exist_ok=True)
-            
-            data = {
-                'balance': self.balance,
-                'total_pnl': self.total_pnl,
-                'total_trades': self.total_trades,
-                'winning_trades': self.winning_trades,
-                'losing_trades': self.losing_trades,
-                'trade_history': self.trade_history,
-                'positions': [
-                    {
-                        'symbol': p.symbol,
-                        'side': p.side,
-                        'entry_price': p.entry_price,
-                        'quantity': p.quantity,
-                        'entry_time': p.entry_time.isoformat(),
-                        'current_price': p.current_price
-                    }
-                    for p in self.positions.values()
-                ]
-            }
-            
-            with open('data/paper_trading.json', 'w') as f:
-                json.dump(data, f, indent=2)
-                
-        except Exception as e:
-            logger.error(f"Error saving data: {e}")
-    
-    def _load_data(self):
-        """Load trading data from file"""
-        try:
-            if os.path.exists('data/paper_trading.json'):
-                with open('data/paper_trading.json', 'r') as f:
-                    data = json.load(f)
-                
-                self.balance = data.get('balance', self.initial_balance)
-                self.total_pnl = data.get('total_pnl', 0.0)
-                self.total_trades = data.get('total_trades', 0)
-                self.winning_trades = data.get('winning_trades', 0)
-                self.losing_trades = data.get('losing_trades', 0)
-                self.trade_history = data.get('trade_history', [])
-                
-                # Restore positions
-                for pos_data in data.get('positions', []):
-                    position = PaperPosition(
-                        symbol=pos_data['symbol'],
-                        side=pos_data['side'],
-                        entry_price=pos_data['entry_price'],
-                        quantity=pos_data['quantity'],
-                        entry_time=datetime.fromisoformat(pos_data['entry_time']),
-                        current_price=pos_data.get('current_price', pos_data['entry_price']),
-                        unrealized_pnl=0.0,
-                        realized_pnl=0.0
-                    )
-                    self.positions[position.symbol] = position
-                
-                logger.info(f"Loaded paper trading data - Balance: ${self.balance:.2f}")
-                
-        except Exception as e:
-            logger.info(f"No existing data found: {e}")
 
-# Example usage
-if __name__ == "__main__":
-    paper = PaperTrading(initial_balance=10000.0)
-    
-    print("Paper Trading Test")
-    print("=" * 40)
-    
-    # Buy some BTC
-    btc_price = paper.get_price('BTC-USD')
-    if btc_price:
-        paper.execute_order('BTC-USD', 'BUY', 0.1, btc_price)
-    
-    # Get performance
-    perf = paper.get_performance()
-    print(f"Balance: ${perf['balance']:.2f}")
-    print(f"Portfolio Value: ${perf['portfolio_value']:.2f}")
-    print(f"Total Return: {perf['total_return']:.2f}%")
-    print(f"Total Trades: {perf['total_trades']}")
-    print(f"Win Rate: {perf['win_rate']:.2%}")
-    
-    # Get positions
-    positions = paper.get_positions()
-    for pos in positions:
-        print(f"Position: {pos['symbol']} - {pos['side']} - {pos['quantity']} @ ${pos['entry_price']:.2f} - PnL: ${pos['unrealized_pnl']:.2f}")
+    def get_positions(self) -> List[Dict[str, Any]]:
+        return [{
+            "symbol": p.symbol, "side": p.side, "entry_price": p.entry_price,
+            "current_price": p.current_price, "quantity": p.quantity,
+            "unrealized_pnl": p.unrealized_pnl,
+            "pnl_percent": p.unrealized_pnl / (p.entry_price * p.quantity) * 100,
+        } for p in self.positions.values()]
+
+    def get_performance(self) -> Dict[str, Any]:
+        return {
+            "total_trades": self.total_trades,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "win_rate": self.winning_trades / self.total_trades if self.total_trades else 0.0,
+            "total_pnl": self.total_pnl,
+            "balance": self.balance,
+            "portfolio_value": self.get_portfolio_value(),
+            "total_return": (self.portfolio_value - self.initial_balance) / self.initial_balance * 100,
+        }
+
+    def close_all_positions(self) -> None:
+        for symbol in list(self.positions):
+            price = self.get_price(symbol)
+            if price is not None:
+                self.execute_order(symbol, "SELL", self.positions[symbol].quantity, price)
+
+    def _save_data(self) -> None:
+        try:
+            os.makedirs("data", exist_ok=True)
+            payload = {
+                "initial_balance": self.initial_balance,
+                "balance": self.balance,
+                "total_pnl": self.total_pnl,
+                "total_trades": self.total_trades,
+                "winning_trades": self.winning_trades,
+                "losing_trades": self.losing_trades,
+                "trade_history": self.trade_history,
+                "positions": [{
+                    "symbol": p.symbol,
+                    "side": p.side,
+                    "entry_price": p.entry_price,
+                    "quantity": p.quantity,
+                    "entry_fee": p.entry_fee,
+                    "entry_time": p.entry_time.isoformat(),
+                    "current_price": p.current_price,
+                } for p in self.positions.values()],
+            }
+            with open("data/paper_trading.json", "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+        except Exception as exc:
+            logger.error("Unable to save paper state: %s", exc)
+
+    def _load_data(self) -> None:
+        try:
+            if not os.path.exists("data/paper_trading.json"):
+                return
+            with open("data/paper_trading.json", encoding="utf-8") as handle:
+                data = json.load(handle)
+            self.balance = float(data.get("balance", self.initial_balance))
+            self.total_pnl = float(data.get("total_pnl", 0.0))
+            self.total_trades = int(data.get("total_trades", 0))
+            self.winning_trades = int(data.get("winning_trades", 0))
+            self.losing_trades = int(data.get("losing_trades", 0))
+            self.trade_history = data.get("trade_history", [])
+            for item in data.get("positions", []):
+                self.positions[item["symbol"]] = PaperPosition(
+                    symbol=item["symbol"],
+                    side=item.get("side", "BUY"),
+                    entry_price=float(item["entry_price"]),
+                    quantity=float(item["quantity"]),
+                    entry_time=datetime.fromisoformat(item["entry_time"]),
+                    current_price=float(item.get("current_price", item["entry_price"])),
+                    unrealized_pnl=0.0,
+                    entry_fee=float(item.get("entry_fee", 0.0)),
+                )
+        except Exception as exc:
+            logger.warning("Unable to load paper state: %s", exc)
