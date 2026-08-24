@@ -8,12 +8,18 @@ on:
     paths:
       - "fronted/**"
       - ".github/workflows/frontend-build.yml"
+      - "**/wrangler.jsonc"
+      - "**/wrangler.toml"
+      - ".github/workflows/deploy-cloudflare.yml"
   pull_request:
     branches:
       - main
     paths:
       - "fronted/**"
       - ".github/workflows/frontend-build.yml"
+      - "**/wrangler.jsonc"
+      - "**/wrangler.toml"
+      - ".github/workflows/deploy-cloudflare.yml"
   workflow_dispatch:
 
 permissions:
