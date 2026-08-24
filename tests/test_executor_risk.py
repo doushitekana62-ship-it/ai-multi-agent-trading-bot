@@ -45,8 +45,8 @@ def test_sell_without_position_is_blocked():
 
 def test_daily_loss_blocks_next_entry():
     executor = make_executor()
-    assert executor.execute("BTC/IDR", "BUY", 0.9, 1.0, stop_loss=95_000_000) is not None
+    assert executor.execute("BTC/IDR", "BUY", 0.9, 0.5, stop_loss=95_000_000) is not None
     executor.paper_trading.set_test_price("BTC/IDR", 94_000_000)
     executor.monitor_positions()
     assert executor.daily_pnl < -0.05
-    assert executor.execute("BTC/IDR", "BUY", 0.9, 1.0) is None
+    assert executor.execute("ETH/IDR", "BUY", 0.9, 0.1) is None
