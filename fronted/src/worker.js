@@ -1,3 +1,4 @@
+// Cloudflare Worker entrypoint. API_ORIGIN is injected as a Worker secret/variable.
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
