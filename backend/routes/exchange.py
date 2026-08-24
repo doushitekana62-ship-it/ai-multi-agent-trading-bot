@@ -31,11 +31,24 @@ def authenticate(credentials: HTTPAuthorizationCredentials):
     return payload
 
 
+def _load_saved_exchange() -> None:
+    try:
+        saved = ExchangeCredentialStore().load()
+        if saved and saved.get("exchange") == "indodax":
+            executor.configure_exchange("indodax", saved)
+            get_market_data_adapter({"exchange_type": "indodax", "indodax": saved})
+    except Exception:
+        # Startup must remain usable in paper mode if no credentials are configured.
+        pass
+
+
+_load_saved_exchange()
+
+
 @router.get("/config")
 async def get_config(credentials: HTTPAuthorizationCredentials = Depends(security)):
     authenticate(credentials)
-    store = ExchangeCredentialStore()
-    return {**store.public_status(), "runtime_exchange_mode": executor.exchange_mode}
+    return {**ExchangeCredentialStore().public_status(), "runtime_exchange_mode": executor.exchange_mode}
 
 
 @router.post("/config")
@@ -48,11 +61,9 @@ async def configure(config: ExchangeConfigRequest, credentials: HTTPAuthorizatio
         return {"success": True, "exchange": "paper", "trading_enabled": False}
     if exchange != "indodax":
         raise HTTPException(status_code=400, detail="Only paper and Indodax are supported by the dashboard flow")
-
     try:
         from exchange_integration.indodax_bridge import IndodaxBridge
         data = {"api_key": config.api_key, "api_secret": config.api_secret, "enable_trading": config.enable_trading}
-        # Validate private API access before saving anything.
         IndodaxBridge({"api_key": config.api_key, "secret": config.api_secret, "enable_trading": config.enable_trading}).test_connection()
         ExchangeCredentialStore().save("indodax", config.api_key, config.api_secret, config.enable_trading)
         executor.configure_exchange("indodax", data)
