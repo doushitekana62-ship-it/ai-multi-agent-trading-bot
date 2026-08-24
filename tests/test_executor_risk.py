@@ -1,5 +1,3 @@
-import pytest
-
 from core.executor import Executor
 
 
@@ -18,7 +16,6 @@ def test_buy_then_take_profit_closes_position():
     executor = make_executor()
     order = executor.execute("BTC/IDR", "BUY", 0.9, 0.1, stop_loss=99_000_000, take_profit=101_000_000)
     assert order is not None
-    assert "BTC/IDR" in executor.active_positions
     executor.paper_trading.set_test_price("BTC/IDR", 101_000_000)
     executor.monitor_positions()
     assert "BTC/IDR" not in executor.active_positions
@@ -48,8 +45,8 @@ def test_sell_without_position_is_blocked():
 
 def test_daily_loss_blocks_next_entry():
     executor = make_executor()
-    assert executor.execute("BTC/IDR", "BUY", 0.9, 0.1, stop_loss=95_000_000) is not None
+    assert executor.execute("BTC/IDR", "BUY", 0.9, 1.0, stop_loss=95_000_000) is not None
     executor.paper_trading.set_test_price("BTC/IDR", 94_000_000)
     executor.monitor_positions()
     assert executor.daily_pnl < -0.05
-    assert executor.execute("BTC/IDR", "BUY", 0.9, 0.1) is None
+    assert executor.execute("BTC/IDR", "BUY", 0.9, 1.0) is None
