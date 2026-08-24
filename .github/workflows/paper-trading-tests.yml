@@ -43,15 +43,20 @@ jobs:
       - name: Install CI test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest pytest-timeout requests ccxt
+          python -m pip install pytest pytest-timeout requests ccxt numpy pandas scipy textblob ta
 
-      - name: Verify exchange dependency
+      - name: Verify exchange and AI dependencies
         run: |
           python - <<'PY'
-          import ccxt
+          import ccxt, numpy, pandas, scipy
+          from textblob import TextBlob
           from exchange_integration.indodax_bridge import IndodaxBridge
-          print(f"ccxt version: {ccxt.__version__}")
-          print(f"Indodax bridge import: {IndodaxBridge.__name__}")
+          print(f"ccxt: {ccxt.__version__}")
+          print(f"numpy: {numpy.__version__}")
+          print(f"pandas: {pandas.__version__}")
+          print(f"scipy: {scipy.__version__}")
+          print(f"TextBlob: {TextBlob}")
+          print(f"Indodax bridge: {IndodaxBridge.__name__}")
           PY
 
       - name: Compile trading source
@@ -75,8 +80,9 @@ jobs:
 
       - name: Run real-market Indodax paper-cycle integration
         if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        timeout-minutes: 5
         run: |
-          pytest -q tests/test_live_market_paper_cycle.py
+          pytest -q tests/test_live_market_paper_cycle.py -o log_cli=true --log-cli-level=INFO
 
       - name: Run Trading Librarian import test
         if: env.TEST_SCOPE == 'full'
