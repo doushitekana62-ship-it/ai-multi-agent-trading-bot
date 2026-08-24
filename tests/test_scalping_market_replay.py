@@ -61,6 +61,36 @@ def test_stateful_buy_then_sell_realized_pnl(tmp_path):
     )
 
 
+def test_dedicated_long_exit_closes_even_when_entry_setup_is_hold():
+    runtime = ScalpingRuntime(symbol="BTC/IDR", position_size=0.05)
+    buy_prices = [100.0, 100.1, 100.3, 100.6, 101.0, 101.4, 101.8, 102.0]
+    runtime.step(**bullish_inputs(buy_prices))
+    assert runtime.paper.get_position("BTC/IDR") is not None
+
+    # Directional evidence is bearish, but deliberately weaken the market-structure
+    # sequence so the normal entry-quality controller can return HOLD. The dedicated
+    # exit path must still close the already-open spot long.
+    exit_event = runtime.step(
+        price=101.8,
+        technical=-0.80,
+        sentiment=-0.20,
+        forecast=-0.65,
+        mimic=-0.75,
+        decision=-0.50,
+        volatility=0.01,
+        data_quality=1.0,
+        prices=[102.0, 102.0, 101.95, 101.9, 101.88, 101.85, 101.82, 101.8],
+        volumes=[210, 205, 200, 195, 190, 185, 180, 175],
+    )
+
+    summary = runtime.summary()
+    assert exit_event["action"] == "SELL"
+    assert exit_event["exit_reason"] == "DEDICATED_LONG_EXIT"
+    assert summary["entries"] == 1
+    assert summary["exits"] == 1
+    assert summary["active_position"] is None
+
+
 def test_stateful_take_profit_closes_position():
     runtime = ScalpingRuntime(symbol="BTC/IDR", position_size=0.05)
     buy_prices = [100.0, 100.1, 100.3, 100.6, 101.0, 101.4, 101.8, 102.0]
@@ -69,7 +99,7 @@ def test_stateful_take_profit_closes_position():
     assert position is not None
 
     target = position["take_profit"]
-    runtime.step(
+    event = runtime.step(
         price=target,
         technical=0.0,
         sentiment=0.0,
@@ -82,6 +112,8 @@ def test_stateful_take_profit_closes_position():
         volumes=[100] * 8,
     )
     summary = runtime.summary()
+    assert event["action"] == "SELL"
+    assert event["exit_reason"] == "TAKE_PROFIT"
     assert summary["take_profits"] == 1
     assert summary["active_position"] is None
     assert summary["realized_pnl"] > 0
