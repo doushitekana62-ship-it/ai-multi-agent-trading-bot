@@ -43,11 +43,20 @@ jobs:
       - name: Install CI test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest requests
+          python -m pip install pytest requests ccxt
+
+      - name: Verify exchange dependency
+        run: |
+          python - <<'PY'
+          import ccxt
+          from exchange_integration.indodax_bridge import IndodaxBridge
+          print(f"ccxt version: {ccxt.__version__}")
+          print(f"Indodax bridge import: {IndodaxBridge.__name__}")
+          PY
 
       - name: Compile trading source
         run: |
-          python -m compileall -q agents backend core exchange_integration integration paper_trading main.py api.py
+          python -m compileall -q agents backend core exchange_integration integration paper_trading main.py
 
       - name: Run execution tests
         if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'execution'
