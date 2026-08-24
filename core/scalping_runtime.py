@@ -89,54 +89,49 @@ class ScalpingRuntime:
             "action": "HOLD",
         }
 
-        # A broker-side style SL/TP close is a real SELL for a spot BUY position.
-        # Do not report it as HOLD merely because the strategy setup is neutral.
         if closed:
             event["action"] = "SELL" if closed.get("side") == "BUY" else "BUY"
-            event["exit_reason"] = closed.get("reason", "RISK_EXIT")
+            reason = str(closed.get("reason", "RISK_EXIT"))
+            event["exit_reason"] = reason
             event["trade"] = closed
             self.state.events.append(event)
             return event
 
-        if existing:
-            if existing.get("side") == "BUY":
-                # Normal validated strategy exit.
-                if setup.action == "SELL":
-                    trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
-                    if trade:
-                        self._record_manual_close(trade)
-                        event["action"] = "SELL"
-                        event["exit_reason"] = "STRATEGY_REVERSAL"
-                        event["trade"] = trade
-                        self.state.events.append(event)
-                        return event
+        if existing and existing.get("side") == "BUY":
+            if setup.action == "SELL":
+                trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
+                if trade:
+                    self._record_manual_close(trade)
+                    event["action"] = "SELL"
+                    event["exit_reason"] = "STRATEGY_REVERSAL"
+                    event["trade"] = trade
+                    self.state.events.append(event)
+                    return event
 
-                # Dedicated risk-reducing exit path. This is deliberately easier
-                # to trigger than a new SELL setup and can never open a short.
-                should_exit, exit_reason = self.controller.should_exit_long(
-                    technical=technical,
-                    sentiment=sentiment,
-                    forecast=forecast,
-                    mimic=mimic,
-                    decision=decision,
-                    volatility=volatility,
-                    data_quality=data_quality,
-                    prices=prices,
-                    volumes=volumes,
-                )
-                if should_exit:
-                    trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
-                    if trade:
-                        self._record_manual_close(trade)
-                        event["action"] = "SELL"
-                        event["exit_reason"] = "DEDICATED_LONG_EXIT"
-                        event["exit_signal"] = exit_reason
-                        event["trade"] = trade
-                        self.state.events.append(event)
-                        return event
+            should_exit, exit_signal = self.controller.should_exit_long(
+                technical=technical,
+                sentiment=sentiment,
+                forecast=forecast,
+                mimic=mimic,
+                decision=decision,
+                volatility=volatility,
+                data_quality=data_quality,
+                prices=prices,
+                volumes=volumes,
+            )
+            if should_exit:
+                trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
+                if trade:
+                    self._record_manual_close(trade)
+                    event["action"] = "SELL"
+                    event["exit_reason"] = "DEDICATED_LONG_EXIT"
+                    event["exit_signal"] = exit_signal
+                    event["trade"] = trade
+                    self.state.events.append(event)
+                    return event
 
             self.state.holds += 1
-        elif setup.action == "BUY":
+        elif not existing and setup.action == "BUY":
             stop = float(price) * (1.0 - setup.stop_distance_pct)
             target = float(price) * (1.0 + setup.take_profit_pct)
             position = self.paper.open_position(
