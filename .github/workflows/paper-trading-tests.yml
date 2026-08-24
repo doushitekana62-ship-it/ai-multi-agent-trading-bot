@@ -68,6 +68,11 @@ jobs:
         run: |
           pytest -q tests/test_adaptive_scalping.py
 
+      - name: Run 50-cycle scalping execution audit
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        run: |
+          pytest -q tests/test_50_cycle_scalping.py
+
       - name: Run Trading Librarian import test
         if: env.TEST_SCOPE == 'full'
         run: |
@@ -94,6 +99,14 @@ jobs:
           print(f"Indodax BTC/IDR public price: {price}")
           print("READ-ONLY: no credentials and no private order endpoint used.")
           PY
+
+      - name: Publish 50-cycle summary
+        if: always() && (env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy')
+        uses: actions/upload-artifact@v4
+        with:
+          name: scalping-50-cycle-summary
+          path: test_results/scalping_50_cycle_summary.json
+          if-no-files-found: warn
 
       - name: Audit result
         if: always()
