@@ -1,0 +1,50 @@
+name: Frontend Build Check
+
+on:
+  push:
+    branches:
+      - main
+      - indodax-integration-hardening
+    paths:
+      - "fronted/**"
+      - ".github/workflows/frontend-build.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "fronted/**"
+      - ".github/workflows/frontend-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build React dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: true
+      NODE_ENV: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: fronted
+        run: npm install
+
+      - name: Build dashboard
+        working-directory: fronted
+        run: npm run build
+
+      - name: Validate Cloudflare configuration
+        working-directory: fronted
+        run: npx wrangler deploy --dry-run
