@@ -1,0 +1,73 @@
+name: Paper Trading Execution Tests
+
+on:
+  push:
+    branches: [main, indodax-integration-hardening]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      test_scope:
+        description: "Test scope"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - full
+          - execution
+          - strategy
+
+permissions:
+  contents: read
+
+jobs:
+  paper-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Compile source
+        run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py api.py
+
+      - name: Run paper execution tests
+        if: inputs.test_scope == 'full' || inputs.test_scope == 'execution'
+        env:
+          PYTHONPATH: .
+        run: pytest -q tests/test_paper_execution.py tests/test_executor_risk.py
+
+      - name: Run strategy tests
+        if: inputs.test_scope == 'full' || inputs.test_scope == 'strategy'
+        env:
+          PYTHONPATH: .
+        run: pytest -q tests/test_adaptive_scaling.py tests/test_adaptive_scalping.py
+
+      - name: Run full test suite
+        if: inputs.test_scope == 'full'
+        env:
+          PYTHONPATH: .
+        run: pytest -q
+
+      - name: Run live-market smoke test (read-only)
+        if: inputs.test_scope == 'full'
+        env:
+          PYTHONPATH: .
+        run: python - <<'PY'
+          from exchange_integration.paper_trading import PaperTrading
+          paper = PaperTrading({"initial_balance": 10_000_000})
+          price = paper.get_price("BTC/IDR")
+          if price is None or price <= 0:
+              raise SystemExit("Live public Indodax market data unavailable")
+          print(f"Indodax BTC/IDR public price: {price}")
+          print("No private API credentials and no real order submission are used.")
+        PY
