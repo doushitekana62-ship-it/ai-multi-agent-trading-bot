@@ -16,9 +16,13 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
-if not SECRET_KEY or SECRET_KEY == "your-secret-key-change-this-in-production":
-    # Do not silently run an authenticated trading dashboard with a public/default signing key.
-    raise RuntimeError("JWT_SECRET_KEY must be set to a strong random value")
+_INSECURE_JWT_VALUES = {
+    "your-secret-key-change-this-in-production",
+    "your_jwt_secret_here_use_openssl_rand_hex",
+    "replace_with_a_long_random_secret",
+}
+if not SECRET_KEY or SECRET_KEY in _INSECURE_JWT_VALUES or len(SECRET_KEY) < 32:
+    raise RuntimeError("JWT_SECRET_KEY must be a strong random value of at least 32 characters")
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
