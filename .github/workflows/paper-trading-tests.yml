@@ -79,6 +79,11 @@ jobs:
         run: |
           pytest -q tests/test_scalping_market_replay.py
 
+      - name: Run scalping pipeline adapter tests
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        run: |
+          pytest -q tests/test_scalping_pipeline_adapter.py
+
       - name: Run 50-cycle scalping execution audit
         if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
         run: |
