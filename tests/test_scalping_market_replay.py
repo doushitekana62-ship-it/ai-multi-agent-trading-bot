@@ -42,7 +42,6 @@ def test_stateful_buy_then_sell_realized_pnl(tmp_path):
     assert buy_event["action"] == "BUY"
     assert runtime.paper.get_position("BTC/IDR") is not None
 
-    # Use a decisive bearish reversal so the validated scalping exit path is exercised.
     sell_prices = [102.0, 101.8, 101.5, 101.1, 100.7, 100.4, 100.1, 99.8]
     sell_event = runtime.step(**bearish_inputs(sell_prices))
 
@@ -67,9 +66,6 @@ def test_dedicated_long_exit_closes_even_when_entry_setup_is_hold():
     runtime.step(**bullish_inputs(buy_prices))
     assert runtime.paper.get_position("BTC/IDR") is not None
 
-    # Directional evidence is bearish, but deliberately weaken the market-structure
-    # sequence so the normal entry-quality controller can return HOLD. The dedicated
-    # exit path must still close the already-open spot long.
     exit_event = runtime.step(
         price=101.8,
         technical=-0.80,
