@@ -29,6 +29,7 @@ class PaperPosition:
     current_price: float
     unrealized_pnl: float
     realized_pnl: float = 0.0
+    entry_fee: float = 0.0
 
 
 class PaperTrading:
@@ -96,6 +97,7 @@ class PaperTrading:
         price = float(price)
         if side not in {"BUY", "SELL"} or quantity <= 0 or price <= 0:
             return False
+
         if side == "BUY":
             if symbol in self.positions:
                 logger.warning("Duplicate paper position rejected: %s", symbol)
@@ -108,8 +110,11 @@ class PaperTrading:
                 logger.warning("Insufficient balance for %s", symbol)
                 return False
             self.balance -= total_cost
-            self.positions[symbol] = PaperPosition(symbol, "BUY", execution_price, quantity,
-                                                    datetime.now(timezone.utc), execution_price, 0.0)
+            self.positions[symbol] = PaperPosition(
+                symbol, "BUY", execution_price, quantity,
+                datetime.now(timezone.utc), execution_price, 0.0,
+                entry_fee=fee,
+            )
             self._update_portfolio_value()
             self._save_data()
             return True
@@ -117,28 +122,45 @@ class PaperTrading:
         position = self.positions.get(symbol)
         if position is None or quantity > position.quantity + 1e-12:
             return False
+
+        original_quantity = position.quantity
         execution_price = price * (1 - self.slippage_rate)
         gross = quantity * execution_price
-        fee = gross * self.fee_rate
-        pnl = (execution_price - position.entry_price) * quantity - fee
-        self.balance += gross - fee
+        exit_fee = gross * self.fee_rate
+        allocated_entry_fee = position.entry_fee * (quantity / original_quantity)
+        gross_price_pnl = (execution_price - position.entry_price) * quantity
+        pnl = gross_price_pnl - allocated_entry_fee - exit_fee
+
+        self.balance += gross - exit_fee
         self.total_pnl += pnl
         self.total_trades += 1
         if pnl > 0:
             self.winning_trades += 1
         elif pnl < 0:
             self.losing_trades += 1
+
         self.trade_history.append({
-            "symbol": symbol, "side": "SELL", "entry_price": position.entry_price,
-            "exit_price": execution_price, "quantity": quantity, "fee": fee, "pnl": pnl,
+            "symbol": symbol,
+            "side": "SELL",
+            "entry_price": position.entry_price,
+            "exit_price": execution_price,
+            "quantity": quantity,
+            "entry_fee": allocated_entry_fee,
+            "exit_fee": exit_fee,
+            "fee": allocated_entry_fee + exit_fee,
+            "gross_price_pnl": gross_price_pnl,
+            "pnl": pnl,
             "pnl_percent": pnl / (position.entry_price * quantity) * 100,
             "entry_time": position.entry_time.isoformat(),
             "exit_time": datetime.now(timezone.utc).isoformat(),
         })
-        if quantity >= position.quantity - 1e-12:
+
+        if quantity >= original_quantity - 1e-12:
             del self.positions[symbol]
         else:
             position.quantity -= quantity
+            position.entry_fee -= allocated_entry_fee
+
         self._update_portfolio_value()
         self._save_data()
         return True
@@ -150,7 +172,7 @@ class PaperTrading:
             if current_price is None:
                 current_price = position.current_price
             position.current_price = current_price
-            position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
+            position.unrealized_pnl = (current_price - position.entry_price) * position.quantity - position.entry_fee
             positions_value += current_price * position.quantity
         self.portfolio_value = self.balance + positions_value
 
@@ -188,13 +210,20 @@ class PaperTrading:
         try:
             os.makedirs("data", exist_ok=True)
             payload = {
-                "initial_balance": self.initial_balance, "balance": self.balance,
-                "total_pnl": self.total_pnl, "total_trades": self.total_trades,
-                "winning_trades": self.winning_trades, "losing_trades": self.losing_trades,
+                "initial_balance": self.initial_balance,
+                "balance": self.balance,
+                "total_pnl": self.total_pnl,
+                "total_trades": self.total_trades,
+                "winning_trades": self.winning_trades,
+                "losing_trades": self.losing_trades,
                 "trade_history": self.trade_history,
                 "positions": [{
-                    "symbol": p.symbol, "side": p.side, "entry_price": p.entry_price,
-                    "quantity": p.quantity, "entry_time": p.entry_time.isoformat(),
+                    "symbol": p.symbol,
+                    "side": p.side,
+                    "entry_price": p.entry_price,
+                    "quantity": p.quantity,
+                    "entry_fee": p.entry_fee,
+                    "entry_time": p.entry_time.isoformat(),
                     "current_price": p.current_price,
                 } for p in self.positions.values()],
             }
@@ -217,11 +246,14 @@ class PaperTrading:
             self.trade_history = data.get("trade_history", [])
             for item in data.get("positions", []):
                 self.positions[item["symbol"]] = PaperPosition(
-                    symbol=item["symbol"], side=item.get("side", "BUY"),
-                    entry_price=float(item["entry_price"]), quantity=float(item["quantity"]),
+                    symbol=item["symbol"],
+                    side=item.get("side", "BUY"),
+                    entry_price=float(item["entry_price"]),
+                    quantity=float(item["quantity"]),
                     entry_time=datetime.fromisoformat(item["entry_time"]),
                     current_price=float(item.get("current_price", item["entry_price"])),
                     unrealized_pnl=0.0,
+                    entry_fee=float(item.get("entry_fee", 0.0)),
                 )
         except Exception as exc:
             logger.warning("Unable to load paper state: %s", exc)
