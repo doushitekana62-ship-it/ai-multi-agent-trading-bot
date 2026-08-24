@@ -14,7 +14,8 @@ def test_buy_price_move_sell_profit(paper):
     assert paper.execute_order("BTC/IDR", "BUY", 0.005, 100_000_000)
     paper.set_test_price("BTC/IDR", 102_000_000)
     assert paper.execute_order("BTC/IDR", "SELL", 0.005, 102_000_000)
-    assert paper.total_pnl == pytest.approx(9_000)
+    # Gross gain = 10,000; entry fee = 500; exit fee = 510.
+    assert paper.total_pnl == pytest.approx(8_990)
     assert paper.total_trades == 1
     assert paper.winning_trades == 1
     assert not paper.positions
@@ -25,7 +26,8 @@ def test_buy_price_move_sell_loss(paper):
     assert paper.execute_order("BTC/IDR", "BUY", 0.005, 100_000_000)
     paper.set_test_price("BTC/IDR", 98_000_000)
     assert paper.execute_order("BTC/IDR", "SELL", 0.005, 98_000_000)
-    assert paper.total_pnl == pytest.approx(-11_000)
+    # Gross loss = -10,000; entry fee = 500; exit fee = 490.
+    assert paper.total_pnl == pytest.approx(-10_990)
     assert paper.losing_trades == 1
 
 
