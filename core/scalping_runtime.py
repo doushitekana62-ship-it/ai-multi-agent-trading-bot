@@ -91,23 +91,14 @@ class ScalpingRuntime:
 
         if closed:
             event["action"] = "SELL" if closed.get("side") == "BUY" else "BUY"
-            reason = str(closed.get("reason", "RISK_EXIT"))
-            event["exit_reason"] = reason
+            event["exit_reason"] = str(closed.get("reason", "RISK_EXIT"))
             event["trade"] = closed
             self.state.events.append(event)
             return event
 
         if existing and existing.get("side") == "BUY":
-            if setup.action == "SELL":
-                trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
-                if trade:
-                    self._record_manual_close(trade)
-                    event["action"] = "SELL"
-                    event["exit_reason"] = "STRATEGY_REVERSAL"
-                    event["trade"] = trade
-                    self.state.events.append(event)
-                    return event
-
+            # Risk-reducing dedicated exit gets first priority once a long exists.
+            # A new short-quality setup is not required to close a spot long.
             should_exit, exit_signal = self.controller.should_exit_long(
                 technical=technical,
                 sentiment=sentiment,
@@ -120,12 +111,24 @@ class ScalpingRuntime:
                 volumes=volumes,
             )
             if should_exit:
-                trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
+                trade = self.paper.close_position(self.symbol, float(price), "DEDICATED_LONG_EXIT")
                 if trade:
                     self._record_manual_close(trade)
                     event["action"] = "SELL"
                     event["exit_reason"] = "DEDICATED_LONG_EXIT"
                     event["exit_signal"] = exit_signal
+                    event["trade"] = trade
+                    self.state.events.append(event)
+                    return event
+
+            # Only fall back to a normal strategy reversal when the dedicated
+            # risk-reducing exit is not active.
+            if setup.action == "SELL":
+                trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
+                if trade:
+                    self._record_manual_close(trade)
+                    event["action"] = "SELL"
+                    event["exit_reason"] = "STRATEGY_REVERSAL"
                     event["trade"] = trade
                     self.state.events.append(event)
                     return event
