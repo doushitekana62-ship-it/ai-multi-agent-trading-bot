@@ -1,0 +1,228 @@
+"""
+Authentication Routes
+Login, refresh token, logout
+"""
+
+import os
+import logging
+from datetime import timedelta
+from typing import Dict, Any
+from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+
+from backend.core.security import (
+    Security, create_access_token, verify_token,
+    authenticate_user, DEFAULT_USERS
+)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Router
+router = APIRouter()
+security = HTTPBearer()
+security_instance = Security()
+
+# Models
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int
+    username: str
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+class RefreshTokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int
+
+class UserResponse(BaseModel):
+    username: str
+    is_authenticated: bool
+
+@router.post("/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """
+    Login endpoint - Get access token
+    """
+    try:
+        # Authenticate user
+        user = authenticate_user(request.username, request.password)
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user["username"], "type": "access"}
+        )
+        
+        return LoginResponse(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=30,  # 30 minutes
+            username=user["username"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login failed"
+        )
+
+@router.post("/refresh", response_model=RefreshTokenResponse)
+async def refresh_token(request: RefreshTokenRequest):
+    """
+    Refresh access token
+    """
+    try:
+        # Verify refresh token
+        payload = verify_token(request.refresh_token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token"
+            )
+        
+        username = payload.get("sub")
+        
+        if username not in DEFAULT_USERS:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+        
+        # Create new access token
+        access_token = create_access_token(
+            data={"sub": username, "type": "access"}
+        )
+        
+        return RefreshTokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=30
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Refresh token error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Refresh failed"
+        )
+
+@router.post("/logout")
+async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Logout - Invalidate token (client-side only)
+    """
+    # In production, you would blacklist the token
+    return {
+        "message": "Logged out successfully",
+        "status": "success"
+    }
+
+@router.get("/verify", response_model=UserResponse)
+async def verify(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Verify token validity
+    """
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        username = payload.get("sub")
+        
+        if username not in DEFAULT_USERS:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+        
+        return UserResponse(
+            username=username,
+            is_authenticated=True
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Verify error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Verification failed"
+        )
+
+@router.post("/change-password")
+async def change_password(
+    old_password: str,
+    new_password: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Change user password
+    """
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        username = payload.get("sub")
+        
+        if username not in DEFAULT_USERS:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Verify old password
+        if not security_instance.verify_password(old_password, DEFAULT_USERS[username]["password"]):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Old password is incorrect"
+            )
+        
+        # Update password
+        DEFAULT_USERS[username]["password"] = security_instance.get_password_hash(new_password)
+        
+        return {
+            "message": "Password changed successfully",
+            "status": "success"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Change password error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Password change failed"
+        )
