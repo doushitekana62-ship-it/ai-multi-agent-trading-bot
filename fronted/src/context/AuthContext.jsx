@@ -4,8 +4,12 @@ import toast from 'react-hot-toast';
 
 const AuthContext = createContext();
 
-// URL backend FastAPI melalui Cloudflare Tunnel
-const API_URL = 'https://nascar-chelsea-publication-procurement.trycloudflare.com';
+// In production the dashboard uses the same-origin /api path and
+// Cloudflare Worker proxies it to the configured FastAPI backend.
+// REACT_APP_API_URL can still be set for local development or a
+// separately hosted API.
+const configuredApiUrl = process.env.REACT_APP_API_URL?.trim() || '';
+const API_URL = configuredApiUrl.replace(/\/$/, '');
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -23,7 +27,6 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  // Set axios default headers
   useEffect(() => {
     if (token) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
@@ -61,7 +64,6 @@ export const AuthProvider = ({ children }) => {
       toast.success('Login successful!');
 
       return response.data;
-
     } catch (error) {
       console.error('Login error:', error);
 
@@ -113,11 +115,9 @@ export const AuthProvider = ({ children }) => {
       }
 
       return false;
-
     } catch (error) {
       console.error('Token verification failed:', error);
 
-      // Token sudah tidak valid
       setToken(null);
       setUser(null);
       setIsAuthenticated(false);
@@ -127,7 +127,6 @@ export const AuthProvider = ({ children }) => {
       delete axios.defaults.headers.common['Authorization'];
 
       return false;
-
     } finally {
       setLoading(false);
     }
