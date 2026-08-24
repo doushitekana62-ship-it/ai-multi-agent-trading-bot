@@ -74,6 +74,11 @@ jobs:
         run: |
           pytest -q tests/test_adaptive_scalping.py tests/test_scalping_controller.py
 
+      - name: Run stateful scalping market replay
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        run: |
+          pytest -q tests/test_scalping_market_replay.py
+
       - name: Run 50-cycle scalping execution audit
         if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
         run: |
