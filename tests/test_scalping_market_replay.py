@@ -30,24 +30,24 @@ def bearish_inputs(prices):
         volatility=0.01,
         data_quality=1.0,
         prices=prices,
-        volumes=[100, 105, 110, 115, 130, 150, 170, 210],
+        volumes=[210, 190, 175, 160, 145, 130, 115, 100],
     )
 
 
 def test_stateful_buy_then_sell_realized_pnl(tmp_path):
     runtime = ScalpingRuntime(symbol="BTC/IDR", position_size=0.05)
 
-    # Rising micro-sequence should create a validated BUY setup.
     buy_prices = [100.0, 100.1, 100.3, 100.6, 101.0, 101.4, 101.8, 102.0]
     buy_event = runtime.step(**bullish_inputs(buy_prices))
     assert buy_event["action"] == "BUY"
     assert runtime.paper.get_position("BTC/IDR") is not None
 
-    # A bearish sequence should close the long through the strategy exit path.
-    sell_prices = [102.0, 101.9, 101.7, 101.4, 101.0, 100.6, 100.3, 100.0]
+    # Use a decisive bearish reversal so the validated scalping exit path is exercised.
+    sell_prices = [102.0, 101.8, 101.5, 101.1, 100.7, 100.4, 100.1, 99.8]
     sell_event = runtime.step(**bearish_inputs(sell_prices))
 
     summary = runtime.summary()
+    assert sell_event["setup_action"] == "SELL"
     assert sell_event["action"] == "SELL"
     assert summary["entries"] == 1
     assert summary["exits"] == 1
@@ -68,7 +68,6 @@ def test_stateful_take_profit_closes_position():
     position = runtime.paper.get_position("BTC/IDR")
     assert position is not None
 
-    # Controller-derived target is at most 2x stop; move enough to trigger it.
     target = position["take_profit"]
     runtime.step(
         price=target,
