@@ -1,7 +1,4 @@
-"""
-Dashboard Routes
-Real-time dashboard data
-"""
+"""Dashboard routes and runtime exchange configuration."""
 
 import logging
 from datetime import datetime
@@ -9,752 +6,160 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
 
 from backend.core.security import verify_token
 from backend.core.database import db
-
+from backend.core.exchange_credentials import ExchangeCredentialStore
 from core.orchestrator import Orchestrator
 from core.executor import Executor
+from core.market_data_adapter import get_market_data_adapter
 
 try:
     from exchange_integration.paper_trading import PaperTrading
 except ImportError:
     PaperTrading = None
 
-
-# ============================================================
-# LOGGING
-# ============================================================
-
 logger = logging.getLogger(__name__)
-
-
-# ============================================================
-# ROUTER
-# ============================================================
-
 router = APIRouter()
 security = HTTPBearer()
-
-
-# ============================================================
-# CORE COMPONENTS
-# ============================================================
-
 orchestrator = Orchestrator()
 executor = Executor()
+paper_trading = executor.paper_trading
 
-# Paper trading optional
-paper_trading = PaperTrading() if PaperTrading else None
-
-
-# ============================================================
-# AUTH HELPER
-# ============================================================
 
 def authenticate(credentials: HTTPAuthorizationCredentials):
-    """
-    Verify JWT token.
-    """
-
-    token = credentials.credentials
-
-    payload = verify_token(token)
-
+    payload = verify_token(credentials.credentials)
     if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token"
-        )
-
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
     return payload
 
 
-# ============================================================
-# DASHBOARD STATUS
-# ============================================================
+class ExchangeConfigRequest(BaseModel):
+    exchange: str = Field(default="indodax")
+    api_key: str = Field(min_length=1)
+    api_secret: str = Field(min_length=1)
+    enable_trading: bool = False
+
+
+@router.get("/exchange")
+async def get_exchange_config(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
+    try:
+        store = ExchangeCredentialStore()
+        saved = store.public_status()
+        return {**saved, "runtime_exchange_mode": executor.exchange_mode}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.post("/exchange")
+async def configure_exchange(config: ExchangeConfigRequest, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
+    exchange = config.exchange.lower().strip()
+    if exchange not in {"paper", "indodax", "alpaca"}:
+        raise HTTPException(status_code=400, detail="Unsupported exchange")
+    if exchange != "indodax":
+        executor.configure_exchange(exchange)
+        get_market_data_adapter({"exchange_type": exchange})
+        return {"success": True, "exchange": exchange, "trading_enabled": False}
+    try:
+        # Verify the public/private credentials before persisting them.
+        from exchange_integration.indodax_bridge import IndodaxBridge
+        bridge = IndodaxBridge({"api_key": config.api_key, "secret": config.api_secret, "enable_trading": config.enable_trading})
+        bridge.test_connection()
+        store = ExchangeCredentialStore()
+        store.save("indodax", config.api_key, config.api_secret, config.enable_trading)
+        credentials_data = {
+            "api_key": config.api_key,
+            "api_secret": config.api_secret,
+            "enable_trading": config.enable_trading,
+        }
+        executor.configure_exchange("indodax", credentials_data)
+        get_market_data_adapter({"exchange_type": "indodax", "indodax": credentials_data})
+        return {"success": True, "exchange": "indodax", "trading_enabled": config.enable_trading, "api_key_last4": config.api_key[-4:]}
+    except Exception as exc:
+        logger.exception("Indodax configuration failed")
+        raise HTTPException(status_code=400, detail=f"Indodax connection failed: {exc}")
+
+
+@router.post("/exchange/test")
+async def test_exchange(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
+    try:
+        store = ExchangeCredentialStore()
+        saved = store.load()
+        if not saved:
+            raise HTTPException(status_code=404, detail="No exchange credentials configured")
+        if saved.get("exchange") == "indodax":
+            from exchange_integration.indodax_bridge import IndodaxBridge
+            bridge = IndodaxBridge({"api_key": saved["api_key"], "secret": saved["api_secret"], "enable_trading": saved.get("enable_trading", False)})
+            return bridge.test_connection()
+        return {"connected": True, "exchange": saved.get("exchange")}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Exchange test failed: {exc}")
+
 
 @router.get("/status")
-async def get_status(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Get overall dashboard/system status.
-    """
-
+async def get_status(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
     try:
-
-        authenticate(credentials)
-
-        # ----------------------------------------------------
-        # Get trades from Supabase
-        # ----------------------------------------------------
-
         trades = db.get_trades(limit=1000)
-
-        # ----------------------------------------------------
-        # Calculate PnL
-        # ----------------------------------------------------
-
-        total_pnl = 0.0
-
-        for trade in trades:
-
-            pnl = trade.get("pnl")
-
-            if pnl is not None:
-                try:
-                    total_pnl += float(pnl)
-                except (TypeError, ValueError):
-                    pass
-
-        # ----------------------------------------------------
-        # Trading statistics
-        # ----------------------------------------------------
-
-        total_trades = len(trades)
-
-        winning_trades = sum(
-            1
-            for trade in trades
-            if float(trade.get("pnl", 0) or 0) > 0
-        )
-
-        losing_trades = sum(
-            1
-            for trade in trades
-            if float(trade.get("pnl", 0) or 0) < 0
-        )
-
-        # ----------------------------------------------------
-        # Win rate
-        # ----------------------------------------------------
-
-        win_rate = (
-            winning_trades / total_trades
-            if total_trades > 0
-            else 0
-        )
-
-        # ----------------------------------------------------
-        # Portfolio information
-        # ----------------------------------------------------
-
-        portfolio_value = None
-        balance = None
-
-        if paper_trading:
-
-            try:
-                portfolio_value = paper_trading.get_portfolio_value()
-                balance = paper_trading.balance
-
-            except Exception as e:
-                logger.warning(
-                    f"Paper trading portfolio unavailable: {e}"
-                )
-
-        # ----------------------------------------------------
-        # Database status
-        # ----------------------------------------------------
-
-        database_status = db.is_connected()
-
-        # ----------------------------------------------------
-        # Response
-        # ----------------------------------------------------
-
+        pnls = [float(t.get("pnl", 0) or 0) for t in trades if t.get("pnl") is not None]
+        winning = sum(1 for p in pnls if p > 0)
+        losing = sum(1 for p in pnls if p < 0)
         return {
-
-            "status": "running",
-
-            "timestamp": datetime.now().isoformat(),
-
-            "database": {
-                "connected": database_status
-            },
-
-            "trading": {
-
-                "exchange_mode": getattr(
-                    executor,
-                    "exchange_mode",
-                    "paper"
-                ),
-
-                "active_positions": len(
-                    getattr(
-                        executor,
-                        "active_positions",
-                        {}
-                    )
-                ),
-
-                "total_trades": total_trades,
-
-                "winning_trades": winning_trades,
-
-                "losing_trades": losing_trades,
-
-                "win_rate": win_rate,
-
-                "total_pnl": total_pnl,
-
-                "daily_pnl": getattr(
-                    executor,
-                    "daily_pnl",
-                    0
-                ),
-
-                "daily_trades": getattr(
-                    executor,
-                    "daily_trades",
-                    0
-                )
-            },
-
-            "portfolio": {
-
-                "value": portfolio_value,
-
-                "balance": balance
-            }
-
+            "status": "running", "timestamp": datetime.now().isoformat(),
+            "database": {"connected": db.is_connected()},
+            "trading": {"exchange_mode": executor.exchange_mode, "active_positions": len(executor.active_positions),
+                        "total_trades": len(trades), "winning_trades": winning, "losing_trades": losing,
+                        "win_rate": winning / len(trades) if trades else 0, "total_pnl": sum(pnls),
+                        "daily_pnl": executor.daily_pnl, "daily_trades": executor.daily_trades},
+            "portfolio": {"value": paper_trading.get_portfolio_value(), "balance": paper_trading.balance} if executor.exchange_mode == "paper" else {"value": None, "balance": None},
         }
+    except Exception as exc:
+        logger.exception("Error getting dashboard status")
+        raise HTTPException(status_code=500, detail="Failed to get dashboard status")
 
-    except HTTPException:
-        raise
-
-    except Exception as e:
-
-        logger.exception(
-            "Error getting dashboard status"
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get dashboard status"
-        )
-
-
-# ============================================================
-# AGENTS STATUS
-# ============================================================
 
 @router.get("/agents")
-async def get_agents_status(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Get status of all AI agents.
-    """
+async def get_agents_status(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
+    return {"agents": [
+        {"name": "Sentiment Agent", "status": "active"},
+        {"name": "Technical Agent", "status": "active"},
+        {"name": "Decision Agent", "status": "active"},
+        {"name": "Reflector Agent", "status": "active"},
+        {"name": "Forecast Agent", "status": "active"}],
+        "orchestrator": "running", "executor": "running", "timestamp": datetime.now().isoformat()}
 
-    try:
-
-        authenticate(credentials)
-
-        return {
-
-            "agents": [
-
-                {
-                    "name": "Sentiment Agent",
-                    "status": "active",
-                    "description": "Analisis sentimen pasar"
-                },
-
-                {
-                    "name": "Technical Agent",
-                    "status": "active",
-                    "description": "Analisis teknikal dan candlestick"
-                },
-
-                {
-                    "name": "Decision Agent",
-                    "status": "active",
-                    "description": "Pengambil keputusan trading"
-                },
-
-                {
-                    "name": "Reflector Agent",
-                    "status": "active",
-                    "description": "Analisis hasil trading"
-                },
-
-                {
-                    "name": "Forecast Agent",
-                    "status": "active",
-                    "description": "Prediksi pergerakan harga"
-                }
-
-            ],
-
-            "orchestrator": "running",
-
-            "executor": "running",
-
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-
-        logger.exception(
-            "Error getting agents status"
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get agents status"
-        )
-
-
-# ============================================================
-# POSITIONS
-# ============================================================
 
 @router.get("/positions")
-async def get_positions(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Get current paper trading positions.
-    """
+async def get_positions(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
+    positions = paper_trading.get_positions() if executor.exchange_mode == "paper" else list(executor.active_positions.values())
+    return {"positions": positions, "total_positions": len(positions), "timestamp": datetime.now().isoformat()}
 
-    try:
-
-        authenticate(credentials)
-
-        positions = []
-
-        if paper_trading:
-
-            try:
-                positions = paper_trading.get_positions()
-
-            except Exception as e:
-
-                logger.warning(
-                    f"Unable to get paper positions: {e}"
-                )
-
-        return {
-
-            "positions": positions,
-
-            "total_positions": len(positions),
-
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-
-        logger.exception(
-            "Error getting positions"
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get positions"
-        )
-
-
-# ============================================================
-# TRADES
-# ============================================================
 
 @router.get("/trades")
-async def get_trades(
-    limit: int = 50,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Get recent trades from Supabase.
-    """
+async def get_trades(limit: int = 50, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
+    limit = max(1, min(limit, 500))
+    trades = db.get_trades(limit=limit)
+    return {"trades": trades, "total_trades": len(trades), "limit": limit, "timestamp": datetime.now().isoformat()}
 
-    try:
-
-        authenticate(credentials)
-
-        # Prevent unreasonable requests
-        limit = max(1, min(limit, 500))
-
-        trades = db.get_trades(limit=limit)
-
-        return {
-
-            "trades": trades,
-
-            "total_trades": len(trades),
-
-            "limit": limit,
-
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-
-        logger.exception(
-            "Error getting trades"
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get trades"
-        )
-
-
-# ============================================================
-# PERFORMANCE
-# ============================================================
 
 @router.get("/performance")
-async def get_performance(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Get trading performance from Supabase.
-    """
-
-    try:
-
-        authenticate(credentials)
-
-        trades = db.get_trades(limit=1000)
-
-        # ----------------------------------------------------
-        # PnL
-        # ----------------------------------------------------
-
-        pnls = []
-
-        for trade in trades:
-
-            try:
-
-                pnl = float(
-                    trade.get("pnl", 0) or 0
-                )
-
-                pnls.append(pnl)
-
-            except (TypeError, ValueError):
-
-                continue
-
-        # ----------------------------------------------------
-        # Statistics
-        # ----------------------------------------------------
-
-        total_trades = len(pnls)
-
-        winning_trades = sum(
-            1 for pnl in pnls if pnl > 0
-        )
-
-        losing_trades = sum(
-            1 for pnl in pnls if pnl < 0
-        )
-
-        total_pnl = sum(pnls)
-
-        average_pnl = (
-            total_pnl / total_trades
-            if total_trades > 0
-            else 0
-        )
-
-        win_rate = (
-            winning_trades / total_trades
-            if total_trades > 0
-            else 0
-        )
-
-        gross_profit = sum(
-            pnl for pnl in pnls
-            if pnl > 0
-        )
-
-        gross_loss = abs(
-            sum(
-                pnl for pnl in pnls
-                if pnl < 0
-            )
-        )
-
-        profit_factor = (
-            gross_profit / gross_loss
-            if gross_loss > 0
-            else None
-        )
-
-        # ----------------------------------------------------
-        # Paper portfolio
-        # ----------------------------------------------------
-
-        portfolio_value = None
-        balance = None
-        total_return = None
-
-        if paper_trading:
-
-            try:
-
-                portfolio_value = (
-                    paper_trading.get_portfolio_value()
-                )
-
-                balance = paper_trading.balance
-
-                initial_balance = (
-                    paper_trading.initial_balance
-                )
-
-                if initial_balance:
-
-                    total_return = (
-                        (
-                            portfolio_value
-                            - initial_balance
-                        )
-                        / initial_balance
-                    ) * 100
-
-            except Exception as e:
-
-                logger.warning(
-                    f"Paper performance unavailable: {e}"
-                )
-
-        # ----------------------------------------------------
-        # Response
-        # ----------------------------------------------------
-
-        return {
-
-            "performance": {
-
-                "total_trades": total_trades,
-
-                "winning_trades": winning_trades,
-
-                "losing_trades": losing_trades,
-
-                "win_rate": win_rate,
-
-                "total_pnl": total_pnl,
-
-                "average_pnl": average_pnl,
-
-                "gross_profit": gross_profit,
-
-                "gross_loss": gross_loss,
-
-                "profit_factor": profit_factor,
-
-                "balance": balance,
-
-                "portfolio_value": portfolio_value,
-
-                "total_return": total_return
-            },
-
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-
-        logger.exception(
-            "Error getting performance"
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get performance"
-        )
-
-
-# ============================================================
-# RECENT DECISION
-# ============================================================
-
-@router.get("/recent-decision")
-async def get_recent_decision(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Get the most recent AI trading decision.
-    """
-
-    try:
-
-        authenticate(credentials)
-
-        # ----------------------------------------------------
-        # First try orchestrator history
-        # ----------------------------------------------------
-
-        try:
-
-            history = orchestrator.get_history(1)
-
-        except Exception as e:
-
-            logger.warning(
-                f"Could not read orchestrator history: {e}"
-            )
-
-            history = []
-
-        if history:
-
-            latest = history[-1]
-
-            return {
-
-                "decision": {
-
-                    "symbol": latest.symbol,
-
-                    "action": latest.final_action,
-
-                    "confidence": latest.final_confidence,
-
-                    "position_size": latest.position_size,
-
-                    "timestamp": latest.timestamp.isoformat()
-                },
-
-                "votes": latest.agent_votes,
-
-                "summary": latest.summary
-            }
-
-        # ----------------------------------------------------
-        # Fallback to Supabase
-        # ----------------------------------------------------
-
-        decisions = db.get_decisions(limit=1)
-
-        if decisions:
-
-            decision = decisions[0]
-
-            return {
-
-                "decision": {
-
-                    "symbol": decision.get("symbol"),
-
-                    "action": decision.get("action"),
-
-                    "confidence": decision.get("confidence"),
-
-                    "timestamp": decision.get("created_at")
-                },
-
-                "votes": decision.get(
-                    "agent_votes",
-                    {}
-                ),
-
-                "summary": decision.get(
-                    "reasoning"
-                )
-            }
-
-        return {
-
-            "decision": None,
-
-            "message": "No decisions made yet"
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-
-        logger.exception(
-            "Error getting recent decision"
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get recent decision"
-        )
-
-
-# ============================================================
-# ANALYZE SYMBOL
-# ============================================================
-
-@router.post("/analyze")
-async def analyze_symbol(
-    symbol: str = "BTC-USD",
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Force AI analysis on a symbol.
-    """
-
-    try:
-
-        authenticate(credentials)
-
-        symbol = symbol.upper().strip()
-
-        if not symbol:
-
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Symbol cannot be empty"
-            )
-
-        # IMPORTANT:
-        # This endpoint is already async.
-        # Do NOT use asyncio.run() here.
-
-        result = await orchestrator.analyze(symbol)
-
-        return {
-
-            "symbol": result.symbol,
-
-            "action": result.final_action,
-
-            "confidence": result.final_confidence,
-
-            "position_size": result.position_size,
-
-            "votes": result.agent_votes,
-
-            "summary": result.summary,
-
-            "timestamp": result.timestamp.isoformat()
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-
-        logger.exception(
-            f"Error analyzing symbol {symbol}"
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to analyze {symbol}: {str(e)}"
-        )
+async def get_performance(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    authenticate(credentials)
+    trades = db.get_trades(limit=1000)
+    pnls = [float(t.get("pnl", 0) or 0) for t in trades]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    return {"total_trades": len(pnls), "winning_trades": len(wins), "losing_trades": len(losses),
+            "win_rate": len(wins) / len(pnls) if pnls else 0, "total_pnl": sum(pnls),
+            "average_pnl": sum(pnls) / len(pnls) if pnls else 0,
+            "profit_factor": sum(wins) / abs(sum(losses)) if losses else None,
+            "portfolio_value": paper_trading.get_portfolio_value() if executor.exchange_mode == "paper" else None}
