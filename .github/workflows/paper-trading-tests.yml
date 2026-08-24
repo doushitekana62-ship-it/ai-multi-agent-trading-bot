@@ -79,9 +79,9 @@ jobs:
         run: |
           pytest -q tests/test_50_cycle_scalping.py
 
-      - name: Run real-market Indodax paper-cycle integration
+      - name: Run extended real-market Indodax paper runtime
         if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           pytest -q tests/test_live_market_paper_cycle.py -o log_cli=true --log-cli-level=INFO
 
