@@ -1,13 +1,9 @@
-import os
 import logging
-from typing import Optional, Dict, Any, List
+import os
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from supabase import create_client, Client
-
-# ============================================================
-# LOAD ENVIRONMENT VARIABLES
-# ============================================================
+from supabase import Client, create_client
 
 load_dotenv()
 
@@ -15,46 +11,29 @@ logger = logging.getLogger(__name__)
 
 
 class SupabaseDatabase:
+    """Small server-side Supabase repository used by the dashboard/API."""
 
     def __init__(self):
-
         self.client: Optional[Client] = None
 
         url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_KEY")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 
         if not url or not key:
-
             logger.warning(
-                "Supabase environment variables are missing. "
-                "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+                "Supabase is not configured. Set SUPABASE_URL and "
+                "SUPABASE_SERVICE_ROLE_KEY."
             )
-
             return
 
         try:
-
-            self.client = create_client(
-                url,
-                key
-            )
-
-            logger.info(
-                "Supabase connection initialized successfully"
-            )
-
-        except Exception as e:
-
-            logger.error(
-                f"Failed to initialize Supabase: {e}"
-            )
+            self.client = create_client(url, key)
+            logger.info("Supabase connection initialized successfully")
+        except Exception as exc:
+            logger.error("Failed to initialize Supabase: %s", exc)
 
     def is_connected(self) -> bool:
-
         return self.client is not None
-    # ==================================================
-    # DECISIONS
-    # ==================================================
 
     def save_decision(
         self,
@@ -62,16 +41,10 @@ class SupabaseDatabase:
         action: str,
         confidence: float,
         reasoning: str,
-        agent_votes: Dict[str, Any]
+        agent_votes: Dict[str, Any],
     ):
-        """
-        Save AI trading decision to Supabase.
-        """
-
         if not self.client:
-            logger.warning(
-                "Supabase not connected. Decision not saved."
-            )
+            logger.warning("Supabase not connected. Decision not saved.")
             return None
 
         data = {
@@ -79,33 +52,16 @@ class SupabaseDatabase:
             "action": action,
             "confidence": confidence,
             "reasoning": reasoning,
-            "agent_votes": agent_votes
+            "agent_votes": agent_votes,
         }
 
         try:
-            response = (
-                self.client
-                .table("decisions")
-                .insert(data)
-                .execute()
-            )
-
-            logger.info(
-                f"Decision saved: {symbol} / {action}"
-            )
-
+            response = self.client.table("decisions").insert(data).execute()
+            logger.info("Decision saved: %s / %s", symbol, action)
             return response.data
-
-        except Exception as e:
-            logger.error(
-                f"Failed to save decision: {e}"
-            )
-
+        except Exception as exc:
+            logger.error("Failed to save decision: %s", exc)
             return None
-
-    # ==================================================
-    # TRADES
-    # ==================================================
 
     def save_trade(
         self,
@@ -114,16 +70,10 @@ class SupabaseDatabase:
         price: float,
         quantity: float,
         pnl: float = 0.0,
-        confidence: float = 0.0
+        confidence: float = 0.0,
     ):
-        """
-        Save trade to Supabase.
-        """
-
         if not self.client:
-            logger.warning(
-                "Supabase not connected. Trade not saved."
-            )
+            logger.warning("Supabase not connected. Trade not saved.")
             return None
 
         data = {
@@ -132,108 +82,55 @@ class SupabaseDatabase:
             "price": price,
             "quantity": quantity,
             "pnl": pnl,
-            "confidence": confidence
+            "confidence": confidence,
         }
 
         try:
-            response = (
-                self.client
-                .table("trades")
-                .insert(data)
-                .execute()
-            )
-
-            logger.info(
-                f"Trade saved: {symbol} / {action}"
-            )
-
+            response = self.client.table("trades").insert(data).execute()
+            logger.info("Trade saved: %s / %s", symbol, action)
             return response.data
-
-        except Exception as e:
-            logger.error(
-                f"Failed to save trade: {e}"
-            )
-
+        except Exception as exc:
+            logger.error("Failed to save trade: %s", exc)
             return None
 
-    # ==================================================
-    # GET TRADES
-    # ==================================================
-
-    def get_trades(
-        self,
-        limit: int = 50
-    ) -> List[Dict[str, Any]]:
-
+    def get_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
         if not self.client:
             return []
 
         try:
             response = (
-                self.client
-                .table("trades")
+                self.client.table("trades")
                 .select("*")
-                .order(
-                    "created_at",
-                    desc=True
-                )
+                .order("created_at", desc=True)
                 .limit(limit)
                 .execute()
             )
-
             return response.data or []
-
-        except Exception as e:
-            logger.error(
-                f"Failed to get trades: {e}"
-            )
-
+        except Exception as exc:
+            logger.error("Failed to get trades: %s", exc)
             return []
 
-    # ==================================================
-    # GET DECISIONS
-    # ==================================================
-
-    def get_decisions(
-        self,
-        limit: int = 50
-    ) -> List[Dict[str, Any]]:
-
+    def get_decisions(self, limit: int = 50) -> List[Dict[str, Any]]:
         if not self.client:
             return []
 
         try:
             response = (
-                self.client
-                .table("decisions")
+                self.client.table("decisions")
                 .select("*")
-                .order(
-                    "created_at",
-                    desc=True
-                )
+                .order("created_at", desc=True)
                 .limit(limit)
                 .execute()
             )
-
             return response.data or []
-
-        except Exception as e:
-            logger.error(
-                f"Failed to get decisions: {e}"
-            )
-
+        except Exception as exc:
+            logger.error("Failed to get decisions: %s", exc)
             return []
 
 
-# ======================================================
-# SINGLETON
-# ======================================================
-
+# Shared server-side database client.
 db = SupabaseDatabase()
 
 
 def get_supabase() -> SupabaseDatabase:
-    """
-    Return the shared Supabase database instance.
-    """
     return db
