@@ -70,17 +70,10 @@ class ScalpingRuntime:
             volumes=volumes,
         )
 
-        # Position management has priority over new entries.
         existing = self.paper.get_position(self.symbol)
         closed = self.paper.update_price(self.symbol, float(price)) if existing else None
         if closed:
-            self.state.exits += 1
-            self.state.realized_pnl += float(closed.get("pnl", 0.0))
-            reason = str(closed.get("reason", "MANUAL"))
-            if reason == "STOP_LOSS":
-                self.state.stop_losses += 1
-            elif reason == "TAKE_PROFIT":
-                self.state.take_profits += 1
+            self._record_close(closed)
 
         existing = self.paper.get_position(self.symbol)
         event: Dict[str, Any] = {
@@ -98,11 +91,11 @@ class ScalpingRuntime:
 
         if existing:
             # For spot-style scalping, a bearish validated setup closes a long.
-            if setup.action == "SELL":
+            # Important: do not let generic HOLD logic suppress a valid exit.
+            if existing.get("side") == "BUY" and setup.action == "SELL":
                 trade = self.paper.close_position(self.symbol, float(price), "SCALP_EXIT")
                 if trade:
-                    self.state.exits += 1
-                    self.state.realized_pnl += float(trade.get("pnl", 0.0))
+                    self._record_manual_close(trade)
                     event["action"] = "SELL"
                     event["trade"] = trade
                 else:
@@ -133,6 +126,18 @@ class ScalpingRuntime:
 
         self.state.events.append(event)
         return event
+
+    def _record_close(self, trade: Dict[str, Any]) -> None:
+        self.state.exits += 1
+        self.state.realized_pnl += float(trade.get("pnl", 0.0))
+        reason = str(trade.get("reason", "MANUAL"))
+        if reason == "STOP_LOSS":
+            self.state.stop_losses += 1
+        elif reason == "TAKE_PROFIT":
+            self.state.take_profits += 1
+
+    def _record_manual_close(self, trade: Dict[str, Any]) -> None:
+        self._record_close(trade)
 
     def summary(self) -> Dict[str, Any]:
         return {
