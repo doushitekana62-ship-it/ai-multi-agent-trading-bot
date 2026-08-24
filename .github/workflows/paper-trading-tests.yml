@@ -27,7 +27,7 @@ jobs:
   paper-tests:
     name: Paper trading audit
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PYTHONPATH: .
       TEST_SCOPE: ${{ inputs.test_scope || 'full' }}
@@ -43,7 +43,7 @@ jobs:
       - name: Install CI test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest requests ccxt
+          python -m pip install pytest pytest-timeout requests ccxt
 
       - name: Verify exchange dependency
         run: |
@@ -73,6 +73,11 @@ jobs:
         run: |
           pytest -q tests/test_50_cycle_scalping.py
 
+      - name: Run real-market Indodax paper-cycle integration
+        if: env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy'
+        run: |
+          pytest -q tests/test_live_market_paper_cycle.py
+
       - name: Run Trading Librarian import test
         if: env.TEST_SCOPE == 'full'
         run: |
@@ -90,8 +95,7 @@ jobs:
         run: |
           python - <<'PY'
           import requests
-          url = 'https://indodax.com/api/btc_idr/ticker'
-          response = requests.get(url, timeout=10)
+          response = requests.get('https://indodax.com/api/btc_idr/ticker', timeout=10)
           response.raise_for_status()
           payload = response.json()
           price = float(payload['ticker']['last'])
@@ -100,12 +104,12 @@ jobs:
           print("READ-ONLY: no credentials and no private order endpoint used.")
           PY
 
-      - name: Publish 50-cycle summary
-        if: always() && (env.TEST_SCOPE == 'full' || env.TEST_SCOPE == 'strategy')
+      - name: Publish paper-cycle reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scalping-50-cycle-summary
-          path: test_results/scalping_50_cycle_summary.json
+          name: paper-trading-audit-reports
+          path: test_results/
           if-no-files-found: warn
 
       - name: Audit result
