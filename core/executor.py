@@ -13,6 +13,7 @@ from exchange_integration.indodax_bridge import IndodaxBridge
 
 logger = logging.getLogger(__name__)
 
+
 class OrderStatus(Enum):
     PENDING = "PENDING"
     FILLED = "FILLED"
@@ -20,6 +21,7 @@ class OrderStatus(Enum):
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+
 
 @dataclass
 class Order:
@@ -36,6 +38,7 @@ class Order:
     stop_loss: Optional[float]
     take_profit: Optional[float]
     metadata: Dict[str, Any]
+
 
 class Executor:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -77,6 +80,7 @@ class Executor:
         self._ensure_daily_baseline()
         if self.daily_pnl <= -self.daily_loss_limit:
             return None
+
         side = "BUY" if action in {"BUY", "STRONG_BUY"} else "SELL"
         if side == "BUY" and symbol in self.active_positions:
             return None
@@ -84,32 +88,46 @@ class Executor:
             return None
         if side == "BUY" and len(self.active_positions) >= self.max_open_positions:
             return None
+
         current_price = self._get_current_price(symbol)
         if current_price is None or current_price <= 0:
             return None
-        quantity = (self._get_portfolio_value() * position_size) / current_price if side == "BUY" else float(self.active_positions[symbol]["quantity"])
+        quantity = (
+            (self._get_portfolio_value() * position_size) / current_price
+            if side == "BUY"
+            else float(self.active_positions[symbol]["quantity"])
+        )
         if quantity <= 0:
             return None
+
         order = self._create_order(symbol, side, quantity, current_price, stop_loss, take_profit)
         executed = self._execute_order(order)
         if not executed:
             return None
+
         if side == "SELL":
-            self._close_position_record(symbol)
+            realized_pnl = self._get_execution_realized_pnl(executed)
+            self._close_position_record(symbol, realized_pnl)
         else:
             self._track_position(executed)
         return executed
 
     def _create_order(self, symbol, side, quantity, price, stop_loss, take_profit):
         self.order_id_counter += 1
-        return Order(f"ORD_{self.order_id_counter:06d}", symbol, side, quantity, price,
-                     OrderStatus.PENDING.value, datetime.now(timezone.utc), None, 0.0, 0.0,
-                     stop_loss, take_profit, {})
+        return Order(
+            f"ORD_{self.order_id_counter:06d}", symbol, side, quantity, price,
+            OrderStatus.PENDING.value, datetime.now(timezone.utc), None, 0.0, 0.0,
+            stop_loss, take_profit, {},
+        )
 
     def _execute_order(self, order: Order) -> Optional[Order]:
         try:
             if self.exchange_mode == "paper":
-                result = {"paper": True} if self.paper_trading.execute_order(order.symbol, order.side, order.quantity, order.price) else None
+                result = (
+                    {"paper": True}
+                    if self.paper_trading.execute_order(order.symbol, order.side, order.quantity, order.price)
+                    else None
+                )
             elif self.exchange_mode == "indodax":
                 if not self.indodax_bridge:
                     raise RuntimeError("Indodax is not configured")
@@ -118,6 +136,7 @@ class Executor:
                 result = self.alpaca_bridge.submit_order(order.symbol, order.side, order.quantity, "market")
             else:
                 raise ValueError(f"Unsupported exchange mode: {self.exchange_mode}")
+
             if result is None:
                 order.status = OrderStatus.REJECTED.value
                 return None
@@ -134,12 +153,28 @@ class Executor:
             logger.exception("Order execution failed")
             return None
 
+    def _get_execution_realized_pnl(self, order: Order) -> float:
+        if self.exchange_mode == "paper" and self.paper_trading.trade_history:
+            trade = self.paper_trading.trade_history[-1]
+            if trade.get("symbol") == order.symbol and trade.get("quantity") == order.quantity:
+                return float(trade.get("pnl", 0.0))
+
+        position = self.active_positions.get(order.symbol)
+        if position is None:
+            return 0.0
+        return (order.filled_price - position["entry_price"]) * order.filled_quantity
+
     def _track_position(self, order: Order) -> None:
         self.active_positions[order.symbol] = {
-            "symbol": order.symbol, "side": order.side, "entry_price": order.filled_price,
-            "quantity": order.filled_quantity, "stop_loss": order.stop_loss,
-            "take_profit": order.take_profit, "entry_time": datetime.now(timezone.utc),
-            "order_id": order.order_id, "current_pnl": 0.0,
+            "symbol": order.symbol,
+            "side": order.side,
+            "entry_price": order.filled_price,
+            "quantity": order.filled_quantity,
+            "stop_loss": order.stop_loss,
+            "take_profit": order.take_profit,
+            "entry_time": datetime.now(timezone.utc),
+            "order_id": order.order_id,
+            "current_pnl": 0.0,
         }
 
     def _close_position_record(self, symbol: str, realized_pnl: Optional[float] = None) -> None:
@@ -171,7 +206,7 @@ class Executor:
         order.metadata["close_reason"] = reason
         executed = self._execute_order(order)
         if executed:
-            pnl = (price - position["entry_price"]) * position["quantity"]
+            pnl = self._get_execution_realized_pnl(executed)
             self._close_position_record(symbol, pnl)
         return executed
 
@@ -198,10 +233,15 @@ class Executor:
             return 0.0
 
     def get_summary(self) -> Dict[str, Any]:
-        return {"active_positions": len(self.active_positions), "total_trades": len(self.order_history),
-                "daily_pnl": self.daily_pnl, "daily_realized_pnl": self.daily_realized_pnl,
-                "daily_trades": self.daily_trades, "positions": self.active_positions,
-                "exchange_mode": self.exchange_mode}
+        return {
+            "active_positions": len(self.active_positions),
+            "total_trades": len(self.order_history),
+            "daily_pnl": self.daily_pnl,
+            "daily_realized_pnl": self.daily_realized_pnl,
+            "daily_trades": self.daily_trades,
+            "positions": self.active_positions,
+            "exchange_mode": self.exchange_mode,
+        }
 
     def reset_daily(self):
         self.daily_starting_equity = self._get_portfolio_value()
