@@ -1,11 +1,9 @@
 [project]
 name = "ai-multi-agent-trading-cloudflare"
-version = "1.0.0"
-description = "FastAPI validation runtime for the AI trading dashboard on Cloudflare Workers"
+version = "1.0.1"
+description = "Lightweight Python Worker API for the AI trading dashboard on Cloudflare Workers"
 requires-python = ">=3.13"
-dependencies = [
-    "fastapi",
-]
+dependencies = []
 
 [dependency-groups]
 dev = [
