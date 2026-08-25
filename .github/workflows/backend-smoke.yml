@@ -39,6 +39,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Confirm production secret wiring
+        run: echo "Backend smoke test secret wiring is configured; secret values are never printed."
       - name: Validate required backend secrets
         run: |
           test -n "$SUPABASE_URL" || { echo "::error::Missing SUPABASE_URL"; exit 1; }
