@@ -1,0 +1,60 @@
+name: Backend FastAPI Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".github/workflows/backend-smoke.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".github/workflows/backend-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHON_VERSION: "3.11"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      CORS_ORIGINS: "https://localhost"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Compile backend
+        run: python -m compileall -q backend
+      - name: Import FastAPI application
+        run: python -c "from backend.api import app; print(app.title)"
+      - name: Test health and readiness endpoints
+        run: |
+          python - <<'PY'
+          import os
+          from fastapi.testclient import TestClient
+          from backend.api import app
+          client = TestClient(app)
+          health = client.get('/health')
+          assert health.status_code == 200, health.text
+          ready = client.get('/ready')
+          assert ready.status_code in (200, 503), ready.text
+          print('health:', health.json())
+          print('ready:', ready.status_code, ready.json())
+          if os.getenv('SUPABASE_URL') and os.getenv('SUPABASE_SERVICE_ROLE_KEY'):
+              assert ready.status_code == 200, ready.text
+          PY
