@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import asgi
 from workers import WorkerEntrypoint
-from js import TextEncoder, crypto, fetch
+from js import fetch
 from pyodide.ffi import to_js
 
 
@@ -31,33 +31,28 @@ def _env(scope, name, default=""):
 
 
 def _secret(scope) -> str:
-    secret = _env(scope, "JWT_SECRET_KEY")
+    secret = _env(scope, "JWT_SECRET_KEY").strip()
     if len(secret) < 32:
         raise RuntimeError("JWT_SECRET_KEY must be at least 32 characters")
     return secret
 
 
-async def _hmac_sha256(secret: str, message: str) -> bytes:
-    encoder = TextEncoder.new()
-    key_data = encoder.encode(secret)
-    message_data = encoder.encode(message)
-    key = await crypto.subtle.importKey(
-        "raw", key_data, to_js({"name": "HMAC", "hash": "SHA-256"}), False, ["sign"]
-    )
-    result = await crypto.subtle.sign("HMAC", key, message_data)
-    return bytes(result.to_py())
+def _hmac_sha256(secret: str, message: str) -> bytes:
+    # Use Python's stdlib HMAC instead of the JS WebCrypto bridge here.
+    # This keeps login/token generation small and avoids FFI-specific runtime errors.
+    return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
 
 
-async def _make_token(scope, username: str) -> str:
+def _make_token(scope, username: str) -> str:
     now = int(time.time())
     header = _b64url(_json_bytes({"alg": "HS256", "typ": "JWT"}))
     payload = _b64url(_json_bytes({"sub": username, "iat": now, "exp": now + 1800, "type": "access"}))
     signing_input = f"{header}.{payload}"
-    signature = await _hmac_sha256(_secret(scope), signing_input)
+    signature = _hmac_sha256(_secret(scope), signing_input)
     return f"{signing_input}.{_b64url(signature)}"
 
 
-async def _verify_token(scope, token: str):
+def _verify_token(scope, token: str):
     try:
         header, payload, signature = token.split(".", 2)
         if json.loads(_b64url_decode(header)).get("alg") != "HS256":
@@ -65,7 +60,7 @@ async def _verify_token(scope, token: str):
         data = json.loads(_b64url_decode(payload))
         if int(data.get("exp", 0)) <= int(time.time()):
             return None
-        expected = await _hmac_sha256(_secret(scope), f"{header}.{payload}")
+        expected = _hmac_sha256(_secret(scope), f"{header}.{payload}")
         if not hmac.compare_digest(expected, _b64url_decode(signature)):
             return None
         return data
@@ -75,8 +70,9 @@ async def _verify_token(scope, token: str):
 
 def _authorization(scope) -> str:
     for key, value in scope.get("headers", []):
-        if key.lower() == b"authorization":
-            return value.decode("latin-1")
+        key_text = key.decode("latin-1") if isinstance(key, (bytes, bytearray)) else str(key)
+        if key_text.lower() == "authorization":
+            return value.decode("latin-1") if isinstance(value, (bytes, bytearray)) else str(value)
     return ""
 
 
@@ -105,7 +101,7 @@ async def _require_user(scope):
     value = _authorization(scope)
     if not value.lower().startswith("bearer "):
         return None
-    return await _verify_token(scope, value[7:].strip())
+    return _verify_token(scope, value[7:].strip())
 
 
 async def _supabase_probe(scope) -> bool:
@@ -152,9 +148,8 @@ async def app(scope, receive, send):
         await _send(send, 204, [], b"")
         return
 
-    # The Worker is intentionally API-only. The root and all non-API routes
-    # are served by Cloudflare Static Assets/React SPA. Visiting the site
-    # never imports or starts the trading engine.
+    # The Worker is intentionally API-only. Non-API routes are served by
+    # Cloudflare Static Assets/React SPA. Visiting the site never starts trading.
     if not path.startswith("/api/"):
         if await _serve_assets(scope, send):
             return
@@ -179,7 +174,7 @@ async def app(scope, receive, send):
         return
 
     if path == "/api/auth/login" and method == "POST":
-        configured_user = _env(scope, "ADMIN_USERNAME")
+        configured_user = _env(scope, "ADMIN_USERNAME").strip()
         configured_password = _env(scope, "ADMIN_PASSWORD")
         if not configured_user or not configured_password:
             await _json_response(send, 503, {"detail": "Dashboard authentication is not configured"})
@@ -191,12 +186,17 @@ async def app(scope, receive, send):
         except Exception:
             await _json_response(send, 400, {"detail": "Invalid JSON request body"})
             return
-        supplied = await _hmac_sha256(_secret(scope), password)
-        expected = await _hmac_sha256(_secret(scope), configured_password)
+        try:
+            secret = _secret(scope)
+            supplied = _hmac_sha256(secret, password)
+            expected = _hmac_sha256(secret, configured_password)
+        except RuntimeError as exc:
+            await _json_response(send, 503, {"detail": str(exc)})
+            return
         if username != configured_user or not hmac.compare_digest(supplied, expected):
             await _json_response(send, 401, {"detail": "Incorrect username or password"})
             return
-        token = await _make_token(scope, configured_user)
+        token = _make_token(scope, configured_user)
         await _json_response(send, 200, {
             "access_token": token, "token_type": "bearer", "expires_in": 1800, "username": configured_user
         })
@@ -217,8 +217,8 @@ async def app(scope, receive, send):
         await _json_response(send, 200, {"username": payload["sub"], "is_authenticated": True})
         return
 
-    # Safety gate: this endpoint reports the current safe state only. No
-    # trading engine is imported, scheduled, or started by the Worker.
+    # Safety gate: status is read-only. There is no start trigger here and no
+    # trading engine is imported, scheduled, or started by a page request.
     if path == "/api/bot/status" and method == "GET":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
