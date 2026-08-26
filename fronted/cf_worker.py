@@ -92,14 +92,6 @@ async def _read_body(receive):
     return b"".join(chunks)
 
 
-def _response(status, body=None, headers=None):
-    body = b"" if body is None else body
-    merged = list(JSON_HEADERS if body else [])
-    if headers:
-        merged.extend(headers)
-    return status, merged, body
-
-
 async def _send(send, status, headers, body):
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})
@@ -132,6 +124,23 @@ async def _supabase_probe(scope) -> bool:
         return False
 
 
+async def _serve_assets(scope, send):
+    env = scope.get("env")
+    if env is None or getattr(env, "ASSETS", None) is None:
+        return False
+    try:
+        path = scope.get("path", "/") or "/"
+        query = scope.get("query_string", b"").decode("latin-1")
+        asset_url = "https://assets.local" + path + (f"?{query}" if query else "")
+        response = await env.ASSETS.fetch(asset_url)
+        body = await response.bytes()
+        headers = [(str(k).lower().encode(), str(v).encode()) for k, v in dict(response.headers).items()]
+        await _send(send, int(response.status), headers, body)
+        return True
+    except Exception:
+        return False
+
+
 async def app(scope, receive, send):
     if scope.get("type") != "http":
         return
@@ -143,16 +152,20 @@ async def app(scope, receive, send):
         await _send(send, 204, [], b"")
         return
 
-    if method == "GET" and path in {"/", "/health", "/api/health"}:
-        payload = (
-            {"status": "online", "service": "AI Multi-Agent Trading Bot API", "runtime": "cloudflare-python-worker"}
-            if path == "/"
-            else {"status": "healthy", "runtime": "cloudflare-python-worker"}
-        )
-        await _json_response(send, 200, payload)
+    # The Worker is intentionally API-only. The root and all non-API routes
+    # are served by Cloudflare Static Assets/React SPA. Visiting the site
+    # never imports or starts the trading engine.
+    if not path.startswith("/api/"):
+        if await _serve_assets(scope, send):
+            return
+        await _json_response(send, 404, {"detail": "Not found"})
         return
 
-    if method == "GET" and path in {"/ready", "/api/ready"}:
+    if method == "GET" and path == "/api/health":
+        await _json_response(send, 200, {"status": "healthy", "runtime": "cloudflare-python-worker"})
+        return
+
+    if method == "GET" and path == "/api/ready":
         configured = all(_env(scope, name).strip() for name in (
             "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET_KEY", "ADMIN_USERNAME", "ADMIN_PASSWORD"
         ))
@@ -204,6 +217,8 @@ async def app(scope, receive, send):
         await _json_response(send, 200, {"username": payload["sub"], "is_authenticated": True})
         return
 
+    # Safety gate: this endpoint reports the current safe state only. No
+    # trading engine is imported, scheduled, or started by the Worker.
     if path == "/api/bot/status" and method == "GET":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
@@ -212,25 +227,12 @@ async def app(scope, receive, send):
             "enabled": False,
             "mode": "paper",
             "runtime": "cloudflare-python-worker",
-            "message": "Trading runtime control is not enabled until persistent bot state is connected.",
+            "cycle_running": False,
+            "message": "Trading is disabled. An explicit start trigger is required before any paper cycle can run.",
         })
         return
 
-    # Serve the React SPA from Cloudflare Static Assets for every non-API route.
-    env = scope.get("env")
-    if env is not None and getattr(env, "ASSETS", None) is not None:
-        try:
-            query = scope.get("query_string", b"").decode("latin-1")
-            asset_url = "https://assets.local" + path + (f"?{query}" if query else "")
-            response = await env.ASSETS.fetch(asset_url)
-            body = await response.bytes()
-            headers = [(str(k).lower().encode(), str(v).encode()) for k, v in dict(response.headers).items()]
-            await _send(send, int(response.status), headers, body)
-            return
-        except Exception:
-            pass
-
-    await _json_response(send, 404, {"detail": "Not found"})
+    await _json_response(send, 404, {"detail": "API route not found"})
 
 
 class Default(WorkerEntrypoint):
