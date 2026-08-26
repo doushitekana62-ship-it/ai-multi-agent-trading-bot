@@ -30,7 +30,7 @@ const DEFAULT_TARGETS = { daily: 0, weekly: 0, monthly: 0 };
 
 const SimplePriceChart = ({ points }) => {
   const values = (points || []).map((p) => Number(p.price)).filter((v) => Number.isFinite(v) && v > 0);
-  if (values.length < 2) return <Box sx={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for market ticks...</Box>;
+  if (values.length < 2) return <Box sx={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for recent public trades...</Box>;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
@@ -41,7 +41,7 @@ const SimplePriceChart = ({ points }) => {
   }).join(' ');
   return (
     <Box sx={{ height: 220, px: 1 }}>
-      <svg viewBox="0 0 100 100" width="100%" height="100%" preserveAspectRatio="none" aria-label="market price chart">
+      <svg viewBox="0 0 100 100" width="100%" height="100%" preserveAspectRatio="none" aria-label="recent market price chart">
         <polyline points={coords} fill="none" stroke="currentColor" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
       </svg>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', color: 'text.secondary', fontSize: 12 }}>
@@ -159,7 +159,6 @@ const Dashboard = () => {
   const currentPairLabel = PAIR_OPTIONS.find(([value]) => value === selectedPair)?.[1] || selectedPair.toUpperCase();
   const dailyActual = Number(status?.daily_pnl || 0) * Number(status?.balance || 0);
   const targetProgress = (target) => target > 0 ? Math.min(100, Math.max(0, (dailyActual / target) * 100)) : 0;
-
   const insightRows = useMemo(() => insights.slice(0, 5), [insights]);
 
   return (
@@ -212,31 +211,36 @@ const Dashboard = () => {
           <Grid item xs={12} md={8}>
             <Paper sx={{ p: 2.5, height: '100%' }}>
               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                <Box><Typography variant="h6">Market Price</Typography><Typography variant="body2" color="text.secondary">{currentPairLabel} · public Indodax market data</Typography></Box>
+                <Box>
+                  <Typography variant="h6">Market Pulse</Typography>
+                  <Typography variant="body2" color="text.secondary">{currentPairLabel} · INDODAX public data · recent trades only</Typography>
+                </Box>
                 <Typography variant="h6">{formatMarketPrice(market?.last, market?.quote_currency)}</Typography>
               </Stack>
               <SimplePriceChart points={market?.points} />
               <Grid container spacing={1} sx={{ mt: 1 }}>
-                <Grid item xs={4}><Typography variant="caption" color="text.secondary">24h High</Typography><Typography>{formatMarketPrice(market?.high, market?.quote_currency)}</Typography></Grid>
-                <Grid item xs={4}><Typography variant="caption" color="text.secondary">24h Low</Typography><Typography>{formatMarketPrice(market?.low, market?.quote_currency)}</Typography></Grid>
-                <Grid item xs={4}><Typography variant="caption" color="text.secondary">24h Change</Typography><Typography color={Number(market?.change_24h) >= 0 ? 'success.main' : 'error.main'}>{Number(market?.change_24h || 0).toFixed(2)}%</Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h High</Typography><Typography>{formatMarketPrice(market?.high, market?.quote_currency)}</Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h Low</Typography><Typography>{formatMarketPrice(market?.low, market?.quote_currency)}</Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Recent Move</Typography><Typography color={Number(market?.recent_move || 0) >= 0 ? 'success.main' : 'error.main'}>{market?.recent_move == null ? '—' : `${Number(market.recent_move).toFixed(2)}%`}</Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h Volume</Typography><Typography>{formatIDR(market?.volume)}</Typography></Grid>
               </Grid>
+              <Typography variant="caption" color="text.secondary">Recent Move = movement across the latest public trades returned by INDODAX, not a claimed 24h percentage change.</Typography>
             </Paper>
           </Grid>
           <Grid item xs={12} md={4}>
             <Paper sx={{ p: 2.5, height: '100%' }}>
-              <Typography variant="h6" gutterBottom>Market Insight</Typography>
-              <Typography variant="caption" color="text.secondary">Simple data-only watchlist. It does not place trades.</Typography>
+              <Typography variant="h6" gutterBottom>Market Scanner</Typography>
+              <Typography variant="caption" color="text.secondary">Lightweight watchlist ranked by IDR volume. It does not place trades.</Typography>
               <Stack spacing={1} sx={{ mt: 2 }}>
                 {insightRows.map((item) => (
                   <Card key={item.pair} variant="outlined"><CardContent sx={{ py: 1.2, '&:last-child': { pb: 1.2 } }}>
                     <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Box><Typography variant="subtitle2">{item.pair}</Typography><Typography variant="caption" color="text.secondary">{formatIDR(item.last)}</Typography></Box>
-                      <Chip icon={Number(item.change_24h) >= 0 ? <TrendingUp /> : <TrendingDown />} label={`${Number(item.change_24h).toFixed(2)}%`} size="small" color={Number(item.change_24h) >= 0 ? 'success' : 'error'} />
+                      <Box><Typography variant="subtitle2">{item.pair}</Typography><Typography variant="caption" color="text.secondary">{formatIDR(item.last)} · Vol {formatIDR(item.volume_idr)}</Typography></Box>
+                      <Chip icon={item.range_position >= 50 ? <TrendingUp /> : <TrendingDown />} label={item.signal} size="small" color={item.range_position >= 80 ? 'success' : item.range_position <= 20 ? 'error' : 'default'} />
                     </Stack>
                   </CardContent></Card>
                 ))}
-                {insightRows.length === 0 && <Typography color="text.secondary">Market insight unavailable.</Typography>}
+                {insightRows.length === 0 && <Typography color="text.secondary">Market scanner unavailable.</Typography>}
               </Stack>
             </Paper>
           </Grid>
