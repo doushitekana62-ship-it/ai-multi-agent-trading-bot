@@ -10,7 +10,6 @@ from workers import WorkerEntrypoint
 from js import fetch
 from pyodide.ffi import to_js
 
-
 JSON_HEADERS = [(b"content-type", b"application/json; charset=utf-8")]
 PAPER_INITIAL_BALANCE = 10_000_000.0
 MAX_OPEN_POSITIONS = 5
@@ -159,6 +158,13 @@ def _clean_pair(value):
     return value if value in allowed else "btc_idr"
 
 
+def _recent_trade_move(points):
+    values = [float(p["price"]) for p in points if float(p.get("price", 0) or 0) > 0]
+    if len(values) < 2 or values[0] == 0:
+        return None
+    return ((values[-1] - values[0]) / values[0]) * 100.0
+
+
 async def _market_overview(scope):
     pair = _clean_pair(_query_value(scope, "pair", "btc_idr"))
     ticker = await _public_indodax(f"/{pair}/ticker")
@@ -173,9 +179,11 @@ async def _market_overview(scope):
             points.append({
                 "price": float(item.get("price") or 0),
                 "timestamp": int(item.get("date") or item.get("trade_time") or 0),
+                "side": str(item.get("type") or "").lower(),
             })
         except (TypeError, ValueError):
             continue
+    recent_move = _recent_trade_move(points)
     return {
         "available": True,
         "pair": pair,
@@ -189,7 +197,8 @@ async def _market_overview(scope):
         "high": float(t.get("high") or 0),
         "low": float(t.get("low") or 0),
         "volume": float(t.get("vol_idr") or t.get("vol") or 0),
-        "change_24h": float(t.get("change") or 0),
+        "recent_move": recent_move,
+        "recent_move_label": "last 30 public trades",
         "points": points,
         "source": "INDODAX public market data",
     }
@@ -203,22 +212,37 @@ async def _market_insights(scope):
         if not pair.endswith("_idr") or not isinstance(ticker, dict):
             continue
         try:
-            change = float(ticker.get("change") or 0)
             last = float(ticker.get("last") or 0)
-            volume = float(ticker.get("vol_idr") or ticker.get("vol") or 0)
+            high = float(ticker.get("high") or 0)
+            low = float(ticker.get("low") or 0)
+            volume = float(ticker.get("vol_idr") or 0)
             if last <= 0:
                 continue
+            range_width = high - low
+            range_position = ((last - low) / range_width * 100.0) if range_width > 0 else 50.0
+            if range_position >= 80:
+                signal = "NEAR 24H HIGH"
+            elif range_position <= 20:
+                signal = "NEAR 24H LOW"
+            else:
+                signal = "MID 24H RANGE"
             items.append({
                 "pair": pair.upper().replace("_", "/"),
                 "last": last,
-                "change_24h": change,
-                "volume": volume,
-                "bias": "POSITIVE MOMENTUM" if change > 0 else ("NEGATIVE MOMENTUM" if change < 0 else "FLAT"),
+                "volume_idr": volume,
+                "high": high,
+                "low": low,
+                "range_position": round(range_position, 1),
+                "signal": signal,
             })
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, ZeroDivisionError):
             continue
-    items.sort(key=lambda x: abs(x["change_24h"]), reverse=True)
-    return {"items": items[:5], "source": "INDODAX public ticker", "note": "Market-data watchlist only; not an automatic trade instruction."}
+    items.sort(key=lambda x: x["volume_idr"], reverse=True)
+    return {
+        "items": items[:5],
+        "source": "INDODAX public ticker",
+        "note": "Market-data watchlist only; ranked by IDR volume and 24h price range position. It does not place trades.",
+    }
 
 
 async def _serve_assets(scope, send):
@@ -264,10 +288,7 @@ async def _dashboard_status(scope):
 
 
 async def _dashboard_positions(scope):
-    rows = await _supabase_request(
-        scope,
-        "/rest/v1/trades?status=eq.OPEN&select=symbol,action,entry_price,price,quantity,pnl,confidence,created_at&order=created_at.desc",
-    )
+    rows = await _supabase_request(scope, "/rest/v1/trades?status=eq.OPEN&select=symbol,action,entry_price,price,quantity,pnl,confidence,created_at&order=created_at.desc")
     positions = []
     for row in rows or []:
         positions.append({
@@ -286,34 +307,15 @@ async def _dashboard_performance(scope):
     closed = [row for row in rows if row.get("status") == "CLOSED"]
     pnl = sum(float(row.get("pnl") or 0) for row in closed)
     wins = sum(1 for row in closed if float(row.get("pnl") or 0) > 0)
-    return {
-        "performance": {
-            "total_pnl": pnl,
-            "win_rate": (wins / len(closed)) if closed else 0.0,
-            "closed_trades": len(closed),
-            "currency": "IDR",
-            "currency_symbol": "Rp",
-        }
-    }
+    return {"performance": {"total_pnl": pnl, "win_rate": (wins / len(closed)) if closed else 0.0, "closed_trades": len(closed), "currency": "IDR", "currency_symbol": "Rp"}}
 
 
 async def _dashboard_recent_decision(scope):
-    rows = await _supabase_request(
-        scope,
-        "/rest/v1/decisions?select=id,symbol,action,confidence,reasoning,agent_votes,created_at&order=created_at.desc&limit=1",
-    )
+    rows = await _supabase_request(scope, "/rest/v1/decisions?select=id,symbol,action,confidence,reasoning,agent_votes,created_at&order=created_at.desc&limit=1")
     if not rows:
         return {"decision": None}
     row = rows[0]
-    return {"decision": {
-        "id": row.get("id"),
-        "symbol": row.get("symbol"),
-        "action": row.get("action", "HOLD"),
-        "confidence": float(row.get("confidence") or 0) / 100.0,
-        "reasoning": row.get("reasoning"),
-        "votes": row.get("agent_votes") or {},
-        "created_at": row.get("created_at"),
-    }}
+    return {"decision": {"id": row.get("id"), "symbol": row.get("symbol"), "action": row.get("action", "HOLD"), "confidence": float(row.get("confidence") or 0) / 100.0, "reasoning": row.get("reasoning"), "votes": row.get("agent_votes") or {}, "created_at": row.get("created_at")}}
 
 
 async def _dashboard_agents(scope):
@@ -329,37 +331,24 @@ async def _dashboard_agents(scope):
 async def app(scope, receive, send):
     if scope.get("type") != "http":
         return
-
     method = scope.get("method", "GET").upper()
     path = scope.get("path", "/")
-
     if method == "OPTIONS":
         await _send(send, 204, [], b"")
         return
-
     if not path.startswith("/api/"):
         if await _serve_assets(scope, send):
             return
         await _json_response(send, 404, {"detail": "Not found"})
         return
-
     if method == "GET" and path == "/api/health":
         await _json_response(send, 200, {"status": "healthy", "runtime": "cloudflare-python-worker"})
         return
-
     if method == "GET" and path == "/api/ready":
-        configured = all(_env(scope, name).strip() for name in (
-            "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET_KEY", "ADMIN_USERNAME", "ADMIN_PASSWORD"
-        ))
+        configured = all(_env(scope, name).strip() for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET_KEY", "ADMIN_USERNAME", "ADMIN_PASSWORD"))
         supabase = await _supabase_probe(scope) if configured else False
-        await _json_response(send, 200, {
-            "status": "ready" if configured and supabase else "degraded",
-            "supabase": supabase,
-            "secrets_configured": configured,
-            "runtime": "cloudflare-python-worker",
-        })
+        await _json_response(send, 200, {"status": "ready" if configured and supabase else "degraded", "supabase": supabase, "secrets_configured": configured, "runtime": "cloudflare-python-worker"})
         return
-
     if path == "/api/auth/login" and method == "POST":
         configured_user = _env(scope, "ADMIN_USERNAME").strip()
         configured_password = _env(scope, "ADMIN_PASSWORD")
@@ -386,14 +375,12 @@ async def app(scope, receive, send):
         token = _make_token(scope, configured_user)
         await _json_response(send, 200, {"access_token": token, "token_type": "bearer", "expires_in": 1800, "username": configured_user})
         return
-
     if path == "/api/auth/logout" and method == "POST":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
         await _json_response(send, 200, {"message": "Logged out successfully", "status": "success"})
         return
-
     if path == "/api/auth/verify" and method == "GET":
         payload = await _require_user(scope)
         if not payload:
@@ -401,23 +388,18 @@ async def app(scope, receive, send):
             return
         await _json_response(send, 200, {"username": payload["sub"], "is_authenticated": True})
         return
-
     if method == "GET" and path in {"/api/market/overview", "/api/market/data"}:
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
-        payload = await _market_overview(scope)
-        await _json_response(send, 200, payload)
+        await _json_response(send, 200, await _market_overview(scope))
         return
-
     if method == "GET" and path == "/api/market/insights":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
-        payload = await _market_insights(scope)
-        await _json_response(send, 200, payload)
+        await _json_response(send, 200, await _market_insights(scope))
         return
-
     dashboard_routes = {
         "/api/dashboard/status": _dashboard_status,
         "/api/dashboard/positions": _dashboard_positions,
@@ -429,47 +411,26 @@ async def app(scope, receive, send):
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
-        payload = await dashboard_routes[path](scope)
-        await _json_response(send, 200, payload)
+        await _json_response(send, 200, await dashboard_routes[path](scope))
         return
-
     if path == "/api/dashboard/analyze" and method == "POST":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
-        await _json_response(send, 409, {
-            "detail": "AI analysis is disabled while BOT is OFF. An explicit start trigger is required.",
-            "bot_enabled": False,
-            "cycle_running": False,
-        })
+        await _json_response(send, 409, {"detail": "AI analysis is disabled while BOT is OFF. An explicit start trigger is required.", "bot_enabled": False, "cycle_running": False})
         return
-
     if path == "/api/bot/status" and method == "GET":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
-        await _json_response(send, 200, {
-            "enabled": False,
-            "mode": "paper",
-            "runtime": "cloudflare-python-worker",
-            "cycle_running": False,
-            "cycles_today": 0,
-            "last_cycle_at": None,
-            "message": "Trading is disabled. An explicit start trigger is required before any paper cycle can run.",
-        })
+        await _json_response(send, 200, {"enabled": False, "mode": "paper", "runtime": "cloudflare-python-worker", "cycle_running": False, "cycles_today": 0, "last_cycle_at": None, "message": "Trading is disabled. An explicit start trigger is required before any paper cycle can run."})
         return
-
     if path in {"/api/bot/start", "/api/bot/stop"} and method == "POST":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
-        await _json_response(send, 409, {
-            "detail": "Bot control is locked until the persistent safety gate is implemented.",
-            "enabled": False,
-            "cycle_running": False,
-        })
+        await _json_response(send, 409, {"detail": "Bot control is locked until the persistent safety gate is implemented.", "enabled": False, "cycle_running": False})
         return
-
     await _json_response(send, 404, {"detail": "API route not found"})
 
 
