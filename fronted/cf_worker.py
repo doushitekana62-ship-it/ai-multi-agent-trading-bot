@@ -12,6 +12,8 @@ from pyodide.ffi import to_js
 
 
 JSON_HEADERS = [(b"content-type", b"application/json; charset=utf-8")]
+PAPER_INITIAL_BALANCE = 10_000_000.0
+MAX_OPEN_POSITIONS = 5
 
 
 def _json_bytes(value):
@@ -38,8 +40,6 @@ def _secret(scope) -> str:
 
 
 def _hmac_sha256(secret: str, message: str) -> bytes:
-    # Use Python's stdlib HMAC instead of the JS WebCrypto bridge here.
-    # This keeps login/token generation small and avoids FFI-specific runtime errors.
     return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
 
 
@@ -104,20 +104,33 @@ async def _require_user(scope):
     return _verify_token(scope, value[7:].strip())
 
 
-async def _supabase_probe(scope) -> bool:
+async def _supabase_request(scope, path, method="GET"):
     url = _env(scope, "SUPABASE_URL").rstrip("/")
     key = _env(scope, "SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
-        return False
+        return None
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return False
+        return None
     try:
-        options = to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}"}})
-        response = await fetch(f"{url}/rest/v1/", options)
-        return int(response.status) < 500
+        options = to_js({
+            "method": method,
+            "headers": {
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+            },
+        })
+        response = await fetch(f"{url}{path}", options)
+        if int(response.status) >= 400:
+            return None
+        return json.loads(await response.text())
     except Exception:
-        return False
+        return None
+
+
+async def _supabase_probe(scope) -> bool:
+    return (await _supabase_request(scope, "/rest/v1/")) is not None
 
 
 async def _serve_assets(scope, send):
@@ -137,6 +150,88 @@ async def _serve_assets(scope, send):
         return False
 
 
+async def _dashboard_status(scope):
+    return {
+        "portfolio_value": PAPER_INITIAL_BALANCE,
+        "balance": PAPER_INITIAL_BALANCE,
+        "daily_pnl": 0.0,
+        "daily_trades": 0,
+        "active_positions": 0,
+        "max_open_positions": MAX_OPEN_POSITIONS,
+        "total_trades": 0,
+        "currency": "IDR",
+        "currency_symbol": "Rp",
+        "mode": "paper",
+        "bot_enabled": False,
+        "cycle_running": False,
+        "cycles_today": 0,
+        "last_cycle_at": None,
+    }
+
+
+async def _dashboard_positions(scope):
+    rows = await _supabase_request(
+        scope,
+        "/rest/v1/trades?status=eq.OPEN&select=symbol,action,entry_price,price,quantity,pnl,confidence,created_at&order=created_at.desc",
+    )
+    positions = []
+    for row in rows or []:
+        positions.append({
+            "symbol": row.get("symbol", ""),
+            "side": row.get("action", ""),
+            "quantity": float(row.get("quantity") or 0),
+            "entry_price": float(row.get("entry_price") or row.get("price") or 0),
+            "unrealized_pnl": float(row.get("pnl") or 0),
+            "currency": "IDR",
+        })
+    return {"positions": positions, "currency": "IDR", "currency_symbol": "Rp"}
+
+
+async def _dashboard_performance(scope):
+    rows = await _supabase_request(scope, "/rest/v1/trades?select=pnl,status") or []
+    closed = [row for row in rows if row.get("status") == "CLOSED"]
+    pnl = sum(float(row.get("pnl") or 0) for row in closed)
+    wins = sum(1 for row in closed if float(row.get("pnl") or 0) > 0)
+    return {
+        "performance": {
+            "total_pnl": pnl,
+            "win_rate": (wins / len(closed)) if closed else 0.0,
+            "closed_trades": len(closed),
+            "currency": "IDR",
+            "currency_symbol": "Rp",
+        }
+    }
+
+
+async def _dashboard_recent_decision(scope):
+    rows = await _supabase_request(
+        scope,
+        "/rest/v1/decisions?select=id,symbol,action,confidence,reasoning,agent_votes,created_at&order=created_at.desc&limit=1",
+    )
+    if not rows:
+        return {"decision": None}
+    row = rows[0]
+    return {"decision": {
+        "id": row.get("id"),
+        "symbol": row.get("symbol"),
+        "action": row.get("action", "HOLD"),
+        "confidence": float(row.get("confidence") or 0) / 100.0,
+        "reasoning": row.get("reasoning"),
+        "votes": row.get("agent_votes") or {},
+        "created_at": row.get("created_at"),
+    }}
+
+
+async def _dashboard_agents(scope):
+    return {"agents": [
+        {"name": "Sentiment Agent", "status": "idle", "description": "Waiting for explicit bot start."},
+        {"name": "Technical Agent", "status": "idle", "description": "Waiting for explicit bot start."},
+        {"name": "Decision Agent", "status": "idle", "description": "Waiting for explicit bot start."},
+        {"name": "Forecast Agent", "status": "idle", "description": "Waiting for explicit bot start."},
+        {"name": "Reflector Agent", "status": "idle", "description": "Waiting for explicit bot start."},
+    ]}
+
+
 async def app(scope, receive, send):
     if scope.get("type") != "http":
         return
@@ -148,8 +243,8 @@ async def app(scope, receive, send):
         await _send(send, 204, [], b"")
         return
 
-    # The Worker is intentionally API-only. Non-API routes are served by
-    # Cloudflare Static Assets/React SPA. Visiting the site never starts trading.
+    # Non-API routes are always static assets. Visiting or refreshing the site
+    # never imports, schedules, or starts the trading engine.
     if not path.startswith("/api/"):
         if await _serve_assets(scope, send):
             return
@@ -197,9 +292,7 @@ async def app(scope, receive, send):
             await _json_response(send, 401, {"detail": "Incorrect username or password"})
             return
         token = _make_token(scope, configured_user)
-        await _json_response(send, 200, {
-            "access_token": token, "token_type": "bearer", "expires_in": 1800, "username": configured_user
-        })
+        await _json_response(send, 200, {"access_token": token, "token_type": "bearer", "expires_in": 1800, "username": configured_user})
         return
 
     if path == "/api/auth/logout" and method == "POST":
@@ -217,8 +310,35 @@ async def app(scope, receive, send):
         await _json_response(send, 200, {"username": payload["sub"], "is_authenticated": True})
         return
 
-    # Safety gate: status is read-only. There is no start trigger here and no
-    # trading engine is imported, scheduled, or started by a page request.
+    # Read-only dashboard API. All endpoints are authenticated and cannot
+    # start a cycle. This fixes dashboard 404s without creating hidden work.
+    dashboard_routes = {
+        "/api/dashboard/status": _dashboard_status,
+        "/api/dashboard/positions": _dashboard_positions,
+        "/api/dashboard/performance": _dashboard_performance,
+        "/api/dashboard/recent-decision": _dashboard_recent_decision,
+        "/api/dashboard/agents": _dashboard_agents,
+    }
+    if method == "GET" and path in dashboard_routes:
+        if not await _require_user(scope):
+            await _json_response(send, 401, {"detail": "Invalid or expired token"})
+            return
+        payload = await dashboard_routes[path](scope)
+        await _json_response(send, 200, payload)
+        return
+
+    if path == "/api/dashboard/analyze" and method == "POST":
+        if not await _require_user(scope):
+            await _json_response(send, 401, {"detail": "Invalid or expired token"})
+            return
+        await _json_response(send, 409, {
+            "detail": "AI analysis is disabled while BOT is OFF. An explicit start trigger is required.",
+            "bot_enabled": False,
+            "cycle_running": False,
+        })
+        return
+
+    # Safety gate: bot status is always OFF in this validation phase.
     if path == "/api/bot/status" and method == "GET":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
@@ -228,7 +348,22 @@ async def app(scope, receive, send):
             "mode": "paper",
             "runtime": "cloudflare-python-worker",
             "cycle_running": False,
+            "cycles_today": 0,
+            "last_cycle_at": None,
             "message": "Trading is disabled. An explicit start trigger is required before any paper cycle can run.",
+        })
+        return
+
+    # Start/stop endpoints are deliberately not wired to the trading engine yet.
+    # Returning 409 prevents accidental activation while keeping the safety gate explicit.
+    if path in {"/api/bot/start", "/api/bot/stop"} and method == "POST":
+        if not await _require_user(scope):
+            await _json_response(send, 401, {"detail": "Invalid or expired token"})
+            return
+        await _json_response(send, 409, {
+            "detail": "Bot control is locked until the persistent safety gate is implemented.",
+            "enabled": False,
+            "cycle_running": False,
         })
         return
 
