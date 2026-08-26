@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import json
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import asgi
 from workers import WorkerEntrypoint
@@ -14,6 +14,7 @@ from pyodide.ffi import to_js
 JSON_HEADERS = [(b"content-type", b"application/json; charset=utf-8")]
 PAPER_INITIAL_BALANCE = 10_000_000.0
 MAX_OPEN_POSITIONS = 5
+INDODAX_PUBLIC_BASE = "https://indodax.com/api"
 
 
 def _json_bytes(value):
@@ -133,6 +134,93 @@ async def _supabase_probe(scope) -> bool:
     return (await _supabase_request(scope, "/rest/v1/")) is not None
 
 
+async def _public_indodax(path):
+    try:
+        response = await fetch(f"{INDODAX_PUBLIC_BASE}{path}", to_js({
+            "method": "GET",
+            "headers": {"Accept": "application/json"},
+        }))
+        if int(response.status) >= 400:
+            return None
+        return json.loads(await response.text())
+    except Exception:
+        return None
+
+
+def _query_value(scope, name, default=""):
+    raw = scope.get("query_string", b"")
+    query = raw.decode("latin-1") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
+    return parse_qs(query).get(name, [default])[0]
+
+
+def _clean_pair(value):
+    value = (value or "btc_idr").strip().lower().replace("/", "_")
+    allowed = {"btc_idr", "eth_idr", "usdt_idr", "xrp_idr", "doge_idr", "sol_idr"}
+    return value if value in allowed else "btc_idr"
+
+
+async def _market_overview(scope):
+    pair = _clean_pair(_query_value(scope, "pair", "btc_idr"))
+    ticker = await _public_indodax(f"/{pair}/ticker")
+    trades = await _public_indodax(f"/{pair}/trades")
+    if not ticker or not isinstance(ticker.get("ticker"), dict):
+        return {"available": False, "pair": pair, "currency": "IDR", "currency_symbol": "Rp"}
+    t = ticker["ticker"]
+    points = []
+    raw_trades = trades.get("trades", []) if isinstance(trades, dict) else []
+    for item in raw_trades[-30:]:
+        try:
+            points.append({
+                "price": float(item.get("price") or 0),
+                "timestamp": int(item.get("date") or item.get("trade_time") or 0),
+            })
+        except (TypeError, ValueError):
+            continue
+    return {
+        "available": True,
+        "pair": pair,
+        "base_currency": pair.split("_")[0].upper(),
+        "quote_currency": pair.split("_")[1].upper(),
+        "currency": "IDR" if pair.endswith("_idr") else pair.split("_")[1].upper(),
+        "currency_symbol": "Rp" if pair.endswith("_idr") else pair.split("_")[1].upper(),
+        "last": float(t.get("last") or 0),
+        "buy": float(t.get("buy") or 0),
+        "sell": float(t.get("sell") or 0),
+        "high": float(t.get("high") or 0),
+        "low": float(t.get("low") or 0),
+        "volume": float(t.get("vol_idr") or t.get("vol") or 0),
+        "change_24h": float(t.get("change") or 0),
+        "points": points,
+        "source": "INDODAX public market data",
+    }
+
+
+async def _market_insights(scope):
+    data = await _public_indodax("/tickers")
+    raw = data.get("tickers", {}) if isinstance(data, dict) else {}
+    items = []
+    for pair, ticker in raw.items():
+        if not pair.endswith("_idr") or not isinstance(ticker, dict):
+            continue
+        try:
+            change = float(ticker.get("change") or 0)
+            last = float(ticker.get("last") or 0)
+            volume = float(ticker.get("vol_idr") or ticker.get("vol") or 0)
+            if last <= 0:
+                continue
+            items.append({
+                "pair": pair.upper().replace("_", "/"),
+                "last": last,
+                "change_24h": change,
+                "volume": volume,
+                "bias": "POSITIVE MOMENTUM" if change > 0 else ("NEGATIVE MOMENTUM" if change < 0 else "FLAT"),
+            })
+        except (TypeError, ValueError):
+            continue
+    items.sort(key=lambda x: abs(x["change_24h"]), reverse=True)
+    return {"items": items[:5], "source": "INDODAX public ticker", "note": "Market-data watchlist only; not an automatic trade instruction."}
+
+
 async def _serve_assets(scope, send):
     env = scope.get("env")
     if env is None or getattr(env, "ASSETS", None) is None:
@@ -151,6 +239,10 @@ async def _serve_assets(scope, send):
 
 
 async def _dashboard_status(scope):
+    decisions = await _supabase_request(scope, "/rest/v1/decisions?select=action,created_at&order=created_at.desc") or []
+    buys = sum(1 for row in decisions if str(row.get("action", "")).upper() == "BUY")
+    sells = sum(1 for row in decisions if str(row.get("action", "")).upper() == "SELL")
+    holds = sum(1 for row in decisions if str(row.get("action", "")).upper() == "HOLD")
     return {
         "portfolio_value": PAPER_INITIAL_BALANCE,
         "balance": PAPER_INITIAL_BALANCE,
@@ -166,6 +258,8 @@ async def _dashboard_status(scope):
         "cycle_running": False,
         "cycles_today": 0,
         "last_cycle_at": None,
+        "runtime_hours": 0.0,
+        "decision_counts": {"BUY": buys, "SELL": sells, "HOLD": holds},
     }
 
 
@@ -243,8 +337,6 @@ async def app(scope, receive, send):
         await _send(send, 204, [], b"")
         return
 
-    # Non-API routes are always static assets. Visiting or refreshing the site
-    # never imports, schedules, or starts the trading engine.
     if not path.startswith("/api/"):
         if await _serve_assets(scope, send):
             return
@@ -310,8 +402,22 @@ async def app(scope, receive, send):
         await _json_response(send, 200, {"username": payload["sub"], "is_authenticated": True})
         return
 
-    # Read-only dashboard API. All endpoints are authenticated and cannot
-    # start a cycle. This fixes dashboard 404s without creating hidden work.
+    if method == "GET" and path in {"/api/market/overview", "/api/market/data"}:
+        if not await _require_user(scope):
+            await _json_response(send, 401, {"detail": "Invalid or expired token"})
+            return
+        payload = await _market_overview(scope)
+        await _json_response(send, 200, payload)
+        return
+
+    if method == "GET" and path == "/api/market/insights":
+        if not await _require_user(scope):
+            await _json_response(send, 401, {"detail": "Invalid or expired token"})
+            return
+        payload = await _market_insights(scope)
+        await _json_response(send, 200, payload)
+        return
+
     dashboard_routes = {
         "/api/dashboard/status": _dashboard_status,
         "/api/dashboard/positions": _dashboard_positions,
@@ -338,7 +444,6 @@ async def app(scope, receive, send):
         })
         return
 
-    # Safety gate: bot status is always OFF in this validation phase.
     if path == "/api/bot/status" and method == "GET":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
@@ -354,8 +459,6 @@ async def app(scope, receive, send):
         })
         return
 
-    # Start/stop endpoints are deliberately not wired to the trading engine yet.
-    # Returning 409 prevents accidental activation while keeping the safety gate explicit.
     if path in {"/api/bot/start", "/api/bot/stop"} and method == "POST":
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
