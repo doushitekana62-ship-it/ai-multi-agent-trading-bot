@@ -16,6 +16,8 @@ _engine_mode = "paper"
 _engine_started_at: Optional[datetime] = None
 _last_cycle_at: Optional[datetime] = None
 _last_orchestrator_result: Any = None
+_cycle_count = 0
+_decision_counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
 
 
 def set_engine_running(running: bool, mode: str = "paper") -> None:
@@ -43,6 +45,8 @@ def get_engine_status() -> dict[str, Any]:
             "started_at": _engine_started_at.isoformat() if _engine_started_at else None,
             "runtime_seconds": runtime_seconds,
             "last_cycle_at": _last_cycle_at.isoformat() if _last_cycle_at else None,
+            "cycles_today": _cycle_count,
+            "decision_counts": dict(_decision_counts),
         }
 
 
@@ -53,9 +57,13 @@ def record_cycle(timestamp: Optional[datetime] = None) -> None:
 
 
 def set_last_orchestrator_result(result: Any) -> None:
-    global _last_orchestrator_result
+    global _last_orchestrator_result, _cycle_count
     with _lock:
         _last_orchestrator_result = result
+        _cycle_count += 1
+        action = str(getattr(result, "final_action", "HOLD") or "HOLD").upper()
+        if action in _decision_counts:
+            _decision_counts[action] += 1
         timestamp = getattr(result, "timestamp", None)
         record_cycle(timestamp if isinstance(timestamp, datetime) else None)
 
