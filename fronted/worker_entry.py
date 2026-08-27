@@ -56,24 +56,6 @@ def _make_refresh_token(env, username: str) -> str:
     return f"{signing_input}.{cf_worker._b64url(signature)}"
 
 
-def _authorized(request):
-    value = request.headers.get("authorization", "")
-    if not value.lower().startswith("bearer "):
-        return None
-    token = value[7:].strip()
-    # Build the same lightweight ASGI scope shape expected by cf_worker.
-    scope = {
-        "headers": [(b"authorization", value.encode("latin-1"))],
-        "env": None,
-    }
-    # _verify_token only needs JWT_SECRET_KEY, so pass a tiny scope-like object.
-    class _Scope(dict):
-        pass
-
-    scope["env"] = request._worker_env if hasattr(request, "_worker_env") else None
-    return token
-
-
 async def _state_stub(env):
     return env.PAPER_STATE.getByName("global")
 
@@ -112,7 +94,6 @@ class Default(WorkerEntrypoint):
         if len(secret) < 32:
             return None
 
-        # Reuse the same token implementation as cf_worker via an ASGI scope.
         scope = {
             "headers": [(b"authorization", value.encode("latin-1"))],
             "env": self.env,
@@ -150,9 +131,7 @@ class Default(WorkerEntrypoint):
             if username != configured_user or not hmac.compare_digest(supplied, expected):
                 return Response.json({"detail": "Incorrect username or password"}, status=401)
 
-            token = cf_worker._make_token(
-                {"env": self.env}, configured_user
-            )
+            token = cf_worker._make_token({"env": self.env}, configured_user)
             refresh = _make_refresh_token(self.env, configured_user)
             return Response.json(
                 {
@@ -172,8 +151,7 @@ class Default(WorkerEntrypoint):
             except Exception:
                 return Response.json({"detail": "Invalid JSON request body"}, status=400)
 
-            scope = {"env": self.env}
-            payload = cf_worker._verify_token(scope, refresh)
+            payload = cf_worker._verify_token({"env": self.env}, refresh)
             if not payload or payload.get("type") != "refresh":
                 return Response.json(
                     {"detail": "Invalid or expired refresh token"}, status=401
@@ -206,10 +184,7 @@ class Default(WorkerEntrypoint):
         return None
 
     async def _handle_state_routes(self, request, path):
-        protected = (
-            path.startswith("/api/dashboard/")
-            or path.startswith("/api/bot/")
-        )
+        protected = path.startswith("/api/dashboard/") or path.startswith("/api/bot/")
         if protected and not await self._verify_access(request):
             return Response.json({"detail": "Invalid or expired token"}, status=401)
 
@@ -242,7 +217,10 @@ class Default(WorkerEntrypoint):
                 "total_trades": int(state.get("total_trades", 0)),
                 "active_positions": int(state.get("active_positions", 0)),
                 "runtime_hours": 0.0,
-                "database": {"status": "available_via_supabase", "configured": bool(getattr(self.env, "SUPABASE_URL", ""))},
+                "database": {
+                    "status": "available_via_supabase",
+                    "configured": bool(getattr(self.env, "SUPABASE_URL", "")),
+                },
                 "market_data": {"source": "INDODAX public market data", "available": True},
             })
             return Response.json(result)
@@ -279,7 +257,11 @@ class Default(WorkerEntrypoint):
             status = "armed" if enabled else "idle"
             return Response.json({
                 "agents": [
-                    {"name": name, "status": status, "description": "State layer only; AI cycle is not started by dashboard polling."}
+                    {
+                        "name": name,
+                        "status": status,
+                        "description": "State layer only; AI cycle is not started by dashboard polling.",
+                    }
                     for name in [
                         "Sentiment Agent",
                         "Technical Agent",
@@ -304,11 +286,7 @@ class Default(WorkerEntrypoint):
         if state_response is not None:
             return state_response
 
-        # All remaining API routes and static assets continue through the
-        # existing ASGI worker implementation.
         return await asgi.fetch(cf_worker.app, request, self.env)
 
 
-# Exported class for Wrangler's Durable Object binding.
-# The class is imported here so the Worker bundle contains the class export.
 __all__ = ["Default", "PaperTradingState"]
