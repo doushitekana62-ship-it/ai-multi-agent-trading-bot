@@ -18,8 +18,6 @@ import cf_worker
 from paper_state import PaperTradingState
 
 
-# Keep the existing ASGI application, but require access tokens (never refresh
-# tokens) for its protected routes as well.
 async def _access_only(scope):
     value = cf_worker._authorization(scope)
     if not value.lower().startswith("bearer "):
@@ -60,17 +58,30 @@ async def _state_stub(env):
     return env.PAPER_STATE.getByName("global")
 
 
+def _runtime_hours(started_at):
+    if not started_at:
+        return 0.0
+    try:
+        started = time.mktime(time.strptime(str(started_at)[:19], "%Y-%m-%dT%H:%M:%S"))
+        return max(0.0, (time.time() - started) / 3600.0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
 def _state_response(state):
     decision_counts = dict(state.get("decision_counts") or {})
+    enabled = bool(state.get("enabled"))
+    cycle_running = bool(state.get("cycle_running"))
     return {
         **state,
-        "bot_enabled": bool(state.get("enabled")),
-        "enabled": bool(state.get("enabled")),
-        "cycle_running": bool(state.get("cycle_running")),
+        "bot_enabled": enabled,
+        "enabled": enabled,
+        "cycle_running": cycle_running,
         "mode": state.get("mode", "paper"),
         "currency": "IDR",
         "currency_symbol": "Rp",
         "max_open_positions": int(state.get("max_open_positions", 5)),
+        "runtime_hours": _runtime_hours(state.get("started_at")) if enabled else 0.0,
         "decision_counts": {
             "BUY": int(decision_counts.get("BUY", 0)),
             "SELL": int(decision_counts.get("SELL", 0)),
@@ -79,7 +90,8 @@ def _state_response(state):
         "safety": {
             "mode": "paper",
             "real_trading_locked": True,
-            "bot_enabled": bool(state.get("enabled")),
+            "bot_enabled": enabled,
+            "cycle_running": cycle_running,
         },
     }
 
@@ -108,9 +120,7 @@ class Default(WorkerEntrypoint):
             configured_user = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
             configured_password = str(getattr(self.env, "ADMIN_PASSWORD", "") or "")
             if not configured_user or not configured_password:
-                return Response.json(
-                    {"detail": "Dashboard authentication is not configured"}, status=503
-                )
+                return Response.json({"detail": "Dashboard authentication is not configured"}, status=503)
             try:
                 body = await request.json()
                 username = str(body.get("username", ""))
@@ -118,31 +128,24 @@ class Default(WorkerEntrypoint):
             except Exception:
                 return Response.json({"detail": "Invalid JSON request body"}, status=400)
 
-            supplied = hmac.new(
-                str(self.env.JWT_SECRET_KEY).encode("utf-8"),
-                password.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
-            expected = hmac.new(
-                str(self.env.JWT_SECRET_KEY).encode("utf-8"),
-                configured_password.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
+            secret = str(getattr(self.env, "JWT_SECRET_KEY", "") or "").strip()
+            if len(secret) < 32:
+                return Response.json({"detail": "JWT_SECRET_KEY must be at least 32 characters"}, status=503)
+            supplied = hmac.new(secret.encode("utf-8"), password.encode("utf-8"), hashlib.sha256).digest()
+            expected = hmac.new(secret.encode("utf-8"), configured_password.encode("utf-8"), hashlib.sha256).digest()
             if username != configured_user or not hmac.compare_digest(supplied, expected):
                 return Response.json({"detail": "Incorrect username or password"}, status=401)
 
             token = cf_worker._make_token({"env": self.env}, configured_user)
             refresh = _make_refresh_token(self.env, configured_user)
-            return Response.json(
-                {
-                    "access_token": token,
-                    "refresh_token": refresh,
-                    "token_type": "bearer",
-                    "expires_in": 1800,
-                    "refresh_expires_in": 7 * 24 * 60,
-                    "username": configured_user,
-                }
-            )
+            return Response.json({
+                "access_token": token,
+                "refresh_token": refresh,
+                "token_type": "bearer",
+                "expires_in": 1800,
+                "refresh_expires_in": 7 * 24 * 60,
+                "username": configured_user,
+            })
 
         if path == "/api/auth/refresh" and request.method == "POST":
             try:
@@ -153,9 +156,7 @@ class Default(WorkerEntrypoint):
 
             payload = cf_worker._verify_token({"env": self.env}, refresh)
             if not payload or payload.get("type") != "refresh":
-                return Response.json(
-                    {"detail": "Invalid or expired refresh token"}, status=401
-                )
+                return Response.json({"detail": "Invalid or expired refresh token"}, status=401)
 
             username = payload.get("sub")
             configured_user = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
@@ -163,17 +164,13 @@ class Default(WorkerEntrypoint):
                 return Response.json({"detail": "User not found"}, status=401)
 
             token = cf_worker._make_token({"env": self.env}, username)
-            return Response.json(
-                {"access_token": token, "token_type": "bearer", "expires_in": 1800}
-            )
+            return Response.json({"access_token": token, "token_type": "bearer", "expires_in": 1800})
 
         if path == "/api/auth/verify" and request.method == "GET":
             payload = await self._verify_access(request)
             if not payload:
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
-            return Response.json(
-                {"username": payload.get("sub"), "is_authenticated": True}
-            )
+            return Response.json({"username": payload.get("sub"), "is_authenticated": True})
 
         if path == "/api/auth/logout" and request.method == "POST":
             payload = await self._verify_access(request)
@@ -191,62 +188,58 @@ class Default(WorkerEntrypoint):
         stub = await _state_stub(self.env)
 
         if path == "/api/bot/status" and request.method == "GET":
-            state = await stub.get_state()
-            return Response.json(_state_response(state))
+            return Response.json(_state_response(await stub.get_state()))
 
         if path == "/api/bot/start" and request.method == "POST":
             state = await stub.start()
-            return Response.json({
-                **_state_response(state),
-                "message": "Paper trading is armed. No AI cycle starts automatically.",
-            })
+            return Response.json({**_state_response(state), "message": "Paper trading is armed. No AI cycle starts automatically."})
 
         if path == "/api/bot/stop" and request.method == "POST":
             state = await stub.stop()
-            return Response.json({
-                **_state_response(state),
-                "message": "Paper trading is stopped.",
-            })
+            return Response.json({**_state_response(state), "message": "Paper trading is stopped."})
 
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state()
             result = _state_response(state)
+            supabase_configured = bool(
+                str(getattr(self.env, "SUPABASE_URL", "") or "").strip()
+                and str(getattr(self.env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+            )
+            supabase_connected = await cf_worker._supabase_probe({"env": self.env}) if supabase_configured else False
             result.update({
                 "daily_pnl": float(state.get("daily_pnl", 0.0)),
                 "daily_trades": int(state.get("daily_trades", 0)),
                 "total_trades": int(state.get("total_trades", 0)),
                 "active_positions": int(state.get("active_positions", 0)),
-                "runtime_hours": 0.0,
                 "database": {
-                    "status": "available_via_supabase",
-                    "configured": bool(getattr(self.env, "SUPABASE_URL", "")),
+                    "configured": supabase_configured,
+                    "connected": supabase_connected,
+                    "status": "connected" if supabase_connected else ("not_configured" if not supabase_configured else "unreachable"),
                 },
-                "market_data": {"source": "INDODAX public market data", "available": True},
+                "market_data": {
+                    "source": "INDODAX public market data",
+                    "available": True,
+                    "fresh": None,
+                    "stale": None,
+                    "age_seconds": None,
+                },
+                "system_health": {
+                    "database": {"connected": supabase_connected},
+                    "market_data": {"fresh": None, "stale": None, "age_seconds": None},
+                    "mode": state.get("mode", "paper"),
+                    "engine": {"running": cycle_running},
+                },
             })
             return Response.json(result)
 
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state()
-            return Response.json({
-                "positions": state.get("positions", []),
-                "active_positions": int(state.get("active_positions", 0)),
-                "currency": "IDR",
-                "currency_symbol": "Rp",
-            })
+            return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "currency": "IDR", "currency_symbol": "Rp"})
 
         if path == "/api/dashboard/performance" and request.method == "GET":
             state = await stub.get_state()
             trades = int(state.get("total_trades", 0))
-            return Response.json({
-                "performance": {
-                    "total_pnl": float(state.get("total_pnl", 0.0)),
-                    "daily_pnl": float(state.get("daily_pnl", 0.0)),
-                    "closed_trades": trades,
-                    "win_rate": 0.0,
-                    "currency": "IDR",
-                    "currency_symbol": "Rp",
-                }
-            })
+            return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0.0)), "daily_pnl": float(state.get("daily_pnl", 0.0)), "closed_trades": trades, "win_rate": 0.0, "currency": "IDR", "currency_symbol": "Rp"}})
 
         if path == "/api/dashboard/recent-decision" and request.method == "GET":
             state = await stub.get_state()
@@ -255,37 +248,19 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/agents" and request.method == "GET":
             enabled = bool((await stub.get_state()).get("enabled"))
             status = "armed" if enabled else "idle"
-            return Response.json({
-                "agents": [
-                    {
-                        "name": name,
-                        "status": status,
-                        "description": "State layer only; AI cycle is not started by dashboard polling.",
-                    }
-                    for name in [
-                        "Sentiment Agent",
-                        "Technical Agent",
-                        "Decision Agent",
-                        "Forecast Agent",
-                        "Reflector Agent",
-                    ]
-                ]
-            })
+            return Response.json({"agents": [{"name": name, "status": status, "description": "State layer only; AI cycle is not started by dashboard polling."} for name in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
 
         return None
 
     async def fetch(self, request):
         url = urlparse(request.url)
         path = url.path
-
         auth_response = await self._handle_auth(request, path)
         if auth_response is not None:
             return auth_response
-
         state_response = await self._handle_state_routes(request, path)
         if state_response is not None:
             return state_response
-
         return await asgi.fetch(cf_worker.app, request, self.env)
 
 
