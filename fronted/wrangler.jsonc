@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "ai-multi-agent-trading-bot",
-  "main": "./cf_worker.py",
+  "main": "./worker_entry.py",
   "compatibility_date": "2026-08-25",
   "compatibility_flags": ["python_workers"],
   "assets": {
@@ -9,5 +9,19 @@
     "binding": "ASSETS",
     "run_worker_first": ["/api/*"],
     "not_found_handling": "single-page-application"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PAPER_STATE",
+        "class_name": "PaperTradingState"
+      }
+    ]
+  },
+  "exports": {
+    "PaperTradingState": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
   }
 }
