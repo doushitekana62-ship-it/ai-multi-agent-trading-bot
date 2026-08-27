@@ -43,8 +43,10 @@ jobs:
       - name: Install uv
         run: python -m pip install --upgrade uv
 
-      - name: Deploy Python Worker and static assets
-        run: uvx --from workers-py pywrangler@0.4.0 deploy
+      - name: Pin Wrangler and deploy Worker
+        run: |
+          npm install --no-save --package-lock=false wrangler@4.127.0
+          npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
