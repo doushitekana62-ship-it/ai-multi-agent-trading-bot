@@ -2,13 +2,12 @@
 
 This module intentionally avoids numpy, pandas, scipy, sklearn, ccxt and other
 native/heavy dependencies. It is the first Cloudflare-native validation path.
-It consumes public Indodax market data, calculates small deterministic
-indicators, and records a paper decision. It never places a live order.
+It consumes public Indodax market data and calculates small deterministic
+indicators. It never places a live order and does not fake an execution.
 """
 from __future__ import annotations
 
 import json
-import math
 from datetime import datetime, timezone
 
 from js import fetch
@@ -93,8 +92,6 @@ def _macd(values):
     fast = _ema(values, 12)
     slow = _ema(values, 26)
     macd = fast - slow
-    # A compact signal estimate from the recent MACD relationship. This is
-    # deliberately deterministic and lightweight for the Worker runtime.
     signal = macd * 0.7
     return macd, signal, macd - signal
 
@@ -113,8 +110,6 @@ def _score(rsi, histogram, momentum):
 
 
 def _decision(score, confidence):
-    # Conservative thresholds preserve the existing safety posture and avoid
-    # turning a weak signal into a trade.
     if confidence < 0.60:
         return "HOLD"
     if score >= 0.55:
@@ -178,9 +173,9 @@ async def run_lightweight_paper_cycle(pair: str = "BTC/IDR"):
             "source": "INDODAX public market data",
         },
         "paper_execution": {
-            "executed": False if action == "HOLD" else True,
+            "executed": False,
             "live_order": False,
-            "reason": "Signal below paper execution gate" if action == "HOLD" else "Lightweight paper signal passed validation gate",
+            "reason": "Decision-only validation cycle; paper order execution remains disabled until the shared paper engine is wired.",
         },
         "created_at": now,
     }
