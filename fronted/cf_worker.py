@@ -301,15 +301,8 @@ async def _dashboard_status(scope):
             "connected": supabase_connected,
             "status": "connected" if supabase_connected else ("not_configured" if not supabase_configured else "unreachable"),
         },
-        "market_data": {
-            "source": "INDODAX public market data",
-            "available": True,
-        },
-        "safety": {
-            "mode": "paper",
-            "real_trading_locked": True,
-            "bot_enabled": False,
-        },
+        "market_data": {"source": "INDODAX public market data", "available": True},
+        "safety": {"mode": "paper", "real_trading_locked": True, "bot_enabled": False},
     }
 
 
@@ -455,7 +448,7 @@ async def app(scope, receive, send):
         if not await _require_user(scope):
             await _json_response(send, 401, {"detail": "Invalid or expired token"})
             return
-        await _json_response(send, 409, {"detail": "Bot control is locked until the persistent safety gate is implemented.", "enabled": False, "cycle_running": False})
+        await _json_response(send, 409, {"detail": "Bot control is provided by worker_entry.py.", "enabled": False, "cycle_running": False})
         return
     await _json_response(send, 404, {"detail": "API route not found"})
 
