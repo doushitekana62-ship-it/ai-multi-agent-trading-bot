@@ -1,0 +1,314 @@
+"""Cloudflare Worker entrypoint.
+
+The existing ASGI API remains the fallback application. This entrypoint adds
+persistent authentication refresh and the authoritative paper-trading state
+layer without starting an AI cycle.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import time
+from urllib.parse import urlparse
+
+import asgi
+from workers import WorkerEntrypoint, Response
+
+import cf_worker
+from paper_state import PaperTradingState
+
+
+# Keep the existing ASGI application, but require access tokens (never refresh
+# tokens) for its protected routes as well.
+async def _access_only(scope):
+    value = cf_worker._authorization(scope)
+    if not value.lower().startswith("bearer "):
+        return None
+    payload = cf_worker._verify_token(scope, value[7:].strip())
+    if not payload or payload.get("type") != "access":
+        return None
+    return payload
+
+
+cf_worker._require_user = _access_only
+
+
+def _make_refresh_token(env, username: str) -> str:
+    secret = str(getattr(env, "JWT_SECRET_KEY", "") or "").strip()
+    if len(secret) < 32:
+        raise RuntimeError("JWT_SECRET_KEY must be at least 32 characters")
+    now = int(time.time())
+    header = cf_worker._b64url(cf_worker._json_bytes({"alg": "HS256", "typ": "JWT"}))
+    payload = cf_worker._b64url(
+        cf_worker._json_bytes(
+            {
+                "sub": username,
+                "iat": now,
+                "exp": now + 7 * 24 * 60 * 60,
+                "type": "refresh",
+            }
+        )
+    )
+    signing_input = f"{header}.{payload}"
+    signature = hmac.new(
+        secret.encode("utf-8"), signing_input.encode("utf-8"), hashlib.sha256
+    ).digest()
+    return f"{signing_input}.{cf_worker._b64url(signature)}"
+
+
+def _authorized(request):
+    value = request.headers.get("authorization", "")
+    if not value.lower().startswith("bearer "):
+        return None
+    token = value[7:].strip()
+    # Build the same lightweight ASGI scope shape expected by cf_worker.
+    scope = {
+        "headers": [(b"authorization", value.encode("latin-1"))],
+        "env": None,
+    }
+    # _verify_token only needs JWT_SECRET_KEY, so pass a tiny scope-like object.
+    class _Scope(dict):
+        pass
+
+    scope["env"] = request._worker_env if hasattr(request, "_worker_env") else None
+    return token
+
+
+async def _state_stub(env):
+    return env.PAPER_STATE.getByName("global")
+
+
+def _state_response(state):
+    decision_counts = dict(state.get("decision_counts") or {})
+    return {
+        **state,
+        "bot_enabled": bool(state.get("enabled")),
+        "enabled": bool(state.get("enabled")),
+        "cycle_running": bool(state.get("cycle_running")),
+        "mode": state.get("mode", "paper"),
+        "currency": "IDR",
+        "currency_symbol": "Rp",
+        "max_open_positions": int(state.get("max_open_positions", 5)),
+        "decision_counts": {
+            "BUY": int(decision_counts.get("BUY", 0)),
+            "SELL": int(decision_counts.get("SELL", 0)),
+            "HOLD": int(decision_counts.get("HOLD", 0)),
+        },
+        "safety": {
+            "mode": "paper",
+            "real_trading_locked": True,
+            "bot_enabled": bool(state.get("enabled")),
+        },
+    }
+
+
+class Default(WorkerEntrypoint):
+    async def _verify_access(self, request):
+        value = request.headers.get("authorization", "")
+        if not value.lower().startswith("bearer "):
+            return None
+        token = value[7:].strip()
+        secret = str(getattr(self.env, "JWT_SECRET_KEY", "") or "").strip()
+        if len(secret) < 32:
+            return None
+
+        # Reuse the same token implementation as cf_worker via an ASGI scope.
+        scope = {
+            "headers": [(b"authorization", value.encode("latin-1"))],
+            "env": self.env,
+        }
+        payload = cf_worker._verify_token(scope, token)
+        if not payload or payload.get("type") != "access":
+            return None
+        return payload
+
+    async def _handle_auth(self, request, path):
+        if path == "/api/auth/login" and request.method == "POST":
+            configured_user = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
+            configured_password = str(getattr(self.env, "ADMIN_PASSWORD", "") or "")
+            if not configured_user or not configured_password:
+                return Response.json(
+                    {"detail": "Dashboard authentication is not configured"}, status=503
+                )
+            try:
+                body = await request.json()
+                username = str(body.get("username", ""))
+                password = str(body.get("password", ""))
+            except Exception:
+                return Response.json({"detail": "Invalid JSON request body"}, status=400)
+
+            supplied = hmac.new(
+                str(self.env.JWT_SECRET_KEY).encode("utf-8"),
+                password.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+            expected = hmac.new(
+                str(self.env.JWT_SECRET_KEY).encode("utf-8"),
+                configured_password.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+            if username != configured_user or not hmac.compare_digest(supplied, expected):
+                return Response.json({"detail": "Incorrect username or password"}, status=401)
+
+            token = cf_worker._make_token(
+                {"env": self.env}, configured_user
+            )
+            refresh = _make_refresh_token(self.env, configured_user)
+            return Response.json(
+                {
+                    "access_token": token,
+                    "refresh_token": refresh,
+                    "token_type": "bearer",
+                    "expires_in": 1800,
+                    "refresh_expires_in": 7 * 24 * 60,
+                    "username": configured_user,
+                }
+            )
+
+        if path == "/api/auth/refresh" and request.method == "POST":
+            try:
+                body = await request.json()
+                refresh = str(body.get("refresh_token", ""))
+            except Exception:
+                return Response.json({"detail": "Invalid JSON request body"}, status=400)
+
+            scope = {"env": self.env}
+            payload = cf_worker._verify_token(scope, refresh)
+            if not payload or payload.get("type") != "refresh":
+                return Response.json(
+                    {"detail": "Invalid or expired refresh token"}, status=401
+                )
+
+            username = payload.get("sub")
+            configured_user = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
+            if not username or username != configured_user:
+                return Response.json({"detail": "User not found"}, status=401)
+
+            token = cf_worker._make_token({"env": self.env}, username)
+            return Response.json(
+                {"access_token": token, "token_type": "bearer", "expires_in": 1800}
+            )
+
+        if path == "/api/auth/verify" and request.method == "GET":
+            payload = await self._verify_access(request)
+            if not payload:
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            return Response.json(
+                {"username": payload.get("sub"), "is_authenticated": True}
+            )
+
+        if path == "/api/auth/logout" and request.method == "POST":
+            payload = await self._verify_access(request)
+            if not payload:
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            return Response.json({"message": "Logged out successfully", "status": "success"})
+
+        return None
+
+    async def _handle_state_routes(self, request, path):
+        protected = (
+            path.startswith("/api/dashboard/")
+            or path.startswith("/api/bot/")
+        )
+        if protected and not await self._verify_access(request):
+            return Response.json({"detail": "Invalid or expired token"}, status=401)
+
+        stub = await _state_stub(self.env)
+
+        if path == "/api/bot/status" and request.method == "GET":
+            state = await stub.get_state()
+            return Response.json(_state_response(state))
+
+        if path == "/api/bot/start" and request.method == "POST":
+            state = await stub.start()
+            return Response.json({
+                **_state_response(state),
+                "message": "Paper trading is armed. No AI cycle starts automatically.",
+            })
+
+        if path == "/api/bot/stop" and request.method == "POST":
+            state = await stub.stop()
+            return Response.json({
+                **_state_response(state),
+                "message": "Paper trading is stopped.",
+            })
+
+        if path == "/api/dashboard/status" and request.method == "GET":
+            state = await stub.get_state()
+            result = _state_response(state)
+            result.update({
+                "daily_pnl": float(state.get("daily_pnl", 0.0)),
+                "daily_trades": int(state.get("daily_trades", 0)),
+                "total_trades": int(state.get("total_trades", 0)),
+                "active_positions": int(state.get("active_positions", 0)),
+                "runtime_hours": 0.0,
+                "database": {"status": "available_via_supabase", "configured": bool(getattr(self.env, "SUPABASE_URL", ""))},
+                "market_data": {"source": "INDODAX public market data", "available": True},
+            })
+            return Response.json(result)
+
+        if path == "/api/dashboard/positions" and request.method == "GET":
+            state = await stub.get_state()
+            return Response.json({
+                "positions": state.get("positions", []),
+                "active_positions": int(state.get("active_positions", 0)),
+                "currency": "IDR",
+                "currency_symbol": "Rp",
+            })
+
+        if path == "/api/dashboard/performance" and request.method == "GET":
+            state = await stub.get_state()
+            trades = int(state.get("total_trades", 0))
+            return Response.json({
+                "performance": {
+                    "total_pnl": float(state.get("total_pnl", 0.0)),
+                    "daily_pnl": float(state.get("daily_pnl", 0.0)),
+                    "closed_trades": trades,
+                    "win_rate": 0.0,
+                    "currency": "IDR",
+                    "currency_symbol": "Rp",
+                }
+            })
+
+        if path == "/api/dashboard/recent-decision" and request.method == "GET":
+            state = await stub.get_state()
+            return Response.json({"decision": state.get("last_decision")})
+
+        if path == "/api/dashboard/agents" and request.method == "GET":
+            enabled = bool((await stub.get_state()).get("enabled"))
+            status = "armed" if enabled else "idle"
+            return Response.json({
+                "agents": [
+                    {"name": name, "status": status, "description": "State layer only; AI cycle is not started by dashboard polling."}
+                    for name in [
+                        "Sentiment Agent",
+                        "Technical Agent",
+                        "Decision Agent",
+                        "Forecast Agent",
+                        "Reflector Agent",
+                    ]
+                ]
+            })
+
+        return None
+
+    async def fetch(self, request):
+        url = urlparse(request.url)
+        path = url.path
+
+        auth_response = await self._handle_auth(request, path)
+        if auth_response is not None:
+            return auth_response
+
+        state_response = await self._handle_state_routes(request, path)
+        if state_response is not None:
+            return state_response
+
+        # All remaining API routes and static assets continue through the
+        # existing ASGI worker implementation.
+        return await asgi.fetch(cf_worker.app, request, self.env)
+
+
+# Exported class for Wrangler's Durable Object binding.
+# The class is imported here so the Worker bundle contains the class export.
+__all__ = ["Default", "PaperTradingState"]
