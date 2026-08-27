@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -46,6 +46,8 @@ jobs:
       - name: Pin Wrangler and deploy Worker
         run: |
           npm install --no-save --package-lock=false wrangler@4.127.0
+          node --version
+          npx wrangler --version
           npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
