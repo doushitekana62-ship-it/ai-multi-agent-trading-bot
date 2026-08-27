@@ -1,9 +1,4 @@
-"""Cloudflare Worker entrypoint.
-
-The existing ASGI API remains the fallback application. This entrypoint adds
-persistent authentication refresh and the authoritative paper-trading state
-layer without starting an AI cycle.
-"""
+"""Cloudflare Worker entrypoint with persistent paper-trading control."""
 from __future__ import annotations
 
 import hashlib
@@ -68,7 +63,7 @@ def _state_response(state):
         "bot_enabled": enabled,
         "enabled": enabled,
         "cycle_running": cycle_running,
-        "mode": state.get("mode", "paper"),
+        "mode": "paper",
         "currency": "IDR",
         "currency_symbol": "Rp",
         "max_open_positions": int(state.get("max_open_positions", 5)),
@@ -79,18 +74,11 @@ def _state_response(state):
 
 
 async def _supabase_health(env):
-    """Probe a real public table through PostgREST without exposing secrets.
-
-    The previous probe hit /rest/v1/ and attempted to parse the response as
-    JSON. That can report a false disconnect when the gateway returns a valid
-    2xx response with an empty/non-JSON body. Querying the existing decisions
-    table gives us a deterministic test of URL + service-role key + REST API.
-    """
+    """Probe a real public table through PostgREST without exposing secrets."""
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
     key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
     if not url or not key:
         return {"connected": False, "reason": "credentials_missing"}
-
     try:
         response = await fetch(
             f"{url}/rest/v1/decisions?select=id&limit=1",
@@ -113,6 +101,50 @@ async def _supabase_health(env):
         return {"connected": False, "reason": "supabase_http_error", "http_status": code}
     except Exception:
         return {"connected": False, "reason": "network_or_runtime_error"}
+
+
+async def _paper_cycle(env, pair="btc_idr"):
+    """Run one safe paper-only cycle through the persistent state gate."""
+    stub = await _state_stub(env)
+    ok, _, reason = await stub.begin_cycle()
+    if not ok:
+        return {"ok": False, "reason": reason, "state": _state_response(await stub.get_state())}
+
+    try:
+        scope = {"env": env, "query_string": f"pair={pair}".encode("latin-1")}
+        market = await cf_worker._market_overview(scope)
+        if not market.get("available") or float(market.get("last") or 0) <= 0:
+            await stub.finish_cycle()
+            return {"ok": False, "reason": "market_data_unavailable", "state": _state_response(await stub.get_state())}
+
+        move = float(market.get("recent_move") or 0.0)
+        high = float(market.get("high") or 0.0)
+        low = float(market.get("low") or 0.0)
+        last = float(market.get("last") or 0.0)
+        range_position = ((last - low) / (high - low) * 100.0) if high > low else 50.0
+
+        # Smoke-test signal only. This is deliberately NOT the multi-agent AI
+        # decision engine; it proves the paper state/execution path end-to-end.
+        if move >= 0.15 or range_position >= 80.0:
+            action = "BUY"
+            confidence = min(0.95, 0.60 + max(abs(move), range_position - 70.0) / 100.0)
+        elif move <= -0.15 or range_position <= 20.0:
+            action = "SELL"
+            confidence = min(0.95, 0.60 + max(abs(move), 20.0 - range_position) / 100.0)
+        else:
+            action, confidence = "HOLD", 0.50
+
+        state = await stub.record_cycle(
+            decision=action,
+            confidence=confidence,
+            symbol=market["pair"].upper().replace("_", "/"),
+            price=last,
+            reasoning=f"Paper pipeline smoke-test signal: recent_move={move:.4f}%, range_position={range_position:.1f}%.",
+        )
+        return {"ok": True, "action": action, "confidence": confidence, "market": market, "state": _state_response(state)}
+    except Exception as exc:
+        await stub.finish_cycle()
+        return {"ok": False, "reason": "cycle_error", "error": str(exc), "state": _state_response(await stub.get_state())}
 
 
 class Default(WorkerEntrypoint):
@@ -190,12 +222,29 @@ class Default(WorkerEntrypoint):
 
         if path == "/api/bot/status" and request.method == "GET":
             return Response.json(_state_response(await stub.get_state()))
+
         if path == "/api/bot/start" and request.method == "POST":
             state = await stub.start()
-            return Response.json({**_state_response(state), "message": "Paper trading is armed. No AI cycle starts automatically."})
+            cycle = await _paper_cycle(self.env)
+            return Response.json({**_state_response(cycle.get("state") or state), "message": "Paper trading started and one execution cycle completed.", "cycle": cycle})
+
         if path == "/api/bot/stop" and request.method == "POST":
             state = await stub.stop()
-            return Response.json({**_state_response(state), "message": "Paper trading is stopped."})
+            return Response.json({**_state_response(state), "message": "Paper trading stopped. Real trading remains locked."})
+
+        if path == "/api/bot/cycle" and request.method == "POST":
+            cycle = await _paper_cycle(self.env)
+            return Response.json(cycle, status=200 if cycle.get("ok") else 409)
+
+        if path == "/api/dashboard/analyze" and request.method == "POST":
+            if not (await stub.get_state()).get("enabled"):
+                return Response.json({"detail": "Paper trading is OFF. Start the bot first.", "bot_enabled": False}, status=409)
+            cycle = await _paper_cycle(self.env)
+            return Response.json(cycle, status=200 if cycle.get("ok") else 409)
+
+        if path == "/api/bot/reset" and request.method == "POST":
+            state = await stub.reset()
+            return Response.json({**_state_response(state), "message": "Paper trading state reset."})
 
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state()
@@ -218,18 +267,29 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state()
             return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "currency": "IDR", "currency_symbol": "Rp"})
+
         if path == "/api/dashboard/performance" and request.method == "GET":
             state = await stub.get_state()
             trades = int(state.get("total_trades", 0))
             return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0.0)), "daily_pnl": float(state.get("daily_pnl", 0.0)), "closed_trades": trades, "win_rate": 0.0, "currency": "IDR", "currency_symbol": "Rp"}})
+
         if path == "/api/dashboard/recent-decision" and request.method == "GET":
             state = await stub.get_state()
             return Response.json({"decision": state.get("last_decision")})
+
         if path == "/api/dashboard/agents" and request.method == "GET":
             enabled = bool((await stub.get_state()).get("enabled"))
             status = "armed" if enabled else "idle"
-            return Response.json({"agents": [{"name": name, "status": status, "description": "State layer only; AI cycle is not started by dashboard polling."} for name in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
+            return Response.json({"agents": [{"name": name, "status": status, "description": "Paper execution pipeline; AI agents are not invoked by this worker cycle."} for name in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
+
         return None
+
+    async def scheduled(self, controller, env, ctx):
+        # If a Cron Trigger is later configured, every scheduled invocation
+        # becomes a paper cycle only while the persistent bot gate is enabled.
+        state = await env.PAPER_STATE.getByName("global").get_state()
+        if state.get("enabled"):
+            await _paper_cycle(env)
 
     async def fetch(self, request):
         url = urlparse(request.url)
