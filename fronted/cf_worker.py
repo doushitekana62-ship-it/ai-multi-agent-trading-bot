@@ -263,10 +263,22 @@ async def _serve_assets(scope, send):
 
 
 async def _dashboard_status(scope):
-    decisions = await _supabase_request(scope, "/rest/v1/decisions?select=action,created_at&order=created_at.desc") or []
+    # Public Indodax market data and Supabase persistence are independent.
+    # Do not report the database as healthy merely because market data works.
+    supabase_configured = bool(
+        _env(scope, "SUPABASE_URL").strip()
+        and _env(scope, "SUPABASE_SERVICE_ROLE_KEY").strip()
+    )
+    supabase_connected = await _supabase_probe(scope) if supabase_configured else False
+
+    decisions = await _supabase_request(
+        scope,
+        "/rest/v1/decisions?select=action,created_at&order=created_at.desc&limit=500",
+    ) or []
     buys = sum(1 for row in decisions if str(row.get("action", "")).upper() == "BUY")
     sells = sum(1 for row in decisions if str(row.get("action", "")).upper() == "SELL")
     holds = sum(1 for row in decisions if str(row.get("action", "")).upper() == "HOLD")
+
     return {
         "portfolio_value": PAPER_INITIAL_BALANCE,
         "balance": PAPER_INITIAL_BALANCE,
@@ -284,6 +296,20 @@ async def _dashboard_status(scope):
         "last_cycle_at": None,
         "runtime_hours": 0.0,
         "decision_counts": {"BUY": buys, "SELL": sells, "HOLD": holds},
+        "database": {
+            "configured": supabase_configured,
+            "connected": supabase_connected,
+            "status": "connected" if supabase_connected else ("not_configured" if not supabase_configured else "unreachable"),
+        },
+        "market_data": {
+            "source": "INDODAX public market data",
+            "available": True,
+        },
+        "safety": {
+            "mode": "paper",
+            "real_trading_locked": True,
+            "bot_enabled": False,
+        },
     }
 
 
