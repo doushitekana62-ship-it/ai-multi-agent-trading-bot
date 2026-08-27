@@ -3,8 +3,6 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 
 const AuthContext = createContext();
-
-// Same-origin API gateway. No temporary tunnel or hardcoded backend URL.
 const API_URL = '';
 
 export const useAuth = () => {
@@ -23,7 +21,7 @@ export const AuthProvider = ({ children }) => {
   const applyAccessToken = (accessToken) => {
     setToken(accessToken);
     localStorage.setItem('token', accessToken);
-    axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
+    axios.defaults.headers.common.Authorization = `Bearer ${accessToken}`;
   };
 
   const clearSession = () => {
@@ -33,16 +31,29 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(false);
     localStorage.removeItem('token');
     localStorage.removeItem('refresh_token');
-    delete axios.defaults.headers.common['Authorization'];
+    delete axios.defaults.headers.common.Authorization;
   };
 
   useEffect(() => {
-    if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    } else {
-      delete axios.defaults.headers.common['Authorization'];
-    }
+    if (token) axios.defaults.headers.common.Authorization = `Bearer ${token}`;
+    else delete axios.defaults.headers.common.Authorization;
   }, [token]);
+
+  const refreshAccessToken = async () => {
+    const storedRefreshToken = refreshToken || localStorage.getItem('refresh_token');
+    if (!storedRefreshToken) return false;
+
+    try {
+      const response = await axios.post(`${API_URL}/api/auth/refresh`, {
+        refresh_token: storedRefreshToken,
+      });
+      applyAccessToken(response.data.access_token);
+      return true;
+    } catch (error) {
+      clearSession();
+      return false;
+    }
+  };
 
   useEffect(() => {
     const interceptor = axios.interceptors.response.use(
@@ -68,10 +79,9 @@ export const AuthProvider = ({ children }) => {
           const response = await axios.post(`${API_URL}/api/auth/refresh`, {
             refresh_token: storedRefreshToken,
           });
-          const nextToken = response.data.access_token;
-          applyAccessToken(nextToken);
+          applyAccessToken(response.data.access_token);
           original.headers = original.headers || {};
-          original.headers.Authorization = `Bearer ${nextToken}`;
+          original.headers.Authorization = `Bearer ${response.data.access_token}`;
           return axios(original);
         } catch (refreshError) {
           clearSession();
@@ -85,23 +95,12 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (username, password) => {
     try {
-      const response = await axios.post(`${API_URL}/api/auth/login`, {
-        username,
-        password,
-      });
-
-      const {
-        access_token,
-        refresh_token,
-        username: userUsername,
-      } = response.data;
-
-      applyAccessToken(access_token);
-      setRefreshToken(refresh_token);
-      localStorage.setItem('refresh_token', refresh_token);
-      setUser({ username: userUsername });
+      const response = await axios.post(`${API_URL}/api/auth/login`, { username, password });
+      applyAccessToken(response.data.access_token);
+      setRefreshToken(response.data.refresh_token);
+      localStorage.setItem('refresh_token', response.data.refresh_token);
+      setUser({ username: response.data.username });
       setIsAuthenticated(true);
-
       toast.success('Login successful!');
       return response.data;
     } catch (error) {
@@ -122,22 +121,6 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const refreshAccessToken = async () => {
-    const storedRefreshToken = refreshToken || localStorage.getItem('refresh_token');
-    if (!storedRefreshToken) return false;
-
-    try {
-      const response = await axios.post(`${API_URL}/api/auth/refresh`, {
-        refresh_token: storedRefreshToken,
-      });
-      applyAccessToken(response.data.access_token);
-      return true;
-    } catch (error) {
-      clearSession();
-      return false;
-    }
-  };
-
   const verifyToken = async () => {
     const currentToken = token || localStorage.getItem('token');
     if (!currentToken) {
@@ -146,7 +129,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     try {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${currentToken}`;
+      axios.defaults.headers.common.Authorization = `Bearer ${currentToken}`;
       const response = await axios.get(`${API_URL}/api/auth/verify`);
       if (response.data.is_authenticated) {
         setUser({ username: response.data.username });
@@ -178,24 +161,22 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     verifyToken();
-    // Initial session validation only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const value = {
-    user,
-    token,
-    refreshToken,
-    loading,
-    isAuthenticated,
-    login,
-    logout,
-    verifyToken,
-    refreshAccessToken,
-  };
-
   return (
-    <AuthContext.Provider value={value}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        refreshToken,
+        loading,
+        isAuthenticated,
+        login,
+        logout,
+        verifyToken,
+        refreshAccessToken,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
