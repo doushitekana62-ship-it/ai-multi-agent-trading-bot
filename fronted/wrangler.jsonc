@@ -18,10 +18,10 @@
       }
     ]
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["PaperTradingState"]
+  "exports": {
+    "PaperTradingState": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
-  ]
+  }
 }
