@@ -1,8 +1,8 @@
 """Cloudflare Worker entrypoint.
 
-The existing ASGI API remains the fallback application. This entrypoint adds
-persistent authentication refresh and the authoritative paper-trading state
-layer without starting an AI cycle.
+The Worker owns authentication and persistent paper-trading safety state. The
+paper cycle is deliberately explicit and lightweight so the Free Worker can
+validate the trading path without Render, Containers, or a background loop.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from pyodide.ffi import to_js
 
 import cf_worker
 from paper_state import PaperTradingState
+from paper_cycle import run_lightweight_paper_cycle
 
 
 async def _access_only(scope):
@@ -79,18 +80,11 @@ def _state_response(state):
 
 
 async def _supabase_health(env):
-    """Probe a real public table through PostgREST without exposing secrets.
-
-    The previous probe hit /rest/v1/ and attempted to parse the response as
-    JSON. That can report a false disconnect when the gateway returns a valid
-    2xx response with an empty/non-JSON body. Querying the existing decisions
-    table gives us a deterministic test of URL + service-role key + REST API.
-    """
+    """Probe a real public table through PostgREST without exposing secrets."""
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
     key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
     if not url or not key:
         return {"connected": False, "reason": "credentials_missing"}
-
     try:
         response = await fetch(
             f"{url}/rest/v1/decisions?select=id&limit=1",
@@ -190,12 +184,32 @@ class Default(WorkerEntrypoint):
 
         if path == "/api/bot/status" and request.method == "GET":
             return Response.json(_state_response(await stub.get_state()))
+
         if path == "/api/bot/start" and request.method == "POST":
             state = await stub.start()
             return Response.json({**_state_response(state), "message": "Paper trading is armed. No AI cycle starts automatically."})
+
         if path == "/api/bot/stop" and request.method == "POST":
             state = await stub.stop()
             return Response.json({**_state_response(state), "message": "Paper trading is stopped."})
+
+        if path == "/api/bot/cycle" and request.method == "POST":
+            if not (await stub.get_state()).get("enabled"):
+                return Response.json({"detail": "BOT is OFF. Start paper trading before running a cycle.", "bot_enabled": False, "cycle_running": False}, status=409)
+
+            lock = await stub.begin_cycle()
+            if not lock.get("started"):
+                return Response.json({"detail": lock.get("reason", "cycle_not_started"), "bot_enabled": True, "cycle_running": bool(lock.get("state", {}).get("cycle_running"))}, status=409)
+
+            try:
+                result = await run_lightweight_paper_cycle("BTC/IDR")
+                action = result.get("action", "HOLD")
+                confidence = float(result.get("confidence", 0.0))
+                finished = await stub.finish_cycle(decision=action, confidence=confidence)
+                return Response.json({"cycle": result, "state": _state_response(finished.get("state", {})), "safety": {"mode": "paper", "live_order": False, "background_loop": False}})
+            except Exception as exc:
+                await stub.abort_cycle(reason=str(exc))
+                return Response.json({"detail": f"Paper cycle failed: {exc}", "bot_enabled": True, "cycle_running": False}, status=502)
 
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state()
@@ -218,13 +232,16 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state()
             return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "currency": "IDR", "currency_symbol": "Rp"})
+
         if path == "/api/dashboard/performance" and request.method == "GET":
             state = await stub.get_state()
             trades = int(state.get("total_trades", 0))
             return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0.0)), "daily_pnl": float(state.get("daily_pnl", 0.0)), "closed_trades": trades, "win_rate": 0.0, "currency": "IDR", "currency_symbol": "Rp"}})
+
         if path == "/api/dashboard/recent-decision" and request.method == "GET":
             state = await stub.get_state()
             return Response.json({"decision": state.get("last_decision")})
+
         if path == "/api/dashboard/agents" and request.method == "GET":
             enabled = bool((await stub.get_state()).get("enabled"))
             status = "armed" if enabled else "idle"
