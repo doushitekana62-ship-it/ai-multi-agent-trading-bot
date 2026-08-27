@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 
 import asgi
 from workers import WorkerEntrypoint, Response
+from js import fetch
+from pyodide.ffi import to_js
 
 import cf_worker
 from paper_state import PaperTradingState
@@ -74,6 +76,43 @@ def _state_response(state):
         "decision_counts": {"BUY": int(decision_counts.get("BUY", 0)), "SELL": int(decision_counts.get("SELL", 0)), "HOLD": int(decision_counts.get("HOLD", 0))},
         "safety": {"mode": "paper", "real_trading_locked": True, "bot_enabled": enabled, "cycle_running": cycle_running},
     }
+
+
+async def _supabase_health(env):
+    """Probe a real public table through PostgREST without exposing secrets.
+
+    The previous probe hit /rest/v1/ and attempted to parse the response as
+    JSON. That can report a false disconnect when the gateway returns a valid
+    2xx response with an empty/non-JSON body. Querying the existing decisions
+    table gives us a deterministic test of URL + service-role key + REST API.
+    """
+    url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
+    key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    if not url or not key:
+        return {"connected": False, "reason": "credentials_missing"}
+
+    try:
+        response = await fetch(
+            f"{url}/rest/v1/decisions?select=id&limit=1",
+            to_js({
+                "method": "GET",
+                "headers": {
+                    "apikey": key,
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+            }),
+        )
+        code = int(response.status)
+        if 200 <= code < 300:
+            return {"connected": True, "reason": "rest_probe_ok"}
+        if code in (401, 403):
+            return {"connected": False, "reason": "invalid_credentials", "http_status": code}
+        if code == 404:
+            return {"connected": False, "reason": "decisions_table_not_found", "http_status": code}
+        return {"connected": False, "reason": "supabase_http_error", "http_status": code}
+    except Exception:
+        return {"connected": False, "reason": "network_or_runtime_error"}
 
 
 class Default(WorkerEntrypoint):
@@ -162,16 +201,17 @@ class Default(WorkerEntrypoint):
             state = await stub.get_state()
             result = _state_response(state)
             supabase_configured = bool(str(getattr(self.env, "SUPABASE_URL", "") or "").strip() and str(getattr(self.env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip())
-            supabase_connected = await cf_worker._supabase_probe({"env": self.env}) if supabase_configured else False
+            supabase_health = await _supabase_health(self.env) if supabase_configured else {"connected": False, "reason": "credentials_missing"}
+            supabase_connected = bool(supabase_health.get("connected"))
             cycle_running = bool(state.get("cycle_running"))
             result.update({
                 "daily_pnl": float(state.get("daily_pnl", 0.0)),
                 "daily_trades": int(state.get("daily_trades", 0)),
                 "total_trades": int(state.get("total_trades", 0)),
                 "active_positions": int(state.get("active_positions", 0)),
-                "database": {"configured": supabase_configured, "connected": supabase_connected, "status": "connected" if supabase_connected else ("not_configured" if not supabase_configured else "unreachable")},
+                "database": {"configured": supabase_configured, "connected": supabase_connected, "status": "connected" if supabase_connected else ("not_configured" if not supabase_configured else "unreachable"), "diagnostic": supabase_health.get("reason")},
                 "market_data": {"source": "INDODAX public market data", "available": True, "fresh": None, "stale": None, "age_seconds": None},
-                "system_health": {"database": {"connected": supabase_connected}, "market_data": {"fresh": None, "stale": None, "age_seconds": None}, "mode": state.get("mode", "paper"), "engine": {"running": cycle_running}},
+                "system_health": {"database": {"connected": supabase_connected, "diagnostic": supabase_health.get("reason")}, "market_data": {"fresh": None, "stale": None, "age_seconds": None}, "mode": state.get("mode", "paper"), "engine": {"running": cycle_running}},
             })
             return Response.json(result)
 
