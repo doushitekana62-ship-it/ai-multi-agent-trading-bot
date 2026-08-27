@@ -71,8 +71,10 @@ class Security:
         return {"username": payload["sub"], "exp": payload.get("exp")}
 
 
-def create_access_token(data: Dict[str, Any]) -> str:
-    return Security().create_access_token(data)
+def create_access_token(
+    data: Dict[str, Any], expires_delta: Optional[timedelta] = None
+) -> str:
+    return Security().create_access_token(data, expires_delta=expires_delta)
 
 
 def verify_token(token: str) -> Optional[Dict[str, Any]]:
