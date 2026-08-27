@@ -4,25 +4,37 @@ import toast from 'react-hot-toast';
 
 const AuthContext = createContext();
 
-// Use the same-origin /api gateway exposed by the Cloudflare Worker.
-// This keeps the dashboard independent from temporary tunnels or hardcoded backend URLs.
+// Same-origin API gateway. No temporary tunnel or hardcoded backend URL.
 const API_URL = '';
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-
-  if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
-  }
-
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
   return context;
 };
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('token'));
+  const [refreshToken, setRefreshToken] = useState(localStorage.getItem('refresh_token'));
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  const applyAccessToken = (accessToken) => {
+    setToken(accessToken);
+    localStorage.setItem('token', accessToken);
+    axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
+  };
+
+  const clearSession = () => {
+    setToken(null);
+    setRefreshToken(null);
+    setUser(null);
+    setIsAuthenticated(false);
+    localStorage.removeItem('token');
+    localStorage.removeItem('refresh_token');
+    delete axios.defaults.headers.common['Authorization'];
+  };
 
   useEffect(() => {
     if (token) {
@@ -32,115 +44,154 @@ export const AuthProvider = ({ children }) => {
     }
   }, [token]);
 
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const original = error.config;
+        const storedRefreshToken = localStorage.getItem('refresh_token');
+
+        if (
+          error.response?.status !== 401 ||
+          !original ||
+          original._retry ||
+          original.url?.includes('/api/auth/login') ||
+          original.url?.includes('/api/auth/refresh') ||
+          original.url?.includes('/api/auth/logout') ||
+          !storedRefreshToken
+        ) {
+          return Promise.reject(error);
+        }
+
+        original._retry = true;
+        try {
+          const response = await axios.post(`${API_URL}/api/auth/refresh`, {
+            refresh_token: storedRefreshToken,
+          });
+          const nextToken = response.data.access_token;
+          applyAccessToken(nextToken);
+          original.headers = original.headers || {};
+          original.headers.Authorization = `Bearer ${nextToken}`;
+          return axios(original);
+        } catch (refreshError) {
+          clearSession();
+          return Promise.reject(refreshError);
+        }
+      }
+    );
+
+    return () => axios.interceptors.response.eject(interceptor);
+  }, []);
+
   const login = async (username, password) => {
     try {
-      const response = await axios.post(
-        `${API_URL}/api/auth/login`,
-        {
-          username,
-          password,
-        }
-      );
+      const response = await axios.post(`${API_URL}/api/auth/login`, {
+        username,
+        password,
+      });
 
       const {
         access_token,
+        refresh_token,
         username: userUsername,
       } = response.data;
 
-      setToken(access_token);
-      setUser({
-        username: userUsername,
-      });
+      applyAccessToken(access_token);
+      setRefreshToken(refresh_token);
+      localStorage.setItem('refresh_token', refresh_token);
+      setUser({ username: userUsername });
       setIsAuthenticated(true);
 
-      localStorage.setItem('token', access_token);
-
-      axios.defaults.headers.common['Authorization'] =
-        `Bearer ${access_token}`;
-
       toast.success('Login successful!');
-
       return response.data;
     } catch (error) {
       console.error('Login error:', error);
-
-      toast.error(
-        error.response?.data?.detail || 'Login failed'
-      );
-
+      toast.error(error.response?.data?.detail || 'Login failed');
       throw error;
     }
   };
 
   const logout = async () => {
     try {
-      await axios.post(`${API_URL}/api/auth/logout`);
+      if (token) await axios.post(`${API_URL}/api/auth/logout`);
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
-      setToken(null);
-      setUser(null);
-      setIsAuthenticated(false);
-
-      localStorage.removeItem('token');
-
-      delete axios.defaults.headers.common['Authorization'];
-
+      clearSession();
       toast.success('Logged out');
     }
   };
 
+  const refreshAccessToken = async () => {
+    const storedRefreshToken = refreshToken || localStorage.getItem('refresh_token');
+    if (!storedRefreshToken) return false;
+
+    try {
+      const response = await axios.post(`${API_URL}/api/auth/refresh`, {
+        refresh_token: storedRefreshToken,
+      });
+      applyAccessToken(response.data.access_token);
+      return true;
+    } catch (error) {
+      clearSession();
+      return false;
+    }
+  };
+
   const verifyToken = async () => {
-    if (!token) {
+    const currentToken = token || localStorage.getItem('token');
+    if (!currentToken) {
       setLoading(false);
       return false;
     }
 
     try {
-      const response = await axios.get(
-        `${API_URL}/api/auth/verify`
-      );
-
+      axios.defaults.headers.common['Authorization'] = `Bearer ${currentToken}`;
+      const response = await axios.get(`${API_URL}/api/auth/verify`);
       if (response.data.is_authenticated) {
-        setUser({
-          username: response.data.username,
-        });
-
+        setUser({ username: response.data.username });
         setIsAuthenticated(true);
-
+        setLoading(false);
         return true;
       }
-
-      return false;
     } catch (error) {
-      console.error('Token verification failed:', error);
-
-      setToken(null);
-      setUser(null);
-      setIsAuthenticated(false);
-
-      localStorage.removeItem('token');
-
-      delete axios.defaults.headers.common['Authorization'];
-
-      return false;
-    } finally {
-      setLoading(false);
+      const refreshed = await refreshAccessToken();
+      if (refreshed) {
+        try {
+          const response = await axios.get(`${API_URL}/api/auth/verify`);
+          if (response.data.is_authenticated) {
+            setUser({ username: response.data.username });
+            setIsAuthenticated(true);
+            setLoading(false);
+            return true;
+          }
+        } catch (verifyError) {
+          console.error('Token verification after refresh failed:', verifyError);
+        }
+      }
     }
+
+    clearSession();
+    setLoading(false);
+    return false;
   };
 
   useEffect(() => {
     verifyToken();
+    // Initial session validation only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const value = {
     user,
     token,
+    refreshToken,
     loading,
     isAuthenticated,
     login,
     logout,
     verifyToken,
+    refreshAccessToken,
   };
 
   return (
