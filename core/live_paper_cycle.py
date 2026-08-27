@@ -12,6 +12,7 @@ from agents.agent_trading_librarian import TradingLibrarianAgent
 from core.adaptive_scalping import AdaptiveScalpingEngine
 from core.executor import Executor
 from core.orchestrator import Orchestrator
+from core.runtime_state import set_last_orchestrator_result
 
 
 class LivePaperCycle:
@@ -40,9 +41,7 @@ class LivePaperCycle:
                 "market_data_valid": False,
             }
 
-        # Position monitoring is part of every runtime cycle. This keeps paper
-        # behavior aligned with the future live executor: an open position can
-        # be closed by SL/TP even when the AI produces HOLD on the next tick.
+        # Position monitoring is part of every explicitly invoked runtime cycle.
         before_orders = len(self.executor.order_history)
         self.executor.monitor_positions()
         position_event = None
@@ -52,6 +51,9 @@ class LivePaperCycle:
         market_data = snapshot.to_dict()
         market_data["current_price"] = snapshot.current_price
         result = await self.orchestrator.analyze(symbol, market_data)
+        # Publish only the completed result. This is state publication, not an
+        # execution trigger, and lets the dashboard observe the same decision.
+        set_last_orchestrator_result(result)
 
         librarian = self.librarian.advise("scalping momentum risk execution", limit=3)
         technical = getattr(result.technical, "overall_score", 0.0) if result.technical else 0.0
@@ -61,9 +63,7 @@ class LivePaperCycle:
             self.orchestrator._action_to_score(getattr(result.mimic_analysis, "recommendation", "HOLD"))
             if result.mimic_analysis else 0.0
         )
-        momentum = self.orchestrator._calculate_momentum_score(
-            result.technical, snapshot.current_price
-        )
+        momentum = self.orchestrator._calculate_momentum_score(result.technical, snapshot.current_price)
         scalping = self.scalper.evaluate(
             technical=float(technical),
             sentiment=float(sentiment),
@@ -75,9 +75,6 @@ class LivePaperCycle:
         )
 
         action = result.final_action
-        # Scalping is an execution gate, not a blind trade-forcer. It may turn a
-        # HOLD into a trade only when independent confirmation is strong and the
-        # orchestrator is not directionally opposed.
         if (
             action == "HOLD"
             and scalping.action in {"BUY", "SELL"}
