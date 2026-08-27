@@ -1,10 +1,58 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Card, CardContent, Chip, Grid, LinearProgress, Paper, Stack, Typography } from '@mui/material';
 import { TrendingDown, TrendingUp, Remove } from '@mui/icons-material';
+import axios from 'axios';
+import { Radar } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  RadialLinearScale,
+  PointElement,
+  LineElement,
+  Filler,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+
+ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0);
 
+const Indicator = ({ label, ok, value }) => (
+  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+    <Stack direction="row" alignItems="center" spacing={1}>
+      <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: ok ? 'success.main' : 'error.main', flexShrink: 0 }} />
+      <Typography variant="body2">{label}</Typography>
+    </Stack>
+    <Typography variant="caption" color={ok ? 'success.main' : 'error.main'} sx={{ fontWeight: 700 }}>
+      {value}
+    </Typography>
+  </Stack>
+);
+
 export default function DashboardTools({ market, decision, counts, runtimeHours = 0, cycles = 0, targets, dailyActual = 0, decisionHistory = [], positions = [] }) {
+  const [health, setHealth] = useState(null);
+
+  const loadHealth = async () => {
+    try {
+      const response = await axios.get('/api/dashboard/status');
+      setHealth(response.data?.system_health || null);
+    } catch (error) {
+      console.error('Unable to fetch system health:', error);
+      setHealth({
+        database: { connected: false },
+        market_data: { fresh: false, stale: true, age_seconds: null },
+        mode: 'unknown',
+        engine: { running: false },
+      });
+    }
+  };
+
+  useEffect(() => {
+    loadHealth();
+    const interval = setInterval(loadHealth, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   const move = Number(market?.recent_move);
   const action = String(decision?.action || '—').toUpperCase();
   const confidence = Number(decision?.confidence || 0) * 100;
@@ -18,6 +66,7 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
     : marketBias === 'FALLING' && action === 'HOLD'
       ? 'Observation: market is falling while AI is HOLD.'
       : 'No notable market/AI divergence detected.';
+
   const consensus = useMemo(() => {
     const votes = decision?.votes || {};
     const values = Object.values(votes).map((v) => String(v).toUpperCase());
@@ -30,10 +79,70 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
     const label = max === buy ? 'BUY' : max === sell ? 'SELL' : 'HOLD';
     return { label, percent: (max / total) * 100, buy, sell, hold };
   }, [decision]);
+
   const progress = (target) => Number(target) > 0 ? Math.min(100, Math.max(0, (dailyActual / Number(target)) * 100)) : 0;
+
+  const radarValues = useMemo(() => {
+    const scores = decision?.market_scores || {};
+    return [
+      Number(scores.sentiment || 0),
+      Number(scores.technical || 0),
+      Number(scores.decision || 0),
+      Number(scores.forecast || 0),
+      Number(scores.mimic_trader || 0),
+      Number(scores.consensus || 0),
+    ].map((v) => Math.max(-1, Math.min(1, Number.isFinite(v) ? v : 0)));
+  }, [decision]);
+
+  const radarData = useMemo(() => ({
+    labels: ['Sentiment', 'Technical', 'Decision', 'Forecast', 'Mimic Trader', 'Consensus'],
+    datasets: [{
+      label: 'Agent score',
+      data: radarValues,
+      fill: true,
+      borderWidth: 1.5,
+      pointRadius: 3,
+    }],
+  }), [radarValues]);
+
+  const radarOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: { r: { min: -1, max: 1, ticks: { stepSize: 0.5 } } },
+    plugins: { legend: { display: false } },
+  }), []);
+
+  const marketFresh = health?.market_data?.fresh === true && health?.market_data?.stale !== true;
+  const databaseOk = health?.database?.connected === true;
+  const engineRunning = health?.engine?.running === true;
+  const mode = String(health?.mode || 'paper').toUpperCase();
+  const marketAge = health?.market_data?.age_seconds;
 
   return (
     <Grid container spacing={3} sx={{ mb: 3 }}>
+      <Grid item xs={12} md={4}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">System Health</Typography>
+          <Typography variant="caption" color="text.secondary">Read-only diagnostics. This panel never starts an AI cycle.</Typography>
+          <Stack spacing={1.3} sx={{ mt: 2 }}>
+            <Indicator label="Database" ok={databaseOk} value={databaseOk ? 'CONNECTED' : 'DISCONNECTED'} />
+            <Indicator label="Market data" ok={marketFresh} value={marketFresh ? `FRESH${marketAge != null ? ` · ${Number(marketAge).toFixed(1)}s` : ''}` : 'STALE'} />
+            <Indicator label="Mode" ok={mode === 'PAPER'} value={mode} />
+            <Indicator label="Engine" ok={engineRunning} value={engineRunning ? 'ACTIVE' : 'OFF'} />
+          </Stack>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={8}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">Agent Score Radar</Typography>
+          <Typography variant="caption" color="text.secondary">Read-only view of the latest OrchestratorResult.market_scores. No analysis is triggered.</Typography>
+          <Box sx={{ height: 270, mt: 1 }}>
+            {decision?.market_scores ? <Radar data={radarData} options={radarOptions} /> : <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for an AI analysis result...</Box>}
+          </Box>
+        </Paper>
+      </Grid>
+
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Market vs AI</Typography>
