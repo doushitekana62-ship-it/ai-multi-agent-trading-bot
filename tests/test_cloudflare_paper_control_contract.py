@@ -23,6 +23,15 @@ def test_worker_uses_shared_cycle_runner():
     assert "durable_object_alarm_1m" in source
 
 
+def test_worker_refuses_to_enable_paper_without_ai_engine_configuration():
+    source = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
+    assert "AI_ENGINE_URL" in source
+    assert "AI_ENGINE_SHARED_SECRET" in source
+    assert "ai_engine_not_configured" in source
+    assert "Worker runtime variables/secrets" in source
+    assert "state = await stub.enable_paper(pair)" in source
+
+
 def test_browser_does_not_schedule_or_intercept_paper_cycles():
     source = (FRONTED / "src" / "index.js").read_text(encoding="utf-8")
     assert "window.setInterval" not in source
