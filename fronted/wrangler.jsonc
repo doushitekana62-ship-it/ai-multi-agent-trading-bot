@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "ai-multi-agent-trading-bot",
   "main": "./worker_entry_api.py",
-  "compatibility_date": "2026-08-25",
+  "compatibility_date": "2026-08-28",
   "compatibility_flags": ["python_workers"],
   "assets": {
     "directory": "./build",
@@ -10,6 +10,13 @@
     "run_worker_first": ["/api/*"],
     "not_found_handling": "single-page-application"
   },
+  "services": [
+    {
+      "binding": "AI_ENGINE",
+      "service": "ai-multi-agent-trading-ai-engine",
+      "entrypoint": "AiEngineService"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
