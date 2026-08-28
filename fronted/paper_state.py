@@ -30,6 +30,7 @@ DEFAULT_STATE = {
     "trade_history": [],
     "last_decision": None,
     "last_error": None,
+    "paper_pair": "btc_idr",
     "updated_at": None,
 }
 
@@ -63,27 +64,29 @@ class PaperTradingState(DurableObject):
         state.setdefault("positions", [])
         state.setdefault("trade_history", [])
         state.setdefault("last_error", None)
+        state.setdefault("paper_pair", "btc_idr")
         return state
 
     async def get_state(self):
         return await self._get()
 
-    async def enable_paper(self):
-        """Enable paper trading using a non-reserved RPC method name."""
+    async def enable_paper(self, pair="btc_idr"):
+        """Enable paper trading; does not execute a cycle."""
         state = await self._get()
         now = _now()
         state["enabled"] = True
         state["mode"] = "paper"
         state["cycle_running"] = False
-        state["started_at"] = now
+        state["started_at"] = state.get("started_at") or now
         state["last_error"] = None
+        state["paper_pair"] = str(pair or "btc_idr").strip().lower() or "btc_idr"
         state["updated_at"] = now
         await self.ctx.storage.put("state", state)
         return state
 
-    async def start(self):
+    async def start(self, pair="btc_idr"):
         """Backward-compatible alias for older callers."""
-        return await self.enable_paper()
+        return await self.enable_paper(pair)
 
     async def stop(self):
         state = await self._get()
