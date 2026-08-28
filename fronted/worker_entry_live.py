@@ -13,7 +13,8 @@ from pyodide.ffi import to_js
 from workers import Response
 
 import cf_worker
-from worker_entry_api import Default as BaseDefault, PaperTradingState
+from worker_entry import _state_response
+from worker_entry_api import Default as BaseDefault, PaperTradingState, _state_stub
 
 
 async def _probe_ai_engine(env):
@@ -93,22 +94,11 @@ class Default(BaseDefault):
         if path == "/api/dashboard/status" and request.method == "GET":
             if not await self._verify_access(request):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
-            stub = await cf_worker._state_stub(self.env) if hasattr(cf_worker, "_state_stub") else None
-            if stub is None:
-                # worker_entry.py owns the authoritative state stub; fall back to
-                # the inherited dashboard implementation if this compatibility
-                # path is unavailable in the runtime.
-                return await super()._handle_state_routes(request, path)
+            stub = await _state_stub(self.env)
             state = await stub.ensure_scheduler()
             market = await cf_worker._market_overview({"env": self.env, "query_string": b"pair=btc_idr"})
             ai = await _probe_ai_engine(self.env)
             enabled = bool(state.get("enabled"))
-            result = {
-                "**state**": None,
-            }
-            # Avoid depending on a second state schema: use the adapter's
-            # canonical response helper from worker_entry.py.
-            from worker_entry import _state_response  # imported lazily to avoid circular startup work
             result = _state_response(state)
             result.update({
                 "daily_pnl": float(state.get("daily_pnl", 0.0)),
