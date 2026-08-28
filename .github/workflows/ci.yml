@@ -77,6 +77,8 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: fronted/package.json
 
       - name: Install frontend dependencies
         working-directory: fronted
@@ -86,6 +88,18 @@ jobs:
         working-directory: fronted
         run: npm run build
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Setup uv
+        run: python -m pip install --upgrade uv
+
+      - name: Sync Python Worker dependencies
+        working-directory: fronted
+        run: uv sync --dev
+
       - name: Validate dashboard Cloudflare Worker
         working-directory: fronted
-        run: npx wrangler deploy --dry-run
+        run: uv run pywrangler deploy --dry-run
