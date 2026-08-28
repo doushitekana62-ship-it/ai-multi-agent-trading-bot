@@ -90,6 +90,7 @@ class Default(BaseDefault):
             stub = await _state_stub(self.env)
             state = await stub.ensure_scheduler()
             payload = _state_response(state)
+            payload["last_orchestrator"] = await stub.ctx.storage.get("last_orchestrator")
             payload.update({
                 "manual_control": True,
                 "automation_enabled": True,
@@ -119,6 +120,7 @@ class Default(BaseDefault):
             result["daily_trades"] = int(state.get("daily_trades", 0))
             result["total_trades"] = int(state.get("total_trades", 0))
             result["active_positions"] = int(state.get("active_positions", 0))
+            result["last_orchestrator"] = await stub.ctx.storage.get("last_orchestrator")
             enabled = bool(state.get("enabled"))
             cycle_running = bool(state.get("cycle_running"))
             result["manual_control"] = True
@@ -155,6 +157,29 @@ class Default(BaseDefault):
                 },
             }
             return Response.json(result, status=200)
+
+        if target == "/api/dashboard/recent-decision" and request.method == "GET":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            stub = await _state_stub(self.env)
+            state = await stub.get_state()
+            latest = await stub.ctx.storage.get("last_orchestrator")
+            decision = state.get("last_decision")
+            if latest:
+                decision = {**(decision or {}), **latest}
+            return Response.json({"decision": decision}, status=200)
+
+        if target == "/api/dashboard/agents" and request.method == "GET":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            stub = await _state_stub(self.env)
+            state = await stub.get_state()
+            latest = await stub.ctx.storage.get("last_orchestrator")
+            enabled = bool(state.get("enabled"))
+            invoked = bool(latest and latest.get("agents_invoked"))
+            status = "armed" if enabled else "idle"
+            suffix = "Last cycle invoked by Orchestrator." if invoked else "Waiting for the next paper cycle."
+            return Response.json({"agents": [{"name": name, "status": status, "description": f"{suffix}"} for name in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
 
         return await super()._handle_state_routes(request, target)
 
