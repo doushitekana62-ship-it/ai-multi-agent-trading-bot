@@ -2,7 +2,8 @@
 
 The same implementation is used by HTTP/manual triggers and the Durable
 Object alarm. It never submits real exchange orders. The decision itself is
-produced by the repository's existing multi-agent Orchestrator.
+produced by the repository's existing multi-agent Orchestrator through the
+Cloudflare Container adapter.
 """
 from __future__ import annotations
 
@@ -48,7 +49,7 @@ def _merge_market_history(previous, current, limit=120):
 
 
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
-    """Run one guarded paper-only cycle through the existing AI pipeline."""
+    """Run one guarded paper-only cycle through the full AI pipeline."""
     pair = cf_worker._clean_pair(pair)
     ok, _, reason = await state_api.begin_cycle()
     if not ok:
@@ -112,13 +113,14 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "data_quality_score": 0.85 if len(ohlcv) >= 80 else 0.55,
         }
 
-        orchestrator = CloudflareOrchestrator({
-            "use_unified_data": False,
-            "use_mimic_trader": True,
-            "min_confidence": 0.40,
-            "max_position_size": 0.20,
-            "debug_enabled": True,
-        })
+        orchestrator = CloudflareOrchestrator(
+            {
+                "min_confidence": 0.40,
+                "max_position_size": 0.20,
+                "debug_enabled": True,
+            },
+            env=env,
+        )
         result = await orchestrator.analyze(symbol, market_data)
 
         action = str(result.final_action or "HOLD").upper()
@@ -131,7 +133,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
 
         confidence = _json_number(result.final_confidence)
         metadata = {
-            "source": "multi_agent_orchestrator",
+            "source": "multi_agent_orchestrator_container",
             "symbol": result.symbol,
             "action": action,
             "raw_action": str(result.final_action or "HOLD"),
