@@ -2,12 +2,20 @@
 
 This object is the authoritative safety boundary for paper mode. It never
 contains exchange credentials and it can never execute a real order.
+
+Scheduling is driven by the Durable Object Alarm API. The user must explicitly
+turn the bot ON; while enabled, one guarded cycle is scheduled at a time.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from workers import DurableObject
 
+from paper_cycle import run_paper_cycle
+
+
+CYCLE_INTERVAL_MS = 60_000
 
 DEFAULT_STATE = {
     "enabled": False,
@@ -15,7 +23,12 @@ DEFAULT_STATE = {
     "cycle_running": False,
     "started_at": None,
     "last_cycle_at": None,
+    "last_cycle_started_at": None,
+    "last_cycle_finished_at": None,
+    "last_cycle_status": "idle",
     "cycles_today": 0,
+    "cycle_failures": 0,
+    "consecutive_cycle_failures": 0,
     "balance": 10_000_000.0,
     "initial_balance": 10_000_000.0,
     "portfolio_value": 10_000_000.0,
@@ -31,12 +44,21 @@ DEFAULT_STATE = {
     "last_decision": None,
     "last_error": None,
     "paper_pair": "btc_idr",
+    "scheduler_active": False,
+    "scheduler_source": "durable_object_alarm",
+    "last_scheduler_at": None,
+    "scheduler_invocations": 0,
+    "next_cycle_at": None,
     "updated_at": None,
 }
 
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _iso_from_ms(timestamp_ms):
+    return datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc).isoformat()
 
 
 def _copy_default_state():
@@ -65,22 +87,62 @@ class PaperTradingState(DurableObject):
         state.setdefault("trade_history", [])
         state.setdefault("last_error", None)
         state.setdefault("paper_pair", "btc_idr")
+        state.setdefault("last_cycle_started_at", None)
+        state.setdefault("last_cycle_finished_at", None)
+        state.setdefault("last_cycle_status", "idle")
+        state.setdefault("cycle_failures", 0)
+        state.setdefault("consecutive_cycle_failures", 0)
+        state.setdefault("scheduler_active", bool(state.get("enabled")))
+        state.setdefault("scheduler_source", "durable_object_alarm")
+        state.setdefault("last_scheduler_at", None)
+        state.setdefault("scheduler_invocations", 0)
+        state.setdefault("next_cycle_at", None)
         return state
 
     async def get_state(self):
         return await self._get()
 
+    async def ensure_scheduler(self):
+        """Repair a previously enabled session that has no pending alarm."""
+        state = await self._get()
+        if not state.get("enabled") or state.get("cycle_running"):
+            return state
+
+        current_alarm = await self.ctx.storage.getAlarm()
+        if current_alarm is None:
+            next_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + CYCLE_INTERVAL_MS
+            self.ctx.storage.setAlarm(next_ms)
+            now = _now()
+            state["scheduler_active"] = True
+            state["next_cycle_at"] = _iso_from_ms(next_ms)
+            state["updated_at"] = now
+            await self.ctx.storage.put("state", state)
+        return state
+
     async def enable_paper(self, pair="btc_idr"):
-        """Enable paper trading; does not execute a cycle."""
+        """Enable paper trading and schedule the first cycle; no cycle runs now."""
         state = await self._get()
         now = _now()
+        clean_pair = str(pair or "btc_idr").strip().lower() or "btc_idr"
         state["enabled"] = True
         state["mode"] = "paper"
         state["cycle_running"] = False
         state["started_at"] = state.get("started_at") or now
         state["last_error"] = None
-        state["paper_pair"] = str(pair or "btc_idr").strip().lower() or "btc_idr"
+        state["last_cycle_status"] = "waiting"
+        state["paper_pair"] = clean_pair
+        state["scheduler_active"] = True
+        state["scheduler_source"] = "durable_object_alarm"
         state["updated_at"] = now
+
+        current_alarm = await self.ctx.storage.getAlarm()
+        if current_alarm is None:
+            next_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + CYCLE_INTERVAL_MS
+            self.ctx.storage.setAlarm(next_ms)
+            state["next_cycle_at"] = _iso_from_ms(next_ms)
+        else:
+            state["next_cycle_at"] = _iso_from_ms(current_alarm)
+
         await self.ctx.storage.put("state", state)
         return state
 
@@ -92,12 +154,17 @@ class PaperTradingState(DurableObject):
         state = await self._get()
         state["enabled"] = False
         state["cycle_running"] = False
+        state["scheduler_active"] = False
+        state["next_cycle_at"] = None
         state["last_error"] = None
+        state["last_cycle_status"] = "stopped"
         state["updated_at"] = _now()
+        self.ctx.storage.deleteAlarm()
         await self.ctx.storage.put("state", state)
         return state
 
     async def reset(self):
+        self.ctx.storage.deleteAlarm()
         state = _copy_default_state()
         state["updated_at"] = _now()
         await self.ctx.storage.put("state", state)
@@ -109,17 +176,29 @@ class PaperTradingState(DurableObject):
             return False, state, "paper_trading_disabled"
         if state.get("cycle_running"):
             return False, state, "cycle_already_running"
+        now = _now()
         state["cycle_running"] = True
         state["last_error"] = None
-        state["updated_at"] = _now()
+        state["last_cycle_started_at"] = now
+        state["last_cycle_status"] = "running"
+        state["scheduler_active"] = True
+        state["updated_at"] = now
         await self.ctx.storage.put("state", state)
         return True, state, None
 
     async def finish_cycle(self, error=None):
         state = await self._get()
+        now = _now()
         state["cycle_running"] = False
+        state["last_cycle_finished_at"] = now
+        state["last_cycle_status"] = "failed" if error else "completed"
         state["last_error"] = str(error) if error else None
-        state["updated_at"] = _now()
+        if error:
+            state["cycle_failures"] = int(state.get("cycle_failures", 0)) + 1
+            state["consecutive_cycle_failures"] = int(state.get("consecutive_cycle_failures", 0)) + 1
+        else:
+            state["consecutive_cycle_failures"] = 0
+        state["updated_at"] = now
         await self.ctx.storage.put("state", state)
         return state
 
@@ -202,6 +281,8 @@ class PaperTradingState(DurableObject):
         )
         state["cycles_today"] = int(state.get("cycles_today", 0)) + 1
         state["last_cycle_at"] = now
+        state["last_cycle_finished_at"] = now
+        state["last_cycle_status"] = "completed"
         counts = state.setdefault("decision_counts", {"BUY": 0, "SELL": 0, "HOLD": 0})
         counts[action] = int(counts.get(action, 0)) + 1
         if executed:
@@ -219,6 +300,7 @@ class PaperTradingState(DurableObject):
         }
         state["cycle_running"] = False
         state["last_error"] = None
+        state["consecutive_cycle_failures"] = 0
         state["updated_at"] = now
         await self.ctx.storage.put("state", state)
         return state
@@ -233,3 +315,46 @@ class PaperTradingState(DurableObject):
             payload.get("price", 0.0),
             payload.get("reasoning", ""),
         )
+
+    async def alarm(self, alarm_info=None):
+        """Run and reschedule one paper cycle while the user-enabled gate is ON."""
+        state = await self._get()
+        now = _now()
+        state["last_scheduler_at"] = now
+        state["scheduler_invocations"] = int(state.get("scheduler_invocations", 0)) + 1
+        state["scheduler_active"] = bool(state.get("enabled"))
+        state["next_cycle_at"] = None
+        await self.ctx.storage.put("state", state)
+
+        if not state.get("enabled"):
+            self.ctx.storage.deleteAlarm()
+            state["scheduler_active"] = False
+            state["updated_at"] = _now()
+            await self.ctx.storage.put("state", state)
+            return
+
+        pair = state.get("paper_pair") or "btc_idr"
+        try:
+            await run_paper_cycle(
+                self.env,
+                self,
+                pair,
+                state_response=None,
+            )
+        except Exception as exc:
+            # Keep the scheduler alive even for unexpected downstream/runtime
+            # failures. The cycle runner already handles ordinary failures.
+            await self.finish_cycle(f"alarm_cycle_error: {exc}")
+
+        state = await self._get()
+        if not state.get("enabled"):
+            self.ctx.storage.deleteAlarm()
+            state["scheduler_active"] = False
+            state["next_cycle_at"] = None
+        else:
+            next_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + CYCLE_INTERVAL_MS
+            self.ctx.storage.setAlarm(next_ms)
+            state["scheduler_active"] = True
+            state["next_cycle_at"] = _iso_from_ms(next_ms)
+        state["updated_at"] = _now()
+        await self.ctx.storage.put("state", state)
