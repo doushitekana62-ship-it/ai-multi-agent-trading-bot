@@ -1,9 +1,8 @@
 """Cloudflare control-plane adapter for the full CPython AI engine.
 
-Heavy scientific dependencies are intentionally kept out of Python Workers.
-The Worker calls the optional Cloudflare Container AI engine over HTTP. This
-keeps Durable Object state/scheduling in the Worker while the existing full
-multi-agent Orchestrator remains unchanged in the container.
+The dashboard Worker stays lightweight. Heavy NumPy/Pandas/SciPy/scikit-learn
+work executes inside the dedicated Cloudflare Container through an internal
+Service Binding/RPC endpoint.
 """
 from __future__ import annotations
 
@@ -11,66 +10,56 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict
 
-import httpx
-
 
 class CloudflareOrchestrator:
-    """Thin HTTP adapter exposing the existing Orchestrator result contract."""
+    """Expose the existing Orchestrator result contract through AI_ENGINE RPC."""
 
     def __init__(self, config: Dict[str, Any] | None = None, env: Any = None):
         self.config = config or {}
         self.env = env
-        self.engine_url = str(
-            getattr(env, "AI_ENGINE_URL", "")
-            or self.config.get("ai_engine_url", "")
-        ).strip().rstrip("/")
-        self.engine_key = str(
-            getattr(env, "AI_ENGINE_KEY", "")
-            or self.config.get("ai_engine_key", "")
-        ).strip()
+
+    @staticmethod
+    def _to_python(value):
+        """Convert a Pyodide JS proxy/structured-clone result to Python."""
+        try:
+            converter = getattr(value, "to_py", None)
+            if callable(converter):
+                return converter()
+        except Exception:
+            pass
+        return value
+
+    @staticmethod
+    def _timestamp(value):
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return datetime.now(timezone.utc)
 
     async def analyze(self, symbol: str, market_data: Dict[str, Any] | None = None):
-        if not self.engine_url:
+        if self.env is None or not hasattr(self.env, "AI_ENGINE"):
             raise RuntimeError(
-                "AI_ENGINE_URL is not configured. Deploy the full AI engine "
-                "Container and set AI_ENGINE_URL on the Worker."
+                "AI_ENGINE service binding is not configured on the dashboard Worker."
             )
-
-        headers = {"content-type": "application/json"}
-        if self.engine_key:
-            headers["x-ai-engine-key"] = self.engine_key
 
         payload = {
             "symbol": str(symbol).upper(),
             "market_data": dict(market_data or {}),
         }
 
-        timeout = httpx.Timeout(45.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{self.engine_url}/analyze",
-                json=payload,
-                headers=headers,
-            )
-
-        if response.status_code >= 400:
-            detail = response.text[:1000]
-            raise RuntimeError(
-                f"AI engine returned HTTP {response.status_code}: {detail}"
-            )
-
-        data = response.json()
-        if not data.get("ok"):
-            raise RuntimeError(str(data.get("error") or "AI engine rejected request"))
-
-        timestamp = data.get("timestamp")
         try:
-            parsed_timestamp = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            parsed_timestamp = datetime.now(timezone.utc)
+            raw = await self.env.AI_ENGINE.analyze(payload)
+        except Exception as exc:
+            raise RuntimeError(f"AI engine service call failed: {exc}") from exc
+
+        data = self._to_python(raw)
+        if not isinstance(data, dict):
+            raise RuntimeError("AI engine returned an invalid response payload")
+        if data.get("ok") is not True:
+            raise RuntimeError(str(data.get("error") or data.get("detail") or "AI engine rejected request"))
 
         return SimpleNamespace(
-            timestamp=parsed_timestamp,
+            timestamp=self._timestamp(data.get("timestamp")),
             symbol=str(data.get("symbol") or symbol).upper(),
             current_price=float(data.get("current_price") or 0.0),
             final_action=str(data.get("final_action") or "HOLD"),
