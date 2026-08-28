@@ -18,16 +18,13 @@
     "date-fns": "^2.30.0",
     "react-scripts": "5.0.1",
     "ajv": "^8.17.1",
-    "ajv-keywords": "5.1.0",
-    "@cloudflare/containers": "^0.3.7"
+    "ajv-keywords": "5.1.0"
   },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
-    "prepare:ai-engine": "rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
     "build:cloudflare": "npm run build && python -m pip install uv && uvx --from workers-py pywrangler sync",
     "deploy": "uvx --from workers-py pywrangler deploy",
-    "deploy:ai-engine": "npm run prepare:ai-engine && npx wrangler deploy --config wrangler.ai-engine.jsonc",
     "preview": "uvx --from workers-py pywrangler dev",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
