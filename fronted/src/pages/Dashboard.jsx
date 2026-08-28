@@ -53,6 +53,7 @@ const Dashboard = () => {
   const { logout, user } = useAuth();
   const [anchorEl, setAnchorEl] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [paperActionLoading, setPaperActionLoading] = useState(false);
   const [status, setStatus] = useState(null);
   const [positions, setPositions] = useState([]);
   const [performance, setPerformance] = useState(null);
@@ -70,7 +71,8 @@ const Dashboard = () => {
     catch { return DEFAULT_TARGETS; }
   });
   const [targetDraft, setTargetDraft] = useState(targets);
-  const [botEnabled] = useState(false);
+
+  const botEnabled = Boolean(status?.enabled);
 
   const recordDecisionObservation = (nextDecision, nextMarket) => {
     if (!nextDecision) return;
@@ -132,6 +134,32 @@ const Dashboard = () => {
     navigate('/login');
   };
 
+  const handlePaperToggle = async () => {
+    if (tradingMode !== 'paper' || paperActionLoading) return;
+    setPaperActionLoading(true);
+    try {
+      if (botEnabled) {
+        const response = await axios.post('/api/dashboard/paper/stop');
+        setStatus(response.data);
+        toast.success('Paper trading stopped');
+      } else {
+        const response = await axios.post('/api/dashboard/paper/start', null, {
+          params: { pair: selectedPair },
+        });
+        setStatus(response.data);
+        toast.success(response.data.message || 'Paper trading started');
+      }
+      await fetchData();
+    } catch (error) {
+      console.error('Paper trading control error:', error);
+      await fetchData();
+      const detail = error.response?.data?.detail || error.response?.data?.error || 'Paper trading control failed';
+      toast.error(detail);
+    } finally {
+      setPaperActionLoading(false);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!botEnabled || tradingMode !== 'paper') {
       toast('Paper trading is OFF. No AI cycle was started.');
@@ -178,7 +206,7 @@ const Dashboard = () => {
 
   const counts = status?.decision_counts || { BUY: 0, SELL: 0, HOLD: 0 };
   const currentPairLabel = PAIR_OPTIONS.find(([value]) => value === selectedPair)?.[1] || selectedPair.toUpperCase();
-  const dailyActual = Number(status?.daily_pnl || 0) * Number(status?.balance || 0);
+  const dailyActual = Number(status?.daily_pnl || 0);
   const targetProgress = (target) => target > 0 ? Math.min(100, Math.max(0, (dailyActual / target) * 100)) : 0;
   const insightRows = useMemo(() => insights.slice(0, 5), [insights]);
 
@@ -217,7 +245,11 @@ const Dashboard = () => {
               <ToggleButtonGroup value={tradingMode} exclusive onChange={handleModeChange}><ToggleButton value="paper">PAPER</ToggleButton><ToggleButton value="real" disabled><LockOutlined sx={{ mr: 0.75, fontSize: 18 }} />REAL</ToggleButton></ToggleButtonGroup>
             </Grid>
           </Grid>
-          <Alert severity="info" sx={{ mt: 2 }}>Safety mode: BOT OFF by default. Selecting, refreshing, or viewing this dashboard never starts an AI trading cycle.</Alert>
+          <Alert severity={botEnabled ? 'success' : 'info'} sx={{ mt: 2 }}>
+            {botEnabled
+              ? `Paper bot is RUNNING on ${currentPairLabel}. Only paper execution is enabled; real trading remains locked.`
+              : 'Safety mode: BOT OFF. Selecting, refreshing, or viewing this dashboard never starts an AI trading cycle.'}
+          </Alert>
         </Paper>
 
         <Grid container spacing={3} sx={{ mb: 3 }}>
@@ -225,7 +257,26 @@ const Dashboard = () => {
           <Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>Market Scanner</Typography><Typography variant="caption" color="text.secondary">Lightweight watchlist ranked by IDR volume. It does not place trades.</Typography><Stack spacing={1} sx={{ mt: 2 }}>{insightRows.map((item) => <Card key={item.pair} variant="outlined"><CardContent sx={{ py: 1.2, '&:last-child': { pb: 1.2 } }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle2">{item.pair}</Typography><Typography variant="caption" color="text.secondary">{formatIDR(item.last)} · Vol {formatIDR(item.volume_idr)}</Typography></Box><Chip icon={item.range_position >= 50 ? <TrendingUp /> : <TrendingDown />} label={item.signal} size="small" color={item.range_position >= 80 ? 'success' : item.range_position <= 20 ? 'error' : 'default'} /></Stack></CardContent></Card>)}{insightRows.length === 0 && <Typography color="text.secondary">Market scanner unavailable.</Typography>}</Stack></Paper></Grid>
         </Grid>
 
-        <Paper sx={{ p: 2.5, mb: 3 }}><Grid container alignItems="center" spacing={2}><Grid item xs={12} md={8}><Typography variant="h6">Paper Trading Control</Typography><Typography variant="body2" color="text.secondary">Current state: <strong>OFF</strong>. The trading engine remains disconnected until the persistent safety gate is implemented.</Typography></Grid><Grid item xs={12} md={4} sx={{ display: 'flex', justifyContent: { xs: 'flex-start', md: 'flex-end' } }}><Button variant="contained" disabled>START PAPER BOT</Button></Grid></Grid></Paper>
+        <Paper sx={{ p: 2.5, mb: 3 }}>
+          <Grid container alignItems="center" spacing={2}>
+            <Grid item xs={12} md={8}>
+              <Typography variant="h6">Paper Trading Control</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Current state: <strong>{botEnabled ? 'RUNNING' : 'OFF'}</strong>. Start explicitly from this control; the Worker keeps the safety state in a Durable Object.
+              </Typography>
+            </Grid>
+            <Grid item xs={12} md={4} sx={{ display: 'flex', justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
+              <Button
+                variant="contained"
+                color={botEnabled ? 'error' : 'success'}
+                onClick={handlePaperToggle}
+                disabled={paperActionLoading || tradingMode !== 'paper'}
+              >
+                {paperActionLoading ? 'STARTING...' : (botEnabled ? 'STOP PAPER BOT' : 'START PAPER BOT')}
+              </Button>
+            </Grid>
+          </Grid>
+        </Paper>
 
         <Grid container spacing={3} sx={{ mb: 3 }}>{[
           ['Portfolio Value', formatIDR(status?.portfolio_value), `Balance: ${formatIDR(status?.balance)}`],
@@ -236,14 +287,14 @@ const Dashboard = () => {
 
         <DashboardTools market={market} decision={decision} counts={counts} runtimeHours={status?.runtime_hours || 0} cycles={status?.cycles_today || 0} targets={targets} dailyActual={dailyActual} decisionHistory={decisionHistory} positions={positions} />
 
-        <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={7}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>AI Runtime & Decisions</Typography><Grid container spacing={2}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">AI Runtime</Typography><Typography variant="h6">{Number(status?.runtime_hours || 0).toFixed(1)} h</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography variant="h6">{status?.cycles_today || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">BUY</Typography><Typography color="success.main" variant="h6">{counts.BUY || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">SELL</Typography><Typography color="error.main" variant="h6">{counts.SELL || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">HOLD</Typography><Typography variant="h6">{counts.HOLD || 0}</Typography></Grid></Grid><Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>Runtime and cycle counters remain zero until the explicit paper-bot start gate is enabled.</Typography></Paper></Grid>
+        <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={7}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>AI Runtime & Decisions</Typography><Grid container spacing={2}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">AI Runtime</Typography><Typography variant="h6">{Number(status?.runtime_hours || 0).toFixed(1)} h</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography variant="h6">{status?.cycles_today || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">BUY</Typography><Typography color="success.main" variant="h6">{counts.BUY || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">SELL</Typography><Typography color="error.main" variant="h6">{counts.SELL || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">HOLD</Typography><Typography variant="h6">{counts.HOLD || 0}</Typography></Grid></Grid><Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>Runtime and cycle counters update from the persistent paper-trading safety state.</Typography></Paper></Grid>
           <Grid item xs={12} md={5}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>Evaluation Targets</Typography><Typography variant="caption" color="text.secondary">Targets measure bot quality only. They never force BUY/SELL decisions.</Typography><Stack spacing={1.2} sx={{ mt: 2 }}>{['daily', 'weekly', 'monthly'].map((period) => <TextField key={period} size="small" label={`${period[0].toUpperCase()}${period.slice(1)} target`} type="number" value={targetDraft[period]} onChange={(e) => setTargetDraft({ ...targetDraft, [period]: e.target.value })} InputProps={{ startAdornment: <Typography sx={{ mr: 1, color: 'text.secondary' }}>Rp</Typography> }} />)}<Button variant="outlined" onClick={saveTargets}>Save Targets</Button></Stack><Stack spacing={0.8} sx={{ mt: 2 }}><Typography variant="caption">Daily progress: {targets.daily > 0 ? `${targetProgress(targets.daily).toFixed(0)}%` : 'not set'}</Typography><LinearProgress variant="determinate" value={targetProgress(targets.daily)} /></Stack></Paper></Grid></Grid>
 
         <Paper sx={{ p: 2.5, mb: 3 }}><Typography variant="h6" gutterBottom>Paper Account</Typography><Typography variant="body2" color="text.secondary">Currency: IDR · Initial validation balance: {formatIDR(10000000)} · Selected market: {currentPairLabel}</Typography>{decision && <Box sx={{ mt: 2 }}><Typography variant="subtitle2" color="text.secondary">Latest Decision</Typography><Typography variant="h4">{decision.action || 'HOLD'}</Typography><Typography variant="body2">Confidence: {((decision.confidence || 0) * 100).toFixed(1)}%</Typography><Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1 }}>{decision.votes && Object.entries(decision.votes).map(([agent, vote]) => <Chip key={agent} label={`${agent}: ${vote}`} size="small" />)}</Box></Box>}</Paper>
 
         <Paper sx={{ p: 3, mb: 3 }}><Typography variant="h6" gutterBottom>Positions</Typography>{positions.length === 0 ? <Typography color="text.secondary">No active positions</Typography> : <Grid container spacing={2}>{positions.map((pos, index) => <Grid item xs={12} sm={6} md={4} key={index}><Card variant="outlined"><CardContent><Typography variant="h6">{pos.symbol}</Typography><Typography variant="body2">{pos.side} · {Number(pos.quantity || 0).toFixed(8)}</Typography><Typography variant="body2">Entry: {formatMarketPrice(pos.entry_price, 'IDR')}</Typography><Typography variant="body2" color={Number(pos.unrealized_pnl) >= 0 ? 'success.main' : 'error.main'}>PnL: {formatIDR(pos.unrealized_pnl)}</Typography></CardContent></Card></Grid>)}</Grid>}</Paper>
 
-        <Paper sx={{ p: 3 }}><Typography variant="h6" gutterBottom>AI Agents Status</Typography><Grid container spacing={2}>{agents.map((agent, index) => <Grid item xs={12} sm={6} md={4} key={index}><Card variant="outlined"><CardContent><Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: agent.status === 'active' ? 'success.main' : 'text.disabled' }} /><Typography variant="subtitle1">{agent.name}</Typography></Box><Typography variant="body2" color="text.secondary">{agent.description}</Typography><Chip label={agent.status.toUpperCase()} size="small" sx={{ mt: 1 }} /></CardContent></Card></Grid>)}</Grid></Paper>
+        <Paper sx={{ p: 3 }}><Typography variant="h6" gutterBottom>AI Agents Status</Typography><Grid container spacing={2}>{agents.map((agent, index) => <Grid item xs={12} sm={6} md={4} key={index}><Card variant="outlined"><CardContent><Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: agent.status === 'armed' ? 'success.main' : 'text.disabled' }} /><Typography variant="subtitle1">{agent.name}</Typography></Box><Typography variant="body2" color="text.secondary">{agent.description}</Typography><Chip label={agent.status.toUpperCase()} size="small" sx={{ mt: 1 }} /></CardContent></Card></Grid>)}</Grid></Paper>
       </Box>
     </Box>
   );
