@@ -27,13 +27,15 @@ Do not put the value in GitHub, `.env.example`, frontend code, or source files.
 
 ## Cloudflare Worker variables and secrets
 
+These are **runtime Worker variables/secrets**. They are different from the `Variables and secrets` section under Workers Builds, which only affects the build environment.
+
 On the Worker, configure:
 
-Normal variable:
+Normal runtime variable:
 
 `AI_ENGINE_URL` = the HTTPS base URL of the FastAPI Cloud application, for example `https://<your-app>.fastapicloud.dev`
 
-Secrets:
+Runtime secrets:
 
 - `AI_ENGINE_SHARED_SECRET` — same value as FastAPI Cloud
 - `JWT_SECRET_KEY` — random secret, at least 32 characters
@@ -42,11 +44,15 @@ Secrets:
 - `SUPABASE_URL` — Supabase project URL
 - `SUPABASE_SERVICE_ROLE_KEY` — Supabase service-role key
 
+Do not put these runtime values only in Workers Builds variables. The Worker code reads them from its runtime `env` object when a request or Durable Object alarm executes.
+
 Do not add `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` as Worker runtime variables. Those are deployment credentials only if GitHub Actions is used for deployment. This project uses Cloudflare Workers Builds as the production deployment path, so the GitHub workflow only validates the Worker and does not deploy it.
 
 ## Runtime flow
 
 `START PAPER BOT` manually enables `PAPER_STATE`. The Durable Object schedules one alarm at a time. Each alarm calls `paper_cycle.py`, which obtains public Indodax data and sends the analysis payload to `POST /engine/analyze` on FastAPI Cloud. FastAPI Cloud runs the existing CPython multi-agent Orchestrator and returns the normalized decision. The Durable Object records the result and schedules the next cycle only while the manual gate remains ON.
+
+The Worker now checks `AI_ENGINE_URL` and `AI_ENGINE_SHARED_SECRET` before enabling paper mode. If either is missing, START returns a configuration error instead of turning the bot ON and waiting for a cycle to fail later.
 
 FastAPI Cloud does not own the paper session, does not start a background trading loop, and does not submit exchange orders.
 
@@ -64,8 +70,8 @@ Open these URLs after deployment:
 
 1. Open the FastAPI Cloud URL and verify `/health` returns `healthy`.
 2. Verify `/ready` returns `ready` and `ai_engine_secret_configured: true`.
-3. Put the same `AI_ENGINE_SHARED_SECRET` into the Cloudflare Worker secret store.
-4. Put the FastAPI Cloud URL into the Cloudflare Worker variable `AI_ENGINE_URL`.
+3. Put the same `AI_ENGINE_SHARED_SECRET` into the **Cloudflare Worker runtime secret store**.
+4. Put the FastAPI Cloud URL into the **Cloudflare Worker runtime variable store** as `AI_ENGINE_URL`.
 5. Deploy the Cloudflare Worker from Workers Builds.
 6. Log in to the dashboard.
 7. Confirm the dashboard reports database/market health before starting paper mode.
@@ -74,4 +80,4 @@ Open these URLs after deployment:
 10. Confirm the latest decision contains `agents_invoked` and Orchestrator data.
 11. Press `STOP PAPER BOT` and confirm the cycle counter stops increasing.
 
-If step 9 fails, do not change the architecture. Inspect the Worker logs and the `/ready` response first.
+If START reports `ai_engine_not_configured`, fix the Worker runtime variables/secrets first. If the first alarm still fails after START succeeds, inspect the Worker logs and the FastAPI `/ready` response before changing the architecture.
