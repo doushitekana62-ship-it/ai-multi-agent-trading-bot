@@ -1,33 +1,26 @@
-"""Cloudflare control-plane adapter for the full CPython AI engine.
+"""Cloudflare control-plane adapter for the external CPython AI engine.
 
-The dashboard Worker stays lightweight. Heavy NumPy/Pandas/SciPy/scikit-learn
-work executes inside the dedicated Cloudflare Container through an internal
-Service Binding/RPC endpoint.
+The Cloudflare Worker remains lightweight. Heavy NumPy/Pandas/SciPy/
+scikit-learn work runs in the FastAPI Cloud service, while Durable Object
+continues to own the manual paper-trading gate and persistent paper state.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict
 
+from js import fetch
+from pyodide.ffi import to_js
+
 
 class CloudflareOrchestrator:
-    """Expose the existing Orchestrator result contract through AI_ENGINE RPC."""
+    """Call FastAPI Cloud and preserve the existing Orchestrator result contract."""
 
     def __init__(self, config: Dict[str, Any] | None = None, env: Any = None):
         self.config = config or {}
         self.env = env
-
-    @staticmethod
-    def _to_python(value):
-        """Convert a Pyodide JS proxy/structured-clone result to Python."""
-        try:
-            converter = getattr(value, "to_py", None)
-            if callable(converter):
-                return converter()
-        except Exception:
-            pass
-        return value
 
     @staticmethod
     def _timestamp(value):
@@ -37,9 +30,19 @@ class CloudflareOrchestrator:
             return datetime.now(timezone.utc)
 
     async def analyze(self, symbol: str, market_data: Dict[str, Any] | None = None):
-        if self.env is None or not hasattr(self.env, "AI_ENGINE"):
+        if self.env is None:
+            raise RuntimeError("Worker environment is unavailable")
+
+        base_url = str(getattr(self.env, "AI_ENGINE_URL", "") or "").strip().rstrip("/")
+        if not base_url:
             raise RuntimeError(
-                "AI_ENGINE service binding is not configured on the dashboard Worker."
+                "AI_ENGINE_URL is not configured. Set it to the FastAPI Cloud AI engine URL."
+            )
+
+        shared_secret = str(getattr(self.env, "AI_ENGINE_SHARED_SECRET", "") or "").strip()
+        if len(shared_secret) < 32:
+            raise RuntimeError(
+                "AI_ENGINE_SHARED_SECRET is not configured on the dashboard Worker."
             )
 
         payload = {
@@ -48,15 +51,34 @@ class CloudflareOrchestrator:
         }
 
         try:
-            raw = await self.env.AI_ENGINE.analyze(payload)
+            response = await fetch(
+                f"{base_url}/engine/analyze",
+                to_js({
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "X-AI-Engine-Key": shared_secret,
+                    },
+                    "body": json.dumps(payload, separators=(",", ":")),
+                }),
+            )
+            status_code = int(response.status)
+            text = await response.text()
+            try:
+                data = json.loads(text)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"AI engine returned non-JSON response (HTTP {status_code})"
+                ) from exc
         except Exception as exc:
-            raise RuntimeError(f"AI engine service call failed: {exc}") from exc
+            if isinstance(exc, RuntimeError):
+                raise
+            raise RuntimeError(f"AI engine HTTP request failed: {exc}") from exc
 
-        data = self._to_python(raw)
-        if not isinstance(data, dict):
-            raise RuntimeError("AI engine returned an invalid response payload")
-        if data.get("ok") is not True:
-            raise RuntimeError(str(data.get("error") or data.get("detail") or "AI engine rejected request"))
+        if status_code < 200 or status_code >= 300 or data.get("ok") is not True:
+            detail = data.get("detail") or data.get("error") or f"HTTP {status_code}"
+            raise RuntimeError(f"AI engine rejected analysis: {detail}")
 
         return SimpleNamespace(
             timestamp=self._timestamp(data.get("timestamp")),
