@@ -20,6 +20,25 @@ from worker_entry import (
 )
 
 
+def _ai_engine_config_error(env):
+    """Return a safe diagnostic when the external AI engine is not configured."""
+    base_url = str(getattr(env, "AI_ENGINE_URL", "") or "").strip().rstrip("/")
+    shared_secret = str(getattr(env, "AI_ENGINE_SHARED_SECRET", "") or "").strip()
+    missing = []
+    if not base_url:
+        missing.append("AI_ENGINE_URL")
+    if len(shared_secret) < 32:
+        missing.append("AI_ENGINE_SHARED_SECRET")
+    if not missing:
+        return None
+    return {
+        "detail": "AI engine is not configured on the Cloudflare Worker",
+        "reason": "ai_engine_not_configured",
+        "missing": missing,
+        "hint": "Configure these as Worker runtime variables/secrets, not Build variables.",
+    }
+
+
 class Default(BaseDefault):
     async def _handle_state_routes(self, request, path):
         aliases = {
@@ -34,6 +53,9 @@ class Default(BaseDefault):
         if target == "/api/bot/start" and request.method == "POST":
             if not await self._verify_access(request):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
+            config_error = _ai_engine_config_error(self.env)
+            if config_error:
+                return Response.json({"ok": False, **config_error}, status=503)
             try:
                 stub = await _state_stub(self.env)
                 pair = _request_pair(request)
