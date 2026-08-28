@@ -37,11 +37,11 @@ jobs:
       - name: Build React dashboard
         run: npm run build
 
-      - name: Install uv
+      - name: Setup uv
         run: python -m pip install --upgrade uv
 
-      - name: Sync Cloudflare Python Worker dependencies
-        run: uvx --from workers-py pywrangler sync
+      - name: Sync Python Worker dependencies
+        run: uv sync --dev
 
       - name: Validate Cloudflare Worker bundle
-        run: npx wrangler deploy --dry-run
+        run: uv run pywrangler deploy --dry-run
