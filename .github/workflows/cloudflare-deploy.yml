@@ -1,4 +1,8 @@
-name: Deploy AI Trading Dashboard to Cloudflare
+name: Validate Cloudflare Worker
+
+# Cloudflare Workers Builds is the single production deployment path.
+# This GitHub workflow validates the Worker package only; it does not deploy.
+# Keeping deployment in one place prevents duplicate builds and stale bindings.
 
 on:
   push:
@@ -9,16 +13,25 @@ on:
       - "exchange_integration/**"
       - "fronted/**"
       - ".github/workflows/cloudflare-deploy.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "agents/**"
+      - "core/**"
+      - "exchange_integration/**"
+      - "fronted/**"
+      - ".github/workflows/cloudflare-deploy.yml"
   workflow_dispatch:
 
 concurrency:
-  group: cloudflare-production
+  group: cloudflare-validation-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  validate:
+    name: Validate dashboard Worker
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: fronted
@@ -30,7 +43,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 20
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -49,17 +62,5 @@ jobs:
       - name: Install Cloudflare Python Worker dependencies
         run: uv sync --dev
 
-      - name: Validate dashboard Worker
+      - name: Validate dashboard Worker bundle
         run: uv run pywrangler deploy --dry-run
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Deploy dashboard Worker
-        run: |
-          node --version
-          uv run pywrangler --version
-          uv run pywrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
