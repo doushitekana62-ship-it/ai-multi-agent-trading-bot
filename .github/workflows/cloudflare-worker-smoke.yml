@@ -8,40 +8,36 @@ on:
       - ".github/workflows/cloudflare-worker-smoke.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   cloudflare-worker-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: fronted
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
-
+        uses: actions/checkout@v4
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22'
           cache: npm
           cache-dependency-path: fronted/package.json
-
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-
+          python-version: '3.13'
       - name: Install frontend dependencies
         run: npm install --legacy-peer-deps
-
       - name: Build React dashboard
         run: npm run build
-
       - name: Setup uv
         run: python -m pip install --upgrade uv
-
       - name: Sync Python Worker dependencies
         run: uv sync --dev
-
       - name: Validate Cloudflare Worker bundle
         run: uv run pywrangler deploy --dry-run
