@@ -154,13 +154,14 @@ async def _paper_cycle(env, pair="btc_idr"):
         else:
             action, confidence = "HOLD", 0.50
 
-        state = await stub.record_cycle(
-            decision=action,
-            confidence=confidence,
-            symbol=market["pair"].upper().replace("_", "/"),
-            price=last,
-            reasoning=f"Paper pipeline smoke-test signal: recent_move={move:.4f}%, range_position={range_position:.1f}%.",
-        )
+        payload = {
+            "decision": action,
+            "confidence": confidence,
+            "symbol": market["pair"].upper().replace("_", "/"),
+            "price": last,
+            "reasoning": f"Paper pipeline smoke-test signal: recent_move={move:.4f}%, range_position={range_position:.1f}%.",
+        }
+        state = await stub.record_cycle_payload(payload)
         return {"ok": True, "action": action, "confidence": confidence, "market": market, "state": _state_response(state)}
     except Exception as exc:
         state = await stub.finish_cycle(f"cycle_error: {exc}")
