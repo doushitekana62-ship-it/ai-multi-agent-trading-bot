@@ -28,6 +28,25 @@ def _optional_json_number(value):
         return None
 
 
+def _merge_market_history(previous, current, limit=120):
+    """Persist real public-trade observations across cycles without fabrication."""
+    merged = []
+    seen = set()
+    for point in list(previous or []) + list(current or []):
+        key = (
+            str(point.get("timestamp") or point.get("date") or ""),
+            str(point.get("price") or ""),
+            str(point.get("amount") or ""),
+            str(point.get("type") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(point)
+    merged.sort(key=lambda item: _json_number(item.get("timestamp") or item.get("date")))
+    return merged[-limit:]
+
+
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
     """Run one guarded paper-only cycle through the existing AI pipeline."""
     pair = cf_worker._clean_pair(pair)
@@ -52,12 +71,16 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             }
 
         points = list(market.get("points") or [])
+        previous_history = await state_api.ctx.storage.get("paper_market_history")
+        history = _merge_market_history(previous_history, points, limit=120)
+        await state_api.ctx.storage.put("paper_market_history", history)
+
         ohlcv = []
-        for point in points:
+        for point in history:
             price = _json_number(point.get("price"))
             if price <= 0:
                 continue
-            raw_timestamp = _json_number(point.get("timestamp"))
+            raw_timestamp = _json_number(point.get("timestamp") or point.get("date"))
             timestamp = (
                 datetime.fromtimestamp(raw_timestamp, tz=timezone.utc).isoformat()
                 if raw_timestamp > 0
@@ -131,6 +154,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
                 "Forecast Agent",
                 "Reflector Agent",
             ],
+            "market_history_points": len(ohlcv),
             "created_at": result.timestamp.isoformat(),
         }
 
