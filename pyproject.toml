@@ -19,6 +19,9 @@ dependencies = [
 [tool.fastapi]
 entrypoint = "fastapi_cloud_app:app"
 
+[tool.setuptools]
+py-modules = ["fastapi_cloud_app"]
+
 [tool.setuptools.packages.find]
 include = [
     "agents*",
@@ -35,6 +38,3 @@ exclude = [
     "test_result*",
     "tests*",
 ]
-
-[tool.setuptools.py-modules]
-modules = ["fastapi_cloud_app"]
