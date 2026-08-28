@@ -7,7 +7,7 @@
   "containers": [
     {
       "class_name": "AiEngineContainer",
-      "image": "./ai_engine/Dockerfile",
+      "image": "./Dockerfile.ai-engine",
       "max_instances": 1,
       "instance_type": "standard-1"
     }
