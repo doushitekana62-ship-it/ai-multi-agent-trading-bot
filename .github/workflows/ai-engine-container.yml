@@ -1,4 +1,4 @@
-name: AI Engine Container Validation
+name: FastAPI Cloud AI Engine Validation
 
 on:
   push:
@@ -7,51 +7,43 @@ on:
       - "agents/**"
       - "core/**"
       - "exchange_integration/**"
-      - "fronted/ai_engine/**"
-      - "fronted/Dockerfile.ai-engine"
+      - "fastapi_cloud_app.py"
+      - "pyproject.toml"
+      - "tests/test_fastapi_cloud_engine.py"
       - ".github/workflows/ai-engine-container.yml"
   pull_request:
     paths:
       - "agents/**"
       - "core/**"
       - "exchange_integration/**"
-      - "fronted/ai_engine/**"
-      - "fronted/Dockerfile.ai-engine"
+      - "fastapi_cloud_app.py"
+      - "pyproject.toml"
+      - "tests/test_fastapi_cloud_engine.py"
       - ".github/workflows/ai-engine-container.yml"
 
 jobs:
-  build-and-healthcheck:
+  validate:
+    name: Validate FastAPI Cloud runtime
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      AI_ENGINE_SHARED_SECRET: ci-test-secret-1234567890-abcdefghijklmnopqrstuvwxyz
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Prepare container build context
-        working-directory: fronted
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
         run: |
-          rm -rf agents core exchange_integration
-          cp -r ../agents ../core ../exchange_integration .
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
 
-      - name: Build AI engine image
-        working-directory: fronted
-        run: docker build -f Dockerfile.ai-engine -t ai-trading-engine:test .
+      - name: Compile AI engine
+        run: python -m compileall -q agents core exchange_integration fastapi_cloud_app.py
 
-      - name: Start AI engine
-        run: docker run -d --rm --name ai-trading-engine-test -p 18080:8080 ai-trading-engine:test
-
-      - name: Wait for health endpoint
-        run: |
-          for i in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:18080/health; then
-              echo
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs ai-trading-engine-test
-          exit 1
-
-      - name: Stop AI engine
-        if: always()
-        run: docker rm -f ai-trading-engine-test || true
+      - name: Run AI engine tests
+        run: pytest -q tests/test_fastapi_cloud_engine.py
