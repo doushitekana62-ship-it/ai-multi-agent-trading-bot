@@ -46,6 +46,22 @@ jobs:
       - name: Run FastAPI Cloud engine integration tests
         run: pytest -q tests/test_fastapi_cloud_engine.py
 
+  deployment-contract:
+    name: Deployment contract validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Run deployment contract tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          pytest -q tests/test_deployment_contract.py
+
   frontend-cloudflare:
     name: Frontend and Cloudflare validation
     runs-on: ubuntu-latest
@@ -60,11 +76,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install frontend dependencies
         working-directory: fronted
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Build React dashboard
         working-directory: fronted
