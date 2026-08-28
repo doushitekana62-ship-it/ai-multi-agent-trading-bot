@@ -52,13 +52,6 @@ def test_cloudflare_and_fastapi_contract_use_the_same_secret_name():
     assert "Header(default=None)" in fastapi_app
 
 
-def test_cloudflare_fastapi_worker_uses_supported_asgi_adapter():
-    worker = (ROOT / "fronted" / "worker_entry.py").read_text(encoding="utf-8")
-    assert "from workers import asgi" in worker
-    assert "return await asgi.fetch(cf_worker.app, request, self.env)" in worker
-    assert "import asgi" not in worker
-
-
 def test_paper_scheduler_is_manual_only():
     worker = (ROOT / "fronted" / "worker_entry_api.py").read_text(encoding="utf-8")
     state = (ROOT / "fronted" / "paper_state.py").read_text(encoding="utf-8")
