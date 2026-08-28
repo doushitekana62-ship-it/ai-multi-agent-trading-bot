@@ -13,7 +13,7 @@ Use the repository root. Do **not** set the Application Directory to `fronted` o
 
 The root `pyproject.toml` contains the production dependencies required by the existing Orchestrator, including NumPy, Pandas, SciPy and scikit-learn. This is important because those packages must not be imported by the Cloudflare Python Worker itself.
 
-FastAPI's documentation recommends declaring the application entrypoint in `pyproject.toml`, especially when using deployment tools that need to discover the app automatically. urlFastAPI entrypoint documentationhttps://fastapi.tiangolo.com/fastapi-cli/
+FastAPI recommends declaring the application entrypoint in `pyproject.toml`, especially when using deployment tools that need to discover the app automatically.
 
 ## FastAPI Cloud secret
 
