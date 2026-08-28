@@ -1,65 +1,89 @@
-"""Cloudflare-safe adapter around the existing multi-agent Orchestrator.
+"""Cloudflare control-plane adapter for the full CPython AI engine.
 
-The production Orchestrator was written for CPython and uses asyncio.to_thread.
-Python Workers do not provide functional threading, so this adapter preserves
-all existing agent/orchestration logic while invoking the synchronous agents
-on the Worker event loop.
+Heavy scientific dependencies are intentionally kept out of Python Workers.
+The Worker calls the optional Cloudflare Container AI engine over HTTP. This
+keeps Durable Object state/scheduling in the Worker while the existing full
+multi-agent Orchestrator remains unchanged in the container.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from typing import Any, Dict
 
-from core.orchestrator import Orchestrator
+import httpx
 
 
-class CloudflareOrchestrator(Orchestrator):
-    """Run the existing Orchestrator without CPython worker threads."""
+class CloudflareOrchestrator:
+    """Thin HTTP adapter exposing the existing Orchestrator result contract."""
 
-    async def _run_base_agents(
-        self,
-        symbol: str,
-        market_data: Dict[str, Any],
-        unified_snapshot: Optional[Any],
-    ) -> Tuple[Optional[Any], Optional[Any]]:
-        if unified_snapshot:
-            market_data["current_price"] = unified_snapshot.current_price
-            market_data["_unified_snapshot"] = unified_snapshot
+    def __init__(self, config: Dict[str, Any] | None = None, env: Any = None):
+        self.config = config or {}
+        self.env = env
+        self.engine_url = str(
+            getattr(env, "AI_ENGINE_URL", "")
+            or self.config.get("ai_engine_url", "")
+        ).strip().rstrip("/")
+        self.engine_key = str(
+            getattr(env, "AI_ENGINE_KEY", "")
+            or self.config.get("ai_engine_key", "")
+        ).strip()
+
+    async def analyze(self, symbol: str, market_data: Dict[str, Any] | None = None):
+        if not self.engine_url:
+            raise RuntimeError(
+                "AI_ENGINE_URL is not configured. Deploy the full AI engine "
+                "Container and set AI_ENGINE_URL on the Worker."
+            )
+
+        headers = {"content-type": "application/json"}
+        if self.engine_key:
+            headers["x-ai-engine-key"] = self.engine_key
+
+        payload = {
+            "symbol": str(symbol).upper(),
+            "market_data": dict(market_data or {}),
+        }
+
+        timeout = httpx.Timeout(45.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{self.engine_url}/analyze",
+                json=payload,
+                headers=headers,
+            )
+
+        if response.status_code >= 400:
+            detail = response.text[:1000]
+            raise RuntimeError(
+                f"AI engine returned HTTP {response.status_code}: {detail}"
+            )
+
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(str(data.get("error") or "AI engine rejected request"))
+
+        timestamp = data.get("timestamp")
         try:
-            sentiment_result = self.sentiment_agent.analyze(symbol, market_data)
-        except Exception:
-            sentiment_result = None
-        try:
-            technical_result = self.technical_agent.analyze(symbol, market_data)
-        except Exception:
-            technical_result = None
-        if unified_snapshot:
-            if sentiment_result is not None and hasattr(sentiment_result, "current_price"):
-                sentiment_result.current_price = unified_snapshot.current_price
-            if technical_result is not None and hasattr(technical_result, "current_price"):
-                technical_result.current_price = unified_snapshot.current_price
-        return sentiment_result, technical_result
+            parsed_timestamp = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            parsed_timestamp = datetime.now(timezone.utc)
 
-    async def _run_decision(self, symbol, sentiment, technical, market_data, unified_snapshot):
-        try:
-            if unified_snapshot:
-                market_data["current_price"] = unified_snapshot.current_price
-            return self.decision_agent.analyze(symbol, sentiment, technical, market_data)
-        except Exception:
-            return None
-
-    async def _run_forecast(self, symbol, sentiment, technical, market_data, unified_snapshot):
-        try:
-            if unified_snapshot:
-                market_data["current_price"] = unified_snapshot.current_price
-            return self.forecast_agent.analyze(symbol, sentiment, technical, market_data)
-        except Exception:
-            return None
-
-    async def _run_reflection(self, symbol, market_data, unified_snapshot):
-        try:
-            trades = market_data.get("recent_trades", [])
-            if not isinstance(trades, list):
-                trades = []
-            return self.reflector_agent.analyze(symbol, trades, None)
-        except Exception:
-            return None
+        return SimpleNamespace(
+            timestamp=parsed_timestamp,
+            symbol=str(data.get("symbol") or symbol).upper(),
+            current_price=float(data.get("current_price") or 0.0),
+            final_action=str(data.get("final_action") or "HOLD"),
+            final_confidence=float(data.get("final_confidence") or 0.0),
+            consensus_action=data.get("consensus_action") or "HOLD",
+            consensus_score=float(data.get("consensus_score") or 0.0),
+            agent_votes=dict(data.get("agent_votes") or {}),
+            market_scores=dict(data.get("market_scores") or {}),
+            confidence_components=dict(data.get("confidence_components") or {}),
+            position_size=float(data.get("position_size") or 0.0),
+            stop_loss=data.get("stop_loss"),
+            take_profit=data.get("take_profit"),
+            execution_reason=data.get("execution_reason"),
+            hold_reason=data.get("hold_reason"),
+            summary=data.get("summary") or "AI engine completed analysis.",
+        )
