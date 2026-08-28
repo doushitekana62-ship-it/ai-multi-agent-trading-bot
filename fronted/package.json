@@ -1,6 +1,6 @@
 {
   "name": "ai-trading-dashboard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "dependencies": {
     "react": "^18.2.0",
@@ -23,9 +23,9 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
-    "build:cloudflare": "npm run build && python -m pip install uv && uvx --from workers-py pywrangler sync",
-    "deploy": "uvx --from workers-py pywrangler deploy",
-    "preview": "uvx --from workers-py pywrangler dev",
+    "build:cloudflare": "npm run build && uv sync --dev && uv run pywrangler deploy --dry-run",
+    "deploy": "uv run pywrangler deploy",
+    "preview": "uv run pywrangler dev",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
