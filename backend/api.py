@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.routes.auth import router as auth_router
 from backend.routes.dashboard import router as dashboard_router
 from backend.routes.exchange import router as exchange_router
+from backend.routes.paper_control import router as paper_control_router
 from backend.routes.reports import router as reports_router
 
 app = FastAPI(title="AI Multi-Agent Trading Bot API", version="1.0.0")
@@ -27,6 +28,7 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["Dashboard"])
+app.include_router(paper_control_router, prefix="/api/dashboard/paper", tags=["Paper Trading"])
 app.include_router(exchange_router, prefix="/api/exchange", tags=["Exchange"])
 app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 
