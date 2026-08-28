@@ -35,16 +35,33 @@ def test_cloudflare_cron_is_disabled_for_paper_scheduler():
     assert '"crons": []' in source
     assert '"PaperTradingState"' in source
     assert '"storage": "sqlite"' in source
+    assert '"AI_ENGINE"' not in source
 
 
-def test_dashboard_is_bound_to_the_full_ai_engine_service():
-    worker_config = (FRONTED / "wrangler.jsonc").read_text(encoding="utf-8")
-    engine_worker = (FRONTED / "ai_engine_worker.ts").read_text(encoding="utf-8")
+def test_dashboard_uses_external_fastapi_ai_engine():
+    config = (FRONTED / "wrangler.jsonc").read_text(encoding="utf-8")
     adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
-    assert '"binding": "AI_ENGINE"' in worker_config
-    assert '"service": "ai-multi-agent-trading-ai-engine"' in worker_config
-    assert '"entrypoint": "AiEngineService"' in worker_config
-    assert "export class AiEngineService" in engine_worker
-    assert "async analyze(" in engine_worker
-    assert "self.env.AI_ENGINE.analyze" in adapter
-    assert "import httpx" not in adapter
+    cycle = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
+    assert '"AI_ENGINE"' not in config
+    assert "AI_ENGINE_URL" in adapter
+    assert "AI_ENGINE_SHARED_SECRET" in adapter
+    assert "/engine/analyze" in adapter
+    assert "Cloudflare Container" not in cycle
+
+
+def test_fastapi_cloud_entrypoint_is_explicit_and_safe():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    app = (ROOT / "fastapi_cloud_app.py").read_text(encoding="utf-8")
+    assert 'entrypoint = "fastapi_cloud_app:app"' in pyproject
+    assert "@app.get(\"/health\")" in app
+    assert "@app.post(\"/engine/analyze\"" in app
+    assert "AI_ENGINE_SHARED_SECRET" in app
+    assert "_force_action" in app
+    assert "Orchestrator(" in app
+
+
+def test_fastapi_cloud_does_not_start_background_trading():
+    app = (ROOT / "fastapi_cloud_app.py").read_text(encoding="utf-8")
+    assert "asyncio.create_task" not in app
+    assert "while True" not in app
+    assert "create_order" not in app
