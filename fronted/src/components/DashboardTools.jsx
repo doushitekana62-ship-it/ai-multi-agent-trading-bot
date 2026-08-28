@@ -38,7 +38,12 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
       setHealth(response.data?.system_health || null);
     } catch (error) {
       console.error('Unable to fetch system health:', error);
-      setHealth({ database: { connected: false }, market_data: { fresh: false, stale: true, age_seconds: null }, mode: 'unknown', engine: { running: false } });
+      setHealth({
+        database: { connected: false },
+        market_data: { fresh: false, stale: true, age_seconds: null },
+        mode: 'unknown',
+        engine: { running: false },
+      });
     }
   };
 
@@ -48,46 +53,92 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
     return () => clearInterval(interval);
   }, []);
 
+  // Keep the existing dashboard layout/component. Wire the already-rendered
+  // START PAPER BOT control without replacing its visual component.
   useEffect(() => {
-    let observer;
     let disposed = false;
-    const wireStartButton = () => {
-      if (disposed) return;
-      const button = Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.trim().includes('START PAPER BOT'));
-      if (!button || button.dataset.paperBridge === '1') return;
-      button.dataset.paperBridge = '1';
-      button.disabled = false;
-      button.addEventListener('click', async () => {
-        if (button.dataset.paperBusy === '1') return;
-        button.dataset.paperBusy = '1';
-        button.disabled = true;
-        const pair = localStorage.getItem('paperTradingPair') || 'btc_idr';
-        try {
-          const response = await axios.post('/api/bot/start', null, { params: { pair } });
-          const state = response.data || {};
-          if (state.bot_enabled || state.enabled) window.location.reload();
-          else throw new Error(state.reason || 'Paper bot did not enter enabled state');
-        } catch (error) {
-          console.error('Unable to start paper trading:', error);
-          button.dataset.paperBusy = '0';
-          button.disabled = false;
-          window.dispatchEvent(new CustomEvent('paper-trading-error', { detail: error.response?.data?.detail || error.response?.data?.reason || error.message }));
+    let observer = null;
+    let currentButton = null;
+    let clickHandler = null;
+
+    const findStartButton = () => Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim().includes('START PAPER BOT')
+    );
+
+    const syncTopStatus = (running) => {
+      Array.from(document.querySelectorAll('*')).forEach((node) => {
+        if (node.children.length === 0 && node.textContent?.trim() === 'BOT OFF') {
+          node.textContent = running ? 'BOT ON' : 'BOT OFF';
         }
       });
     };
-    wireStartButton();
-    observer = new MutationObserver(wireStartButton);
+
+    const syncButton = async () => {
+      const button = findStartButton();
+      if (!button || disposed) return;
+
+      if (button !== currentButton) {
+        if (currentButton && clickHandler) currentButton.removeEventListener('click', clickHandler);
+        currentButton = button;
+        clickHandler = async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (button.dataset.paperBusy === '1') return;
+          button.dataset.paperBusy = '1';
+          button.disabled = true;
+          try {
+            const pair = localStorage.getItem('paperTradingPair') || 'btc_idr';
+            const symbol = pair.replace('_', '/').toUpperCase();
+            await axios.post('/api/dashboard/paper/start', null, { params: { symbol } });
+            syncTopStatus(true);
+            await loadHealth();
+          } catch (error) {
+            console.error('Unable to start paper trading:', error);
+            window.alert(error.response?.data?.detail || 'Unable to start paper trading');
+          } finally {
+            button.dataset.paperBusy = '0';
+            button.disabled = false;
+          }
+        };
+        currentButton.addEventListener('click', clickHandler);
+      }
+
+      try {
+        const response = await axios.get('/api/dashboard/paper/status');
+        const running = response.data?.running === true;
+        button.disabled = false;
+        syncTopStatus(running);
+      } catch (error) {
+        button.disabled = false;
+      }
+    };
+
+    syncButton();
+    const interval = setInterval(syncButton, 5000);
+    observer = new MutationObserver(syncButton);
     observer.observe(document.body, { childList: true, subtree: true });
-    return () => { disposed = true; observer?.disconnect(); };
+
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      if (observer) observer.disconnect();
+      if (currentButton && clickHandler) currentButton.removeEventListener('click', clickHandler);
+    };
   }, []);
 
   const move = Number(market?.recent_move);
   const action = String(decision?.action || '—').toUpperCase();
   const confidence = Number(decision?.confidence || 0) * 100;
   const rangePosition = Number(market?.range_position);
-  const condition = Number.isFinite(rangePosition) ? rangePosition >= 75 ? 'NEAR 24H HIGH' : rangePosition <= 25 ? 'NEAR 24H LOW' : 'MID 24H RANGE' : 'UNAVAILABLE';
+  const condition = Number.isFinite(rangePosition)
+    ? rangePosition >= 75 ? 'NEAR 24H HIGH' : rangePosition <= 25 ? 'NEAR 24H LOW' : 'MID 24H RANGE'
+    : 'UNAVAILABLE';
   const marketBias = Number.isFinite(move) ? (move > 0.5 ? 'RISING' : move < -0.5 ? 'FALLING' : 'FLAT') : condition;
-  const observation = marketBias === 'RISING' && action === 'HOLD' ? 'Observation: market is rising while AI is HOLD.' : marketBias === 'FALLING' && action === 'HOLD' ? 'Observation: market is falling while AI is HOLD.' : 'No notable market/AI divergence detected.';
+  const observation = marketBias === 'RISING' && action === 'HOLD'
+    ? 'Observation: market is rising while AI is HOLD.'
+    : marketBias === 'FALLING' && action === 'HOLD'
+      ? 'Observation: market is falling while AI is HOLD.'
+      : 'No notable market/AI divergence detected.';
 
   const consensus = useMemo(() => {
     const votes = decision?.votes || {};
@@ -103,12 +154,37 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
   }, [decision]);
 
   const progress = (target) => Number(target) > 0 ? Math.min(100, Math.max(0, (dailyActual / Number(target)) * 100)) : 0;
+
   const radarValues = useMemo(() => {
     const scores = decision?.market_scores || {};
-    return [Number(scores.sentiment || 0), Number(scores.technical || 0), Number(scores.decision || 0), Number(scores.forecast || 0), Number(scores.mimic_trader || 0), Number(scores.consensus || 0)].map((v) => Math.max(-1, Math.min(1, Number.isFinite(v) ? v : 0)));
+    return [
+      Number(scores.sentiment || 0),
+      Number(scores.technical || 0),
+      Number(scores.decision || 0),
+      Number(scores.forecast || 0),
+      Number(scores.mimic_trader || 0),
+      Number(scores.consensus || 0),
+    ].map((v) => Math.max(-1, Math.min(1, Number.isFinite(v) ? v : 0)));
   }, [decision]);
-  const radarData = useMemo(() => ({ labels: ['Sentiment', 'Technical', 'Decision', 'Forecast', 'Mimic Trader', 'Consensus'], datasets: [{ label: 'Agent score', data: radarValues, fill: true, borderWidth: 1.5, pointRadius: 3 }] }), [radarValues]);
-  const radarOptions = useMemo(() => ({ responsive: true, maintainAspectRatio: false, scales: { r: { min: -1, max: 1, ticks: { stepSize: 0.5 } } }, plugins: { legend: { display: false } } }), []);
+
+  const radarData = useMemo(() => ({
+    labels: ['Sentiment', 'Technical', 'Decision', 'Forecast', 'Mimic Trader', 'Consensus'],
+    datasets: [{
+      label: 'Agent score',
+      data: radarValues,
+      fill: true,
+      borderWidth: 1.5,
+      pointRadius: 3,
+    }],
+  }), [radarValues]);
+
+  const radarOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: { r: { min: -1, max: 1, ticks: { stepSize: 0.5 } } },
+    plugins: { legend: { display: false } },
+  }), []);
+
   const marketFresh = health?.market_data?.fresh === true && health?.market_data?.stale !== true;
   const databaseOk = health?.database?.connected === true;
   const engineRunning = health?.engine?.running === true;
@@ -117,14 +193,106 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
 
   return (
     <Grid container spacing={3} sx={{ mb: 3 }}>
-      <Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">System Health</Typography><Typography variant="caption" color="text.secondary">Read-only diagnostics. This panel never starts an AI cycle.</Typography><Stack spacing={1.3} sx={{ mt: 2 }}><Indicator label="Database" ok={databaseOk} value={databaseOk ? 'CONNECTED' : 'DISCONNECTED'} /><Indicator label="Market data" ok={marketFresh} value={marketFresh ? `FRESH${marketAge != null ? ` · ${Number(marketAge).toFixed(1)}s` : ''}` : 'STALE'} /><Indicator label="Mode" ok={mode === 'PAPER'} value={mode} /><Indicator label="Engine" ok={engineRunning} value={engineRunning ? 'ACTIVE' : 'OFF'} /></Stack></Paper></Grid>
-      <Grid item xs={12} md={8}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Agent Score Radar</Typography><Typography variant="caption" color="text.secondary">Read-only view of the latest OrchestratorResult.market_scores. No analysis is triggered.</Typography><Box sx={{ height: 270, mt: 1 }}>{decision?.market_scores ? <Radar data={radarData} options={radarOptions} /> : <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for an AI analysis result...</Box>}</Box></Paper></Grid>
-      <Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Market vs AI</Typography><Typography variant="caption" color="text.secondary">Observation only. This does not alter AI decisions.</Typography><Stack direction="row" spacing={1} sx={{ mt: 2, mb: 1 }} alignItems="center">{Number.isFinite(move) && move !== 0 ? (move > 0 ? <TrendingUp color="success" /> : <TrendingDown color="error" />) : <Remove color="disabled" />}<Typography variant="h5" color={move > 0 ? 'success.main' : move < 0 ? 'error.main' : 'text.primary'}>{Number.isFinite(move) ? `${move > 0 ? '+' : ''}${move.toFixed(2)}%` : '—'}</Typography><Typography color="text.secondary">market</Typography><Chip label={action} size="small" /></Stack><Typography variant="body2">{observation}</Typography><Typography variant="caption" color="text.secondary">AI confidence: {confidence ? `${confidence.toFixed(1)}%` : '—'}</Typography></Paper></Grid>
-      <Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">AI Consensus</Typography><Typography variant="caption" color="text.secondary">Current agent agreement. Informational only.</Typography><Stack direction="row" spacing={1} sx={{ mt: 2, mb: 1 }}><Chip label={`${consensus.label} ${consensus.percent ? `${consensus.percent.toFixed(0)}%` : ''}`} color={consensus.label === 'BUY' ? 'success' : consensus.label === 'SELL' ? 'error' : 'default'} /></Stack><Typography variant="body2">BUY {consensus.buy} · HOLD {consensus.hold} · SELL {consensus.sell}</Typography><Typography variant="caption" color="text.secondary">Market condition: {marketBias} · {condition}</Typography></Paper></Grid>
-      <Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Paper Session</Typography><Typography variant="caption" color="text.secondary">Counters remain zero while BOT is OFF.</Typography><Grid container spacing={1.5} sx={{ mt: 1 }}><Grid item xs={6}><Typography variant="caption" color="text.secondary">Runtime</Typography><Typography>{Number(runtimeHours).toFixed(1)} h</Typography></Grid><Grid item xs={6}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography>{cycles || 0}</Typography></Grid><Grid item xs={4}><Typography variant="caption" color="text.secondary">BUY</Typography><Typography color="success.main">{counts?.BUY || 0}</Typography></Grid><Grid item xs={4}><Typography variant="caption" color="text.secondary">SELL</Typography><Typography color="error.main">{counts?.SELL || 0}</Typography></Grid><Grid item xs={4}><Typography variant="caption" color="text.secondary">HOLD</Typography><Typography>{counts?.HOLD || 0}</Typography></Grid></Grid></Paper></Grid>
-      <Grid item xs={12} md={5}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Decision History</Typography><Typography variant="caption" color="text.secondary">Last dashboard observations, stored locally.</Typography><Stack spacing={0.8} sx={{ mt: 1.5 }}>{decisionHistory.length === 0 && <Typography color="text.secondary">No observations yet.</Typography>}{decisionHistory.slice(0, 6).map((item, index) => <Card key={`${item.timestamp}-${index}`} variant="outlined"><CardContent sx={{ py: 0.8, '&:last-child': { pb: 0.8 } }}><Stack direction="row" justifyContent="space-between"><Typography variant="caption">{new Date(item.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</Typography><Chip size="small" label={item.action} color={item.action === 'BUY' ? 'success' : item.action === 'SELL' ? 'error' : 'default'} /></Stack><Typography variant="caption" color="text.secondary">{item.pair} · market {item.move == null ? '—' : `${item.move > 0 ? '+' : ''}${Number(item.move).toFixed(2)}%`} · confidence {item.confidence == null ? '—' : `${Number(item.confidence).toFixed(0)}%`}</Typography></CardContent></Card>)}</Stack></Paper></Grid>
-      <Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Risk Snapshot</Typography><Typography variant="caption" color="text.secondary">Read-only paper account view.</Typography><Stack spacing={1.2} sx={{ mt: 2 }}><Stack direction="row" justifyContent="space-between"><Typography>Open positions</Typography><Typography>{positions.length}</Typography></Stack><Stack direction="row" justifyContent="space-between"><Typography>Max positions</Typography><Typography>5</Typography></Stack><Stack direction="row" justifyContent="space-between"><Typography>Exposure</Typography><Typography>{positions.length ? 'ACTIVE' : '0%'}</Typography></Stack><Chip label={positions.length <= 5 ? 'WITHIN PAPER LIMIT' : 'REVIEW REQUIRED'} color={positions.length <= 5 ? 'success' : 'warning'} size="small" /></Stack></Paper></Grid>
-      <Grid item xs={12} md={3}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Target Review</Typography><Typography variant="caption" color="text.secondary">Benchmark only, never an AI instruction.</Typography>{['daily', 'weekly', 'monthly'].map((period) => <Box key={period} sx={{ mt: 1.3 }}><Stack direction="row" justifyContent="space-between"><Typography variant="caption">{period.toUpperCase()}</Typography><Typography variant="caption">{Number(targets?.[period]) > 0 ? idr(targets[period]) : 'not set'}</Typography></Stack><LinearProgress variant="determinate" value={progress(targets?.[period])} /></Box>)}</Paper></Grid>
+      <Grid item xs={12} md={4}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">System Health</Typography>
+          <Typography variant="caption" color="text.secondary">Read-only diagnostics. This panel never starts an AI cycle.</Typography>
+          <Stack spacing={1.3} sx={{ mt: 2 }}>
+            <Indicator label="Database" ok={databaseOk} value={databaseOk ? 'CONNECTED' : 'DISCONNECTED'} />
+            <Indicator label="Market data" ok={marketFresh} value={marketFresh ? `FRESH${marketAge != null ? ` · ${Number(marketAge).toFixed(1)}s` : ''}` : 'STALE'} />
+            <Indicator label="Mode" ok={mode === 'PAPER'} value={mode} />
+            <Indicator label="Engine" ok={engineRunning} value={engineRunning ? 'ACTIVE' : 'OFF'} />
+          </Stack>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={8}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">Agent Score Radar</Typography>
+          <Typography variant="caption" color="text.secondary">Read-only view of the latest OrchestratorResult.market_scores. No analysis is triggered.</Typography>
+          <Box sx={{ height: 270, mt: 1 }}>
+            {decision?.market_scores ? <Radar data={radarData} options={radarOptions} /> : <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for an AI analysis result...</Box>}
+          </Box>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={4}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">Market vs AI</Typography>
+          <Typography variant="caption" color="text.secondary">Observation only. This does not alter AI decisions.</Typography>
+          <Stack direction="row" spacing={1} sx={{ mt: 2, mb: 1 }} alignItems="center">
+            {Number.isFinite(move) && move !== 0 ? (move > 0 ? <TrendingUp color="success" /> : <TrendingDown color="error" />) : <Remove color="disabled" />}
+            <Typography variant="h5" color={move > 0 ? 'success.main' : move < 0 ? 'error.main' : 'text.primary'}>{Number.isFinite(move) ? `${move > 0 ? '+' : ''}${move.toFixed(2)}%` : '—'}</Typography>
+            <Typography color="text.secondary">market</Typography>
+            <Chip label={action} size="small" />
+          </Stack>
+          <Typography variant="body2">{observation}</Typography>
+          <Typography variant="caption" color="text.secondary">AI confidence: {confidence ? `${confidence.toFixed(1)}%` : '—'}</Typography>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={4}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">AI Consensus</Typography>
+          <Typography variant="caption" color="text.secondary">Current agent agreement. Informational only.</Typography>
+          <Stack direction="row" spacing={1} sx={{ mt: 2, mb: 1 }}>
+            <Chip label={`${consensus.label} ${consensus.percent ? `${consensus.percent.toFixed(0)}%` : ''}`} color={consensus.label === 'BUY' ? 'success' : consensus.label === 'SELL' ? 'error' : 'default'} />
+          </Stack>
+          <Typography variant="body2">BUY {consensus.buy} · HOLD {consensus.hold} · SELL {consensus.sell}</Typography>
+          <Typography variant="caption" color="text.secondary">Market condition: {marketBias} · {condition}</Typography>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={4}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">Paper Session</Typography>
+          <Typography variant="caption" color="text.secondary">Counters remain zero while BOT is OFF.</Typography>
+          <Grid container spacing={1.5} sx={{ mt: 1 }}>
+            <Grid item xs={6}><Typography variant="caption" color="text.secondary">Runtime</Typography><Typography>{Number(runtimeHours).toFixed(1)} h</Typography></Grid>
+            <Grid item xs={6}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography>{cycles || 0}</Typography></Grid>
+            <Grid item xs={4}><Typography variant="caption" color="text.secondary">BUY</Typography><Typography color="success.main">{counts?.BUY || 0}</Typography></Grid>
+            <Grid item xs={4}><Typography variant="caption" color="text.secondary">SELL</Typography><Typography color="error.main">{counts?.SELL || 0}</Typography></Grid>
+            <Grid item xs={4}><Typography variant="caption" color="text.secondary">HOLD</Typography><Typography>{counts?.HOLD || 0}</Typography></Grid>
+          </Grid>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={5}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">Decision History</Typography>
+          <Typography variant="caption" color="text.secondary">Last dashboard observations, stored locally.</Typography>
+          <Stack spacing={0.8} sx={{ mt: 1.5 }}>
+            {decisionHistory.length === 0 && <Typography color="text.secondary">No observations yet.</Typography>}
+            {decisionHistory.slice(0, 6).map((item, index) => (
+              <Card key={`${item.timestamp}-${index}`} variant="outlined"><CardContent sx={{ py: 0.8, '&:last-child': { pb: 0.8 } }}>
+                <Stack direction="row" justifyContent="space-between"><Typography variant="caption">{new Date(item.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</Typography><Chip size="small" label={item.action} color={item.action === 'BUY' ? 'success' : item.action === 'SELL' ? 'error' : 'default'} /></Stack>
+                <Typography variant="caption" color="text.secondary">{item.pair} · market {item.move == null ? '—' : `${item.move > 0 ? '+' : ''}${Number(item.move).toFixed(2)}%`} · confidence {item.confidence == null ? '—' : `${Number(item.confidence).toFixed(0)}%`}</Typography>
+              </CardContent></Card>
+            ))}
+          </Stack>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={4}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">Risk Snapshot</Typography>
+          <Typography variant="caption" color="text.secondary">Read-only paper account view.</Typography>
+          <Stack spacing={1.2} sx={{ mt: 2 }}>
+            <Stack direction="row" justifyContent="space-between"><Typography>Open positions</Typography><Typography>{positions.length}</Typography></Stack>
+            <Stack direction="row" justifyContent="space-between"><Typography>Max positions</Typography><Typography>5</Typography></Stack>
+            <Stack direction="row" justifyContent="space-between"><Typography>Exposure</Typography><Typography>{positions.length ? 'ACTIVE' : '0%'}</Typography></Stack>
+            <Chip label={positions.length <= 5 ? 'WITHIN PAPER LIMIT' : 'REVIEW REQUIRED'} color={positions.length <= 5 ? 'success' : 'warning'} size="small" />
+          </Stack>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={3}>
+        <Paper sx={{ p: 2.5, height: '100%' }}>
+          <Typography variant="h6">Target Review</Typography>
+          <Typography variant="caption" color="text.secondary">Benchmark only, never an AI instruction.</Typography>
+          {['daily', 'weekly', 'monthly'].map((period) => <Box key={period} sx={{ mt: 1.3 }}><Stack direction="row" justifyContent="space-between"><Typography variant="caption">{period.toUpperCase()}</Typography><Typography variant="caption">{Number(targets?.[period]) > 0 ? idr(targets[period]) : 'not set'}</Typography></Stack><LinearProgress variant="determinate" value={progress(targets?.[period])} /></Box>)}
+        </Paper>
+      </Grid>
     </Grid>
   );
 }
