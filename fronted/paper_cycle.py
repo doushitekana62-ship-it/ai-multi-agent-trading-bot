@@ -12,6 +12,22 @@ import cf_worker
 from cloudflare_orchestrator import CloudflareOrchestrator
 
 
+def _json_number(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_json_number(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
     """Run one guarded paper-only cycle through the existing AI pipeline."""
     pair = cf_worker._clean_pair(pair)
@@ -27,7 +43,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
     try:
         scope = {"env": env, "query_string": f"pair={pair}".encode("latin-1")}
         market = await cf_worker._market_overview(scope)
-        if not market.get("available") or float(market.get("last") or 0) <= 0:
+        if not market.get("available") or _json_number(market.get("last")) <= 0:
             state = await state_api.finish_cycle("market_data_unavailable")
             return {
                 "ok": False,
@@ -38,29 +54,34 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         points = list(market.get("points") or [])
         ohlcv = []
         for point in points:
-            price = float(point.get("price") or 0)
+            price = _json_number(point.get("price"))
             if price <= 0:
                 continue
+            raw_timestamp = _json_number(point.get("timestamp"))
+            timestamp = (
+                datetime.fromtimestamp(raw_timestamp, tz=timezone.utc).isoformat()
+                if raw_timestamp > 0
+                else datetime.now(timezone.utc).isoformat()
+            )
             ohlcv.append({
-                "timestamp": datetime.fromtimestamp(
-                    float(point.get("timestamp") or 0), tz=timezone.utc
-                ).isoformat() if float(point.get("timestamp") or 0) > 0 else datetime.now(timezone.utc).isoformat(),
+                "timestamp": timestamp,
                 "open": price,
                 "high": price,
                 "low": price,
                 "close": price,
-                "volume": float(point.get("amount") or 1.0),
+                "volume": _json_number(point.get("amount"), 1.0),
             })
 
         symbol = market["pair"].upper().replace("_", "/")
+        last_price = _json_number(market.get("last"))
         market_data = {
-            "current_price": float(market.get("last") or 0),
-            "unified_price": float(market.get("last") or 0),
-            "price": float(market.get("last") or 0),
-            "high_24h": float(market.get("high") or 0),
-            "low_24h": float(market.get("low") or 0),
-            "volume_24h": float(market.get("volume") or 0),
-            "change_percent_24h": float(market.get("recent_move") or 0),
+            "current_price": last_price,
+            "unified_price": last_price,
+            "price": last_price,
+            "high_24h": _json_number(market.get("high")),
+            "low_24h": _json_number(market.get("low")),
+            "volume_24h": _json_number(market.get("volume")),
+            "change_percent_24h": _json_number(market.get("recent_move")),
             "timeframe": "trade",
             "ohlcv": ohlcv,
             "recent_trades": points,
@@ -85,7 +106,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         if action not in {"BUY", "SELL", "HOLD"}:
             action = "HOLD"
 
-        confidence = float(result.final_confidence or 0.0)
+        confidence = _json_number(result.final_confidence)
         metadata = {
             "source": "multi_agent_orchestrator",
             "symbol": result.symbol,
@@ -93,13 +114,13 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "raw_action": str(result.final_action or "HOLD"),
             "confidence": confidence,
             "consensus_action": result.consensus_action,
-            "consensus_score": float(result.consensus_score or 0.0),
+            "consensus_score": _json_number(result.consensus_score),
             "votes": dict(result.agent_votes or {}),
-            "market_scores": dict(result.market_scores or {}),
-            "confidence_components": dict(result.confidence_components or {}),
-            "position_size": float(result.position_size or 0.0),
-            "stop_loss": result.stop_loss,
-            "take_profit": result.take_profit,
+            "market_scores": {k: _json_number(v) for k, v in dict(result.market_scores or {}).items()},
+            "confidence_components": {k: _json_number(v) for k, v in dict(result.confidence_components or {}).items()},
+            "position_size": _json_number(result.position_size),
+            "stop_loss": _optional_json_number(result.stop_loss),
+            "take_profit": _optional_json_number(result.take_profit),
             "execution_reason": result.execution_reason,
             "hold_reason": result.hold_reason,
             "summary": result.summary,
@@ -119,7 +140,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "decision": action,
             "confidence": confidence,
             "symbol": symbol,
-            "price": float(market.get("last") or 0),
+            "price": last_price,
             "reasoning": result.execution_reason or result.hold_reason or result.summary,
         }
         state = await state_api.record_cycle_payload(payload)
