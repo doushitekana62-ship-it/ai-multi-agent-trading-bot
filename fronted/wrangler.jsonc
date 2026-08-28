@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "ai-multi-agent-trading-bot",
-  "main": "./worker_entry.py",
+  "main": "./worker_entry_api.py",
   "compatibility_date": "2026-08-25",
   "compatibility_flags": ["python_workers"],
   "assets": {
