@@ -1,0 +1,57 @@
+name: AI Engine Container Validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agents/**"
+      - "core/**"
+      - "exchange_integration/**"
+      - "fronted/ai_engine/**"
+      - "fronted/Dockerfile.ai-engine"
+      - ".github/workflows/ai-engine-container.yml"
+  pull_request:
+    paths:
+      - "agents/**"
+      - "core/**"
+      - "exchange_integration/**"
+      - "fronted/ai_engine/**"
+      - "fronted/Dockerfile.ai-engine"
+      - ".github/workflows/ai-engine-container.yml"
+
+jobs:
+  build-and-healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare container build context
+        working-directory: fronted
+        run: |
+          rm -rf agents core exchange_integration
+          cp -r ../agents ../core ../exchange_integration .
+
+      - name: Build AI engine image
+        working-directory: fronted
+        run: docker build -f Dockerfile.ai-engine -t ai-trading-engine:test .
+
+      - name: Start AI engine
+        run: docker run -d --rm --name ai-trading-engine-test -p 18080:8080 ai-trading-engine:test
+
+      - name: Wait for health endpoint
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/health; then
+              echo
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ai-trading-engine-test
+          exit 1
+
+      - name: Stop AI engine
+        if: always()
+        run: docker rm -f ai-trading-engine-test || true
