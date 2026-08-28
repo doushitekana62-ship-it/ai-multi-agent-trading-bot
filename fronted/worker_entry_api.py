@@ -2,18 +2,18 @@
 
 The dashboard uses /api/dashboard/paper/* while the Worker runtime exposes
 its authoritative paper controls under /api/bot/*. Paper execution is manually
-gated: the user explicitly turns the bot ON/OFF. While ON, Cloudflare's Cron
-Trigger may execute one guarded paper cycle per minute; Cron can never enable
-the bot by itself.
+gated: the user explicitly turns the bot ON/OFF. While ON, the Durable Object
+Alarm scheduler runs one guarded paper cycle per minute. The alarm can never
+enable the bot by itself.
 """
 from __future__ import annotations
 
 from workers import Response
 
+from paper_cycle import run_paper_cycle
 from worker_entry import (
     Default as BaseDefault,
     PaperTradingState,
-    _paper_cycle,
     _request_pair,
     _state_response,
     _state_stub,
@@ -43,7 +43,7 @@ class Default(BaseDefault):
                     "ok": True,
                     "manual_control": True,
                     "automation_enabled": True,
-                    "cycle_schedule": "1m_while_enabled",
+                    "cycle_schedule": "durable_object_alarm_1m",
                     "message": "Paper trading enabled manually. Cycles run only while BOT ON.",
                 })
                 return Response.json(payload, status=200)
@@ -69,7 +69,7 @@ class Default(BaseDefault):
                     "ok": True,
                     "manual_control": True,
                     "automation_enabled": True,
-                    "cycle_schedule": "1m_while_enabled",
+                    "cycle_schedule": "durable_object_alarm_1m",
                     "message": "Paper trading disabled manually. No further cycles will run.",
                 })
                 return Response.json(payload, status=200)
@@ -84,19 +84,36 @@ class Default(BaseDefault):
                     status=503,
                 )
 
+        if target == "/api/bot/status" and request.method == "GET":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            stub = await _state_stub(self.env)
+            state = await stub.ensure_scheduler()
+            payload = _state_response(state)
+            payload.update({
+                "manual_control": True,
+                "automation_enabled": True,
+                "cycle_schedule": "durable_object_alarm_1m",
+            })
+            return Response.json(payload, status=200)
+
         if target == "/api/bot/cycle" and request.method == "POST":
             if not await self._verify_access(request):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
-            cycle = await _paper_cycle(self.env, _request_pair(request))
+            stub = await _state_stub(self.env)
+            cycle = await run_paper_cycle(
+                self.env,
+                stub,
+                _request_pair(request),
+                state_response=_state_response,
+            )
             return Response.json(cycle, status=200 if cycle.get("ok") else 409)
 
-        # Make the dashboard health indicator represent the persistent bot
-        # gate, not the instantaneous sub-second cycle lock.
         if target == "/api/dashboard/status" and request.method == "GET":
             if not await self._verify_access(request):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
             stub = await _state_stub(self.env)
-            state = await stub.get_state()
+            state = await stub.ensure_scheduler()
             result = _state_response(state)
             result["daily_pnl"] = float(state.get("daily_pnl", 0.0))
             result["daily_trades"] = int(state.get("daily_trades", 0))
@@ -106,7 +123,24 @@ class Default(BaseDefault):
             cycle_running = bool(state.get("cycle_running"))
             result["manual_control"] = True
             result["automation_enabled"] = True
-            result["cycle_schedule"] = "1m_while_enabled"
+            result["cycle_schedule"] = "durable_object_alarm_1m"
+            result["scheduler"] = {
+                "active": bool(state.get("scheduler_active")) and enabled,
+                "source": state.get("scheduler_source", "durable_object_alarm"),
+                "last_run_at": state.get("last_scheduler_at"),
+                "next_run_at": state.get("next_cycle_at"),
+                "invocations": int(state.get("scheduler_invocations", 0)),
+            }
+            result["cycle"] = {
+                "number": int(state.get("cycles_today", 0)),
+                "status": state.get("last_cycle_status", "idle"),
+                "last_started_at": state.get("last_cycle_started_at"),
+                "last_finished_at": state.get("last_cycle_finished_at"),
+                "last_cycle_at": state.get("last_cycle_at"),
+                "failures": int(state.get("cycle_failures", 0)),
+                "consecutive_failures": int(state.get("consecutive_cycle_failures", 0)),
+                "last_error": state.get("last_error"),
+            }
             result["system_health"] = {
                 "database": {"connected": True, "diagnostic": "durable_object_state"},
                 "market_data": {"fresh": True, "stale": False, "age_seconds": 0},
@@ -116,18 +150,20 @@ class Default(BaseDefault):
                     "enabled": enabled,
                     "cycle_running": cycle_running,
                     "state": "RUNNING" if enabled else "OFF",
+                    "last_cycle_status": state.get("last_cycle_status", "idle"),
+                    "last_error": state.get("last_error"),
                 },
             }
-            return Response.json(result)
+            return Response.json(result, status=200)
 
         return await super()._handle_state_routes(request, target)
 
     async def scheduled(self, controller, env, ctx):
-        """Run exactly one guarded paper cycle only after manual START.
+        """Compatibility path for legacy Cron deployments.
 
-        The Cron Trigger is intentionally a scheduler, not an activation
-        mechanism. BOT OFF means no cycle. STOP persists enabled=False in the
-        Durable Object and therefore blocks all subsequent scheduled cycles.
+        The production scheduler is the Durable Object alarm. If a legacy Cron
+        trigger remains attached during propagation, it is harmless: it only
+        checks the same persistent gate and does not enable the bot.
         """
         stub = await _state_stub(env)
         state = await stub.get_state()
@@ -135,11 +171,12 @@ class Default(BaseDefault):
             return
         pair = state.get("paper_pair") or "btc_idr"
         try:
-            await _paper_cycle(env, pair)
-        except Exception:
-            # _paper_cycle already releases its cycle gate on handled failures.
-            # Never let a scheduled exception become an unhandled Worker error.
-            return
+            await run_paper_cycle(env, stub, pair, state_response=_state_response)
+        except Exception as exc:
+            try:
+                await stub.finish_cycle(f"legacy_scheduler_error: {exc}")
+            except Exception:
+                pass
 
 
 __all__ = ["Default", "PaperTradingState"]
