@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ai-multi-agent-trading-bot-api"
-version = "1.0.0"
+version = "1.0.1"
 description = "FastAPI Cloud control/AI service for the AI multi-agent paper-trading bot"
 requires-python = ">=3.11,<3.14"
 dependencies = [
@@ -14,3 +18,23 @@ dependencies = [
 
 [tool.fastapi]
 entrypoint = "fastapi_cloud_app:app"
+
+[tool.setuptools.packages.find]
+include = [
+    "agents*",
+    "backend*",
+    "core*",
+    "exchange_integration*",
+    "integration*",
+    "paper_trading*",
+]
+exclude = [
+    "data*",
+    "fronted*",
+    "logs*",
+    "test_result*",
+    "tests*",
+]
+
+[tool.setuptools.py-modules]
+modules = ["fastapi_cloud_app"]
