@@ -22,7 +22,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build",
+    "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
     "build:cloudflare": "npm run build && python -m pip install uv && uvx --from workers-py pywrangler sync",
     "deploy": "uvx --from workers-py pywrangler deploy",
     "preview": "uvx --from workers-py pywrangler dev",
@@ -39,7 +39,7 @@
     "production": [
       ">0.2%",
       "not dead",
-      "not op_mini all"
+      "not op_mini_all"
     ],
     "development": [
       "last 1 chrome version",
