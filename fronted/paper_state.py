@@ -68,11 +68,10 @@ class PaperTradingState(DurableObject):
     async def get_state(self):
         return await self._get()
 
-    async def start(self):
+    async def enable_paper(self):
+        """Enable paper trading using a non-reserved RPC method name."""
         state = await self._get()
         now = _now()
-        # Starting a stopped bot creates a fresh runtime session while
-        # preserving the paper account, positions and accumulated PnL.
         state["enabled"] = True
         state["mode"] = "paper"
         state["cycle_running"] = False
@@ -81,6 +80,10 @@ class PaperTradingState(DurableObject):
         state["updated_at"] = now
         await self.ctx.storage.put("state", state)
         return state
+
+    async def start(self):
+        """Backward-compatible alias for older callers."""
+        return await self.enable_paper()
 
     async def stop(self):
         state = await self._get()
@@ -136,7 +139,6 @@ class PaperTradingState(DurableObject):
         realized = 0.0
         trade = None
 
-        # Paper-only position model: allocate at most 20% of available IDR.
         if action == "BUY" and price > 0 and position_index is None and len(positions) < int(state.get("max_open_positions", 5)):
             allocation = min(float(state.get("balance", 0.0)) * 0.20, float(state.get("balance", 0.0)))
             if allocation > 0:
@@ -162,7 +164,6 @@ class PaperTradingState(DurableObject):
                     "pnl": 0.0,
                     "created_at": now,
                 }
-
         elif action == "SELL" and price > 0 and position_index is not None:
             position = positions[position_index]
             proceeds = float(position.get("quantity", 0.0)) * price
