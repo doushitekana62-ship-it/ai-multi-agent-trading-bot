@@ -103,7 +103,7 @@ class PaperTradingState(DurableObject):
         return await self._get()
 
     async def ensure_scheduler(self):
-        """Repair a previously enabled session that has no pending alarm."""
+        """Repair an enabled session that has no pending alarm."""
         state = await self._get()
         if not state.get("enabled") or state.get("cycle_running"):
             return state
@@ -127,9 +127,25 @@ class PaperTradingState(DurableObject):
         state["enabled"] = True
         state["mode"] = "paper"
         state["cycle_running"] = False
-        state["started_at"] = state.get("started_at") or now
-        state["last_error"] = None
+        state["started_at"] = now
+        state["last_cycle_at"] = None
+        state["last_cycle_started_at"] = None
+        state["last_cycle_finished_at"] = None
         state["last_cycle_status"] = "waiting"
+        state["cycles_today"] = 0
+        state["cycle_failures"] = 0
+        state["consecutive_cycle_failures"] = 0
+        state["daily_pnl"] = 0.0
+        state["total_pnl"] = 0.0
+        state["daily_trades"] = 0
+        state["total_trades"] = 0
+        state["active_positions"] = 0
+        state["portfolio_value"] = float(state.get("balance", state.get("initial_balance", 10_000_000.0)))
+        state["positions"] = []
+        state["trade_history"] = []
+        state["decision_counts"] = {"BUY": 0, "SELL": 0, "HOLD": 0}
+        state["last_decision"] = None
+        state["last_error"] = None
         state["paper_pair"] = clean_pair
         state["scheduler_active"] = True
         state["scheduler_source"] = "durable_object_alarm"
@@ -317,7 +333,7 @@ class PaperTradingState(DurableObject):
         )
 
     async def alarm(self, alarm_info=None):
-        """Run and reschedule one paper cycle while the user-enabled gate is ON."""
+        """Run and reschedule one paper cycle while the manual gate is ON."""
         state = await self._get()
         now = _now()
         state["last_scheduler_at"] = now
@@ -335,15 +351,8 @@ class PaperTradingState(DurableObject):
 
         pair = state.get("paper_pair") or "btc_idr"
         try:
-            await run_paper_cycle(
-                self.env,
-                self,
-                pair,
-                state_response=None,
-            )
+            await run_paper_cycle(self.env, self, pair)
         except Exception as exc:
-            # Keep the scheduler alive even for unexpected downstream/runtime
-            # failures. The cycle runner already handles ordinary failures.
             await self.finish_cycle(f"alarm_cycle_error: {exc}")
 
         state = await self._get()
