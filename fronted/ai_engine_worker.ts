@@ -3,7 +3,6 @@ import { Container, getContainer } from "@cloudflare/containers";
 export class AiEngineContainer extends Container {
   defaultPort = 8080;
   sleepAfter = "2m";
-  instanceType = "standard-1";
   enableInternet = true;
   pingEndpoint = "health";
 
