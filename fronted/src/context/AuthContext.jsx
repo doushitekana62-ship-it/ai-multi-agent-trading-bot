@@ -75,20 +75,6 @@ export const AuthProvider = ({ children }) => {
     return () => axios.interceptors.response.eject(interceptor);
   }, []);
 
-  useEffect(() => {
-    const keepPaperButtonEnabled = () => {
-      const button = Array.from(document.querySelectorAll('button')).find((node) => node.textContent?.trim().includes('START PAPER BOT'));
-      if (!button) return;
-      button.disabled = false;
-      button.removeAttribute('disabled');
-      button.removeAttribute('aria-disabled');
-      button.classList.remove('Mui-disabled');
-    };
-    keepPaperButtonEnabled();
-    const interval = window.setInterval(keepPaperButtonEnabled, 500);
-    return () => window.clearInterval(interval);
-  }, []);
-
   const login = async (username, password) => {
     try {
       const response = await axios.post(`${API_URL}/api/auth/login`, { username, password });
