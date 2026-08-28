@@ -1,72 +1,52 @@
 # Deployment Reconnect Checklist
 
-This project uses two separate runtimes with a strict boundary:
+The production architecture has two layers with a safe fallback:
 
-- Cloudflare Worker: dashboard, authentication, market-data collection, manual paper ON/OFF, Durable Object state and scheduler.
-- FastAPI Cloud: CPython AI execution layer for the existing multi-agent Orchestrator.
+- Cloudflare Worker: dashboard, authentication, INDODAX public market data, manual paper ON/OFF, Durable Object state and scheduler.
+- FastAPI Cloud: preferred CPython execution layer for the repository's full multi-agent Orchestrator.
+- Cloudflare local fallback: a deterministic five-agent market ensemble keeps paper analysis functional if FastAPI Cloud is unavailable. It never places real orders.
 
-The two services communicate only through HTTPS using `AI_ENGINE_URL` and `AI_ENGINE_SHARED_SECRET`.
+The Worker calls FastAPI Cloud through HTTPS using `AI_ENGINE_URL` and `AI_ENGINE_SHARED_SECRET` when configured.
 
-## 1. FastAPI Cloud
+## FastAPI Cloud
 
-Repository:
-`doushitekana62-ship-it/ai-multi-agent-trading-bot`
+Repository: `doushitekana62-ship-it/ai-multi-agent-trading-bot`
 
-Application Directory:
-**blank / repository root**
+Application directory: repository root
 
-Entrypoint:
-`fastapi_cloud_app:app`
+Entrypoint: `fastapi_cloud_app:app`
 
-The repository root `pyproject.toml` already declares this entrypoint.
-
-Environment secret:
-`AI_ENGINE_SHARED_SECRET`
-
-Use one random secret with at least 32 characters. Save it as a secret, not a normal variable.
+Secret: `AI_ENGINE_SHARED_SECRET` with at least 32 characters.
 
 After deployment:
 
-- `GET /` must return `status=online`.
-- `GET /health` must return `status=healthy`.
-- `GET /ready` must return `status=ready` and `ai_engine_secret_configured=true`.
+- `GET /` -> `status=online`
+- `GET /health` -> `status=healthy`
+- `GET /ready` -> `status=ready` and `ai_engine_secret_configured=true`
 
-## 2. Cloudflare Worker
+## Cloudflare Worker
 
-Worker name:
-`ai-multi-agent-trading-bot`
+Worker name: `ai-multi-agent-trading-bot`
 
-Repository:
-`doushitekana62-ship-it/ai-multi-agent-trading-bot`
+Workers Builds root directory: `fronted`
 
-Workers Builds root directory:
-`fronted`
+Build command: `npm install --legacy-peer-deps && npm run build`
 
-Build command:
-`npm install --legacy-peer-deps && npm run build`
+Deploy command: `uvx --from workers-py pywrangler deploy`
 
-Deploy command:
-`uvx --from workers-py pywrangler deploy`
+Wrangler source of truth: `fronted/wrangler.jsonc`
 
-Version command:
-`npx wrangler versions upload`
+Required binding: `PAPER_STATE` -> `PaperTradingState`
 
-The Wrangler source of truth is `fronted/wrangler.jsonc`.
+The Worker must not use an `AI_ENGINE` service binding. FastAPI Cloud is an external HTTPS service.
 
-Required binding:
-`PAPER_STATE` -> `PaperTradingState`
+## Cloudflare runtime variables/secrets
 
-The Worker must **not** have an `AI_ENGINE` service binding. FastAPI Cloud is external and is reached through HTTPS.
+Variable:
 
-## 3. Cloudflare runtime variables/secrets
+`AI_ENGINE_URL` — FastAPI Cloud HTTPS base URL without `/engine/analyze`.
 
-Normal variable:
-
-`AI_ENGINE_URL`
-
-Value: the FastAPI Cloud HTTPS base URL, without `/engine/analyze`.
-
-Secrets:
+Secrets/variables:
 
 `AI_ENGINE_SHARED_SECRET`
 `JWT_SECRET_KEY`
@@ -75,17 +55,25 @@ Secrets:
 `SUPABASE_URL`
 `SUPABASE_SERVICE_ROLE_KEY`
 
-The `AI_ENGINE_SHARED_SECRET` value must exactly match the FastAPI Cloud secret.
+The AI secret must match the FastAPI Cloud secret exactly. If the AI variables are absent or the external engine fails, the Worker automatically uses the local five-agent fallback instead of disabling the paper bot.
 
-## 4. GitHub Actions
+## INDODAX public data
 
-GitHub Actions is CI/validation only for this architecture. It does not deploy the Worker.
+The Worker uses the documented public endpoints:
 
-Cloudflare Workers Builds is the single production deployment path. This prevents two independent systems from deploying the same Worker and producing stale binding/configuration states.
+- `/api/{pair}/ticker`
+- `/api/{pair}/trades`
+- `/api/tickers`
 
-## 5. Paper-trading safety contract
+No INDODAX private credentials are required for the dashboard market-data layer.
 
-The bot is manually controlled.
+## GitHub Actions
+
+GitHub Actions is validation only. Cloudflare Workers Builds is the production deployment path.
+
+The repository's Actions runs were observed failing before any job steps executed. That is consistent with a runner/account-level Actions availability or billing problem rather than a source-code assertion failure. The code changes are committed independently of that external runner state.
+
+## Paper-trading safety contract
 
 OFF:
 - no AI cycle
@@ -94,9 +82,10 @@ OFF:
 
 ON:
 - Durable Object schedules one alarm at a time
-- one cycle invokes the multi-agent Orchestrator through FastAPI Cloud
-- result is persisted in `PaperTradingState`
-- next alarm is scheduled only while the bot remains ON
+- each cycle fetches current INDODAX public data
+- FastAPI Cloud is used when configured and reachable; otherwise the local multi-agent fallback is used
+- the result is persisted in `PaperTradingState`
+- the next alarm is scheduled only while BOT remains ON
 
 STOP:
 - clears the alarm
@@ -104,24 +93,4 @@ STOP:
 - prevents future cycles
 - never enables itself again
 
-Real exchange execution remains locked in this architecture.
-
-## 6. Reconnect order
-
-Do not connect both services at the same time.
-
-1. Create FastAPI Cloud app from the repository root.
-2. Add `AI_ENGINE_SHARED_SECRET`.
-3. Deploy FastAPI Cloud.
-4. Verify `/health` and `/ready`.
-5. Create/reconnect the Cloudflare Worker from the repository.
-6. Set the Cloudflare Worker variables and secrets.
-7. Verify the Worker deployment succeeds.
-8. Open the dashboard and log in.
-9. Verify database and market-data health.
-10. Press `START PAPER BOT` manually.
-11. Verify the first cycle reaches the FastAPI engine and `Cycles` becomes `1`.
-12. Verify Agent/Orchestrator data appears.
-13. Press `STOP PAPER BOT` and verify the cycle count stops.
-
-Never add real exchange credentials during this reconnect/test phase.
+Real exchange execution remains locked.
