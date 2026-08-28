@@ -21,6 +21,7 @@
   "exports": {
     "PaperTradingState": {
       "type": "durable-object",
+      "state": "created",
       "storage": "sqlite"
     }
   },
