@@ -48,7 +48,8 @@ def test_cloudflare_and_fastapi_contract_use_the_same_secret_name():
     assert "AI_ENGINE_SHARED_SECRET" in worker_adapter
     assert "AI_ENGINE_SHARED_SECRET" in fastapi_app
     assert "X-AI-Engine-Key" in worker_adapter
-    assert "X-AI-Engine-Key" in fastapi_app
+    assert "x_ai_engine_key" in fastapi_app
+    assert "Header(default=None)" in fastapi_app
 
 
 def test_paper_scheduler_is_manual_only():
