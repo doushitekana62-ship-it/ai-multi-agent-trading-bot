@@ -1,8 +1,9 @@
 """Production Cloudflare Worker entrypoint.
 
-This thin adapter keeps the existing dashboard/paper-trading implementation but
-adds explicit runtime health and market endpoints so a successful static deploy
-cannot mask a dead API integration.
+This adapter keeps the existing dashboard/paper-trading implementation while
+making runtime health, INDODAX market data, and Durable Object dashboard state
+explicit. The paper account state remains authoritative in the Durable Object;
+Supabase is not required for the dashboard to display a valid paper session.
 """
 from __future__ import annotations
 
@@ -129,6 +130,38 @@ class Default(BaseDefault):
                 },
             })
             return Response.json(result, status=200)
+
+        if path == "/api/dashboard/positions" and request.method == "GET":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            state = await (await _state_stub(self.env)).get_state()
+            positions = list(state.get("positions") or [])
+            return Response.json({
+                "positions": positions,
+                "active_positions": int(state.get("active_positions", len(positions))),
+                "currency": "IDR",
+                "currency_symbol": "Rp",
+                "source": "durable_object_paper_state",
+            })
+
+        if path == "/api/dashboard/performance" and request.method == "GET":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            state = await (await _state_stub(self.env)).get_state()
+            history = list(state.get("trade_history") or [])
+            closed = [trade for trade in history if str(trade.get("status", "")).upper() == "CLOSED"]
+            pnl = sum(float(trade.get("pnl") or 0.0) for trade in closed)
+            wins = sum(1 for trade in closed if float(trade.get("pnl") or 0.0) > 0)
+            return Response.json({
+                "performance": {
+                    "total_pnl": pnl,
+                    "win_rate": (wins / len(closed)) if closed else 0.0,
+                    "closed_trades": len(closed),
+                    "currency": "IDR",
+                    "currency_symbol": "Rp",
+                    "source": "durable_object_paper_state",
+                }
+            })
 
         return await super()._handle_state_routes(request, path)
 
