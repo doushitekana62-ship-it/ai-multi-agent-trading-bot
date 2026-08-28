@@ -35,18 +35,18 @@ def test_cloudflare_cron_is_disabled_for_paper_scheduler():
     assert '"crons": []' in source
     assert '"PaperTradingState"' in source
     assert '"storage": "sqlite"' in source
-    assert '"AI_ENGINE"' not in source
+    assert '"services"' not in source
 
 
 def test_dashboard_uses_external_fastapi_ai_engine():
-    config = (FRONTED / "wrangler.jsonc").read_text(encoding="utf-8")
     adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
     cycle = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
-    assert '"AI_ENGINE"' not in config
     assert "AI_ENGINE_URL" in adapter
     assert "AI_ENGINE_SHARED_SECRET" in adapter
     assert "/engine/analyze" in adapter
-    assert "Cloudflare Container" not in cycle
+    assert "env.AI_ENGINE.analyze" not in adapter
+    assert "Cloudflare Container" not in adapter
+    assert "CloudflareOrchestrator" in cycle
 
 
 def test_fastapi_cloud_entrypoint_is_explicit_and_safe():
