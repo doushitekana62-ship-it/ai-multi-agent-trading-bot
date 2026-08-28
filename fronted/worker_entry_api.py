@@ -1,9 +1,9 @@
 """Compatibility routing layer for the Cloudflare Python Worker.
 
 The dashboard uses /api/dashboard/paper/* while the Worker runtime exposes
-its authoritative paper controls under /api/bot/*. This layer keeps both
-contracts and makes the start operation resilient to Durable Object RPC
-errors instead of allowing an unhandled Worker exception to reach the browser.
+its authoritative paper controls under /api/bot/*. Paper execution is manual:
+START/STOP are explicit user controls and START only arms the persistent paper
+state. A separate Analyze request executes one paper cycle.
 """
 from __future__ import annotations
 
@@ -30,8 +30,9 @@ class Default(BaseDefault):
         }
         target = aliases.get(path, path)
 
-        # Handle START explicitly so the dashboard does not depend on the
-        # older Durable Object RPC method name `start`.
+        # START is an explicit safety control only. It must NOT execute a
+        # trading cycle. A cycle is triggered separately by the dashboard's
+        # explicit Analyze action while the paper gate is ON.
         if target == "/api/bot/start" and request.method == "POST":
             if not await self._verify_access(request):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
@@ -39,44 +40,55 @@ class Default(BaseDefault):
             try:
                 stub = await _state_stub(self.env)
                 state = await stub.enable_paper()
+                state = _state_response(state)
+                state.update({
+                    "manual_control": True,
+                    "automation_enabled": False,
+                    "message": "Paper trading enabled manually. No cycle was started.",
+                })
+                return Response.json(state, status=200)
             except Exception as exc:
-                # RPC exceptions otherwise propagate out of the Worker and
-                # become the Cloudflare "unhandled exception" page.
                 return Response.json(
                     {
                         "ok": False,
-                        "detail": "Paper trading could not be started",
+                        "detail": "Paper trading could not be enabled",
                         "reason": "paper_state_rpc_error",
                         "error": str(exc),
                     },
                     status=503,
                 )
 
+        if target == "/api/bot/stop" and request.method == "POST":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
             try:
-                cycle = await _paper_cycle(self.env, _request_pair(request))
-                return Response.json(
-                    {
-                        **_state_response(cycle.get("state") or state),
-                        "message": "Paper trading started and one execution cycle completed.",
-                        "cycle": cycle,
-                    },
-                    status=200 if cycle.get("ok") else 409,
-                )
+                stub = await _state_stub(self.env)
+                state = await stub.stop()
+                state = _state_response(state)
+                state.update({
+                    "manual_control": True,
+                    "automation_enabled": False,
+                    "message": "Paper trading disabled manually. No further cycles can run.",
+                })
+                return Response.json(state, status=200)
             except Exception as exc:
-                try:
-                    current = await stub.get_state()
-                except Exception:
-                    current = state
                 return Response.json(
                     {
-                        **_state_response(current),
                         "ok": False,
-                        "detail": "Paper trading started but the first cycle failed",
-                        "reason": "paper_cycle_error",
+                        "detail": "Paper trading could not be stopped",
+                        "reason": "paper_state_rpc_error",
                         "error": str(exc),
                     },
                     status=503,
                 )
+
+        # Manual cycle endpoint remains available, but the persistent gate
+        # must already be ON. It never runs when the bot is OFF.
+        if target == "/api/bot/cycle" and request.method == "POST":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            cycle = await _paper_cycle(self.env, _request_pair(request))
+            return Response.json(cycle, status=200 if cycle.get("ok") else 409)
 
         return await super()._handle_state_routes(request, target)
 
