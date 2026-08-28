@@ -35,3 +35,16 @@ def test_cloudflare_cron_is_disabled_for_paper_scheduler():
     assert '"crons": []' in source
     assert '"PaperTradingState"' in source
     assert '"storage": "sqlite"' in source
+
+
+def test_dashboard_is_bound_to_the_full_ai_engine_service():
+    worker_config = (FRONTED / "wrangler.jsonc").read_text(encoding="utf-8")
+    engine_worker = (FRONTED / "ai_engine_worker.ts").read_text(encoding="utf-8")
+    adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
+    assert '"binding": "AI_ENGINE"' in worker_config
+    assert '"service": "ai-multi-agent-trading-ai-engine"' in worker_config
+    assert '"entrypoint": "AiEngineService"' in worker_config
+    assert "export class AiEngineService" in engine_worker
+    assert "async analyze(" in engine_worker
+    assert "self.env.AI_ENGINE.analyze" in adapter
+    assert "import httpx" not in adapter
