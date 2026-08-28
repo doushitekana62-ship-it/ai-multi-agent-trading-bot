@@ -1,15 +1,19 @@
 """Shared paper-trading cycle runner.
 
 The same implementation is used by HTTP/manual triggers and the Durable
-Object alarm. It never submits real exchange orders.
+Object alarm. It never submits real exchange orders. The decision itself is
+produced by the repository's existing multi-agent Orchestrator.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import cf_worker
+from cloudflare_orchestrator import CloudflareOrchestrator
 
 
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
-    """Run one guarded paper-only cycle against the supplied state API."""
+    """Run one guarded paper-only cycle through the existing AI pipeline."""
     pair = cf_worker._clean_pair(pair)
     ok, _, reason = await state_api.begin_cycle()
     if not ok:
@@ -31,40 +35,101 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
                 "state": state_response(state) if state_response else state,
             }
 
-        move = float(market.get("recent_move") or 0.0)
-        high = float(market.get("high") or 0.0)
-        low = float(market.get("low") or 0.0)
-        last = float(market.get("last") or 0.0)
-        range_position = ((last - low) / (high - low) * 100.0) if high > low else 50.0
+        points = list(market.get("points") or [])
+        ohlcv = []
+        for point in points:
+            price = float(point.get("price") or 0)
+            if price <= 0:
+                continue
+            ohlcv.append({
+                "timestamp": datetime.fromtimestamp(
+                    float(point.get("timestamp") or 0), tz=timezone.utc
+                ).isoformat() if float(point.get("timestamp") or 0) > 0 else datetime.now(timezone.utc).isoformat(),
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": float(point.get("amount") or 1.0),
+            })
 
-        # Validation signal only. The multi-agent Orchestrator is deliberately
-        # kept out of this infrastructure repair until the scheduler/state path
-        # is proven end-to-end.
-        if move >= 0.15 or range_position >= 80.0:
+        symbol = market["pair"].upper().replace("_", "/")
+        market_data = {
+            "current_price": float(market.get("last") or 0),
+            "unified_price": float(market.get("last") or 0),
+            "price": float(market.get("last") or 0),
+            "high_24h": float(market.get("high") or 0),
+            "low_24h": float(market.get("low") or 0),
+            "volume_24h": float(market.get("volume") or 0),
+            "change_percent_24h": float(market.get("recent_move") or 0),
+            "timeframe": "trade",
+            "ohlcv": ohlcv,
+            "recent_trades": points,
+            "volatility": None,
+            "data_quality_score": 0.85 if len(ohlcv) >= 80 else 0.55,
+        }
+
+        orchestrator = CloudflareOrchestrator({
+            "use_unified_data": False,
+            "use_mimic_trader": True,
+            "min_confidence": 0.40,
+            "max_position_size": 0.20,
+            "debug_enabled": True,
+        })
+        result = await orchestrator.analyze(symbol, market_data)
+
+        action = str(result.final_action or "HOLD").upper()
+        if action == "STRONG_BUY":
             action = "BUY"
-            confidence = min(0.95, 0.60 + max(abs(move), range_position - 70.0) / 100.0)
-        elif move <= -0.15 or range_position <= 20.0:
+        elif action == "STRONG_SELL":
             action = "SELL"
-            confidence = min(0.95, 0.60 + max(abs(move), 20.0 - range_position) / 100.0)
-        else:
-            action, confidence = "HOLD", 0.50
+        if action not in {"BUY", "SELL", "HOLD"}:
+            action = "HOLD"
+
+        confidence = float(result.final_confidence or 0.0)
+        metadata = {
+            "source": "multi_agent_orchestrator",
+            "symbol": result.symbol,
+            "action": action,
+            "raw_action": str(result.final_action or "HOLD"),
+            "confidence": confidence,
+            "consensus_action": result.consensus_action,
+            "consensus_score": float(result.consensus_score or 0.0),
+            "votes": dict(result.agent_votes or {}),
+            "market_scores": dict(result.market_scores or {}),
+            "confidence_components": dict(result.confidence_components or {}),
+            "position_size": float(result.position_size or 0.0),
+            "stop_loss": result.stop_loss,
+            "take_profit": result.take_profit,
+            "execution_reason": result.execution_reason,
+            "hold_reason": result.hold_reason,
+            "summary": result.summary,
+            "agents_invoked": [
+                "Sentiment Agent",
+                "Technical Agent",
+                "Decision Agent",
+                "Forecast Agent",
+                "Reflector Agent",
+            ],
+            "created_at": result.timestamp.isoformat(),
+        }
+
+        await state_api.ctx.storage.put("last_orchestrator", metadata)
 
         payload = {
             "decision": action,
             "confidence": confidence,
-            "symbol": market["pair"].upper().replace("_", "/"),
-            "price": last,
-            "reasoning": (
-                "Paper validation signal: "
-                f"recent_move={move:.4f}%, range_position={range_position:.1f}%."
-            ),
+            "symbol": symbol,
+            "price": float(market.get("last") or 0),
+            "reasoning": result.execution_reason or result.hold_reason or result.summary,
         }
         state = await state_api.record_cycle_payload(payload)
         return {
             "ok": True,
             "action": action,
+            "raw_action": result.final_action,
             "confidence": confidence,
             "market": market,
+            "orchestrator": metadata,
             "state": state_response(state) if state_response else state,
         }
     except Exception as exc:
