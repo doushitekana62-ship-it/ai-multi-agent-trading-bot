@@ -1,8 +1,8 @@
 name: Validate Cloudflare Worker
 
 # Cloudflare Workers Builds is the single production deployment path.
-# This GitHub workflow validates the Worker package only; it does not deploy.
-# Keeping deployment in one place prevents duplicate builds and stale bindings.
+# This GitHub workflow validates the exact Python Worker package used for production.
+# Production deployment remains owned by Cloudflare Workers Builds.
 
 on:
   push:
@@ -44,6 +44,8 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: fronted/package.json
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -56,11 +58,11 @@ jobs:
       - name: Build React dashboard
         run: npm run build
 
-      - name: Install uv
+      - name: Setup uv
         run: python -m pip install --upgrade uv
 
-      - name: Install Cloudflare Python Worker dependencies
-        run: uvx --from workers-py pywrangler sync
+      - name: Sync Python Worker dependencies
+        run: uv sync --dev
 
-      - name: Validate dashboard Worker bundle
-        run: npx wrangler deploy --dry-run
+      - name: Validate Python Worker bundle
+        run: uv run pywrangler deploy --dry-run
