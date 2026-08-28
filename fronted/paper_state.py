@@ -219,3 +219,14 @@ class PaperTradingState(DurableObject):
         state["updated_at"] = now
         await self.ctx.storage.put("state", state)
         return state
+
+    async def record_cycle_payload(self, payload):
+        """RPC-safe cycle recorder using one structured-cloneable argument."""
+        payload = payload if isinstance(payload, dict) else {}
+        return await self.record_cycle(
+            payload.get("decision", "HOLD"),
+            payload.get("confidence", 0.0),
+            payload.get("symbol", "BTC/IDR"),
+            payload.get("price", 0.0),
+            payload.get("reasoning", ""),
+        )
