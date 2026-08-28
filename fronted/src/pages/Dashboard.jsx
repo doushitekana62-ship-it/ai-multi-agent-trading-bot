@@ -1,303 +1,81 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Box, Grid, Paper, Typography, Button, Card, CardContent,
-  LinearProgress, Chip, IconButton, AppBar, Toolbar, Menu,
-  MenuItem, Divider, ToggleButton, ToggleButtonGroup, Alert,
-  Select, FormControl, InputLabel, TextField, Stack,
-} from '@mui/material';
-import { AccountCircle, Logout, Refresh, ShowChart, LockOutlined, TrendingUp, TrendingDown } from '@mui/icons-material';
-import { useAuth } from '../context/AuthContext';
-import DashboardTools from '../components/DashboardTools';
+import { Alert, AppBar, Box, Button, Card, CardContent, Chip, Divider, FormControl, Grid, IconButton, InputLabel, LinearProgress, Menu, MenuItem, Paper, Select, Stack, ToggleButton, ToggleButtonGroup, Toolbar, Typography } from '@mui/material';
+import { AccountCircle, LockOutlined, Logout, Refresh, ShowChart, TrendingDown, TrendingUp } from '@mui/icons-material';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useAuth } from '../context/AuthContext';
 
-const formatIDR = (value) => new Intl.NumberFormat('id-ID', {
-  style: 'currency', currency: 'IDR', maximumFractionDigits: 0,
-}).format(Number(value) || 0);
+const PAIRS = [['btc_idr', 'BTC/IDR'], ['eth_idr', 'ETH/IDR'], ['usdt_idr', 'USDT/IDR'], ['xrp_idr', 'XRP/IDR'], ['doge_idr', 'DOGE/IDR'], ['sol_idr', 'SOL/IDR']];
+const money = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0);
+const num = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toLocaleString('id-ID', { maximumFractionDigits: digits }) : '—';
 
-const formatMarketPrice = (value, quote = 'IDR') => {
-  const n = Number(value) || 0;
-  if (quote === 'IDR') return formatIDR(n);
-  return `${n.toLocaleString('en-US', { maximumFractionDigits: 8 })} ${quote}`;
-};
+function PriceChart({ points }) {
+  const values = (points || []).map((p) => Number(p.price)).filter((p) => Number.isFinite(p) && p > 0);
+  if (values.length < 2) return <Box sx={{ height: 220, display: 'grid', placeItems: 'center', color: 'text.secondary' }}>Waiting for recent INDODAX trades…</Box>;
+  const min = Math.min(...values); const max = Math.max(...values); const range = max - min || 1;
+  const coords = values.map((v, i) => `${(i / (values.length - 1)) * 100},${95 - ((v - min) / range) * 85}`).join(' ');
+  return <Box sx={{ height: 220, px: 1 }}><svg viewBox="0 0 100 100" width="100%" height="190" preserveAspectRatio="none"><polyline points={coords} fill="none" stroke="currentColor" strokeWidth="1.2" vectorEffect="non-scaling-stroke" /></svg><Stack direction="row" justifyContent="space-between" sx={{ color: 'text.secondary', fontSize: 12 }}><span>{money(min)}</span><span>{money(max)}</span></Stack></Box>;
+}
+function HealthItem({ label, ok, value }) { return <Stack direction="row" justifyContent="space-between"><Stack direction="row" spacing={1} alignItems="center"><Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: ok ? 'success.main' : 'error.main' }} /><Typography variant="body2">{label}</Typography></Stack><Typography variant="caption" fontWeight={700} color={ok ? 'success.main' : 'error.main'}>{value}</Typography></Stack>; }
 
-const PAIR_OPTIONS = [
-  ['btc_idr', 'BTC/IDR'], ['eth_idr', 'ETH/IDR'], ['usdt_idr', 'USDT/IDR'],
-  ['xrp_idr', 'XRP/IDR'], ['doge_idr', 'DOGE/IDR'], ['sol_idr', 'SOL/IDR'],
-];
-
-const DEFAULT_TARGETS = { daily: 0, weekly: 0, monthly: 0 };
-
-const SimplePriceChart = ({ points }) => {
-  const values = (points || []).map((p) => Number(p.price)).filter((v) => Number.isFinite(v) && v > 0);
-  if (values.length < 2) return <Box sx={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for recent public trades...</Box>;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const coords = values.map((value, index) => `${(index / (values.length - 1)) * 100},${95 - ((value - min) / range) * 85}`).join(' ');
-  return (
-    <Box sx={{ height: 220, px: 1 }}>
-      <svg viewBox="0 0 100 100" width="100%" height="100%" preserveAspectRatio="none" aria-label="recent market price chart">
-        <polyline points={coords} fill="none" stroke="currentColor" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', color: 'text.secondary', fontSize: 12 }}>
-        <span>{formatMarketPrice(min)}</span><span>{formatMarketPrice(max)}</span>
-      </Box>
-    </Box>
-  );
-};
-
-const Dashboard = () => {
+export default function Dashboard() {
   const navigate = useNavigate();
   const { logout, user } = useAuth();
-  const [anchorEl, setAnchorEl] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [paperActionLoading, setPaperActionLoading] = useState(false);
-  const [status, setStatus] = useState(null);
-  const [positions, setPositions] = useState([]);
-  const [performance, setPerformance] = useState(null);
-  const [decision, setDecision] = useState(null);
-  const [agents, setAgents] = useState([]);
-  const [tradingMode, setTradingMode] = useState('paper');
-  const [selectedPair, setSelectedPair] = useState(localStorage.getItem('paperTradingPair') || 'btc_idr');
-  const [market, setMarket] = useState(null);
-  const [insights, setInsights] = useState([]);
-  const [decisionHistory, setDecisionHistory] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('aiDecisionObservations') || '[]'); } catch { return []; }
-  });
-  const [targets, setTargets] = useState(() => {
-    try { return { ...DEFAULT_TARGETS, ...JSON.parse(localStorage.getItem('paperTradingTargets') || '{}') }; }
-    catch { return DEFAULT_TARGETS; }
-  });
-  const [targetDraft, setTargetDraft] = useState(targets);
+  const [menu, setMenu] = useState(null); const [loading, setLoading] = useState(false); const [actionLoading, setActionLoading] = useState(false);
+  const [pair, setPair] = useState(localStorage.getItem('paperTradingPair') || 'btc_idr'); const [mode, setMode] = useState('paper');
+  const [status, setStatus] = useState(null); const [positions, setPositions] = useState([]); const [performance, setPerformance] = useState(null); const [decision, setDecision] = useState(null); const [agents, setAgents] = useState([]); const [market, setMarket] = useState(null); const [insights, setInsights] = useState([]);
+  const [history, setHistory] = useState(() => { try { return JSON.parse(localStorage.getItem('aiDecisionObservations') || '[]'); } catch { return []; } });
+  const [targets, setTargets] = useState(() => { try { return { daily: 0, weekly: 0, monthly: 0, ...JSON.parse(localStorage.getItem('paperTradingTargets') || '{}') }; } catch { return { daily: 0, weekly: 0, monthly: 0 }; } });
+  const botOn = Boolean(status?.enabled); const pairLabel = PAIRS.find(([v]) => v === pair)?.[1] || pair.toUpperCase();
 
-  const botEnabled = Boolean(status?.enabled);
-
-  const recordDecisionObservation = (nextDecision, nextMarket) => {
-    if (!nextDecision) return;
-    const timestamp = nextDecision.timestamp || new Date().toISOString();
-    const item = {
-      timestamp,
-      action: String(nextDecision.action || 'HOLD').toUpperCase(),
-      confidence: Number(nextDecision.confidence || 0) * 100,
-      move: nextMarket?.recent_move == null ? null : Number(nextMarket.recent_move),
-      pair: PAIR_OPTIONS.find(([value]) => value === selectedPair)?.[1] || selectedPair.toUpperCase(),
-    };
-    setDecisionHistory((current) => {
-      if (current[0]?.timestamp === timestamp) return current;
-      const next = [item, ...current].slice(0, 20);
-      localStorage.setItem('aiDecisionObservations', JSON.stringify(next));
-      return next;
-    });
-  };
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
-    try {
-      const [statusRes, positionsRes, performanceRes, decisionRes, agentsRes, marketRes, insightRes] = await Promise.all([
-        axios.get('/api/dashboard/status'),
-        axios.get('/api/dashboard/positions'),
-        axios.get('/api/dashboard/performance'),
-        axios.get('/api/dashboard/recent-decision'),
-        axios.get('/api/dashboard/agents'),
-        axios.get('/api/market/overview', { params: { pair: selectedPair } }),
-        axios.get('/api/market/insights'),
-      ]);
-      setStatus(statusRes.data);
-      setPositions(positionsRes.data.positions || []);
-      setPerformance(performanceRes.data.performance || null);
-      const nextDecision = decisionRes.data.decision || null;
-      const nextMarket = marketRes.data;
-      setDecision(nextDecision);
-      setAgents(agentsRes.data.agents || []);
-      setMarket(nextMarket);
-      setInsights(insightRes.data.items || []);
-      recordDecisionObservation(nextDecision, nextMarket);
-    } catch (error) {
-      console.error('Error fetching dashboard data:', error);
-      toast.error('Failed to fetch dashboard data');
-    } finally {
-      setLoading(false);
+    const requests = [
+      ['status', axios.get('/api/dashboard/status')], ['positions', axios.get('/api/dashboard/positions')], ['performance', axios.get('/api/dashboard/performance')],
+      ['decision', axios.get('/api/dashboard/recent-decision')], ['agents', axios.get('/api/dashboard/agents')], ['market', axios.get('/api/market/overview', { params: { pair } })], ['insights', axios.get('/api/market/insights')],
+    ];
+    const results = await Promise.allSettled(requests.map(([, request]) => request)); let failures = 0;
+    results.forEach((result, index) => {
+      const key = requests[index][0]; if (result.status !== 'fulfilled') { failures += 1; return; } const payload = result.value.data;
+      if (key === 'status') setStatus(payload); if (key === 'positions') setPositions(payload.positions || []); if (key === 'performance') setPerformance(payload.performance || null); if (key === 'decision') setDecision(payload.decision || null); if (key === 'agents') setAgents(payload.agents || []); if (key === 'market') setMarket(payload); if (key === 'insights') setInsights(payload.items || []);
+    });
+    const dResult = results[3]; const mResult = results[5];
+    if (dResult.status === 'fulfilled' && dResult.value.data?.decision) {
+      const d = dResult.value.data.decision; const m = mResult.status === 'fulfilled' ? mResult.value.data : null;
+      const item = { timestamp: d.timestamp || d.created_at || new Date().toISOString(), action: String(d.action || d.final_action || 'HOLD').toUpperCase(), confidence: Number(d.confidence ?? d.final_confidence ?? 0) * 100, move: m?.recent_move == null ? null : Number(m.recent_move), pair: pairLabel };
+      setHistory((current) => { if (current[0]?.timestamp === item.timestamp) return current; const next = [item, ...current].slice(0, 20); localStorage.setItem('aiDecisionObservations', JSON.stringify(next)); return next; });
     }
-  };
+    if (failures > 0 && failures < requests.length) toast.error(`${failures} dashboard service${failures > 1 ? 's' : ''} unavailable; healthy panels remain visible.`);
+    if (failures === requests.length) toast.error('Dashboard API is unavailable.');
+    setLoading(false);
+  }, [pair, pairLabel]);
+  useEffect(() => { fetchData(); const interval = setInterval(fetchData, 60000); return () => clearInterval(interval); }, [fetchData]);
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 60000);
-    return () => clearInterval(interval);
-  }, [selectedPair]);
+  const toggleBot = async () => { if (mode !== 'paper' || actionLoading) return; setActionLoading(true); try { if (botOn) await axios.post('/api/dashboard/paper/stop'); else await axios.post('/api/dashboard/paper/start', null, { params: { pair } }); toast.success(botOn ? 'Paper trading stopped.' : 'Paper trading enabled.'); await fetchData(); } catch (error) { toast.error(error.response?.data?.detail || error.response?.data?.error || 'Paper trading control failed.'); await fetchData(); } finally { setActionLoading(false); } };
+  const analyze = async () => { if (!botOn) return toast('BOT is OFF. Start paper trading first.'); try { toast.loading('Running AI analysis…', { id: 'analysis' }); await axios.post('/api/dashboard/analyze', null, { params: { symbol: pair } }); toast.success('AI analysis completed.', { id: 'analysis' }); await fetchData(); } catch (error) { toast.error(error.response?.data?.detail || 'AI analysis failed.', { id: 'analysis' }); } };
+  const saveTarget = (key, value) => { const next = { ...targets, [key]: Math.max(0, Number(value) || 0) }; setTargets(next); localStorage.setItem('paperTradingTargets', JSON.stringify(next)); };
 
-  const handleLogout = async () => {
-    setAnchorEl(null);
-    await logout();
-    navigate('/login');
-  };
+  const health = status?.system_health || {}; const aiEngine = status?.ai_engine || {}; const counts = status?.decision_counts || { BUY: 0, SELL: 0, HOLD: 0 }; const dailyPnl = Number(status?.daily_pnl || 0); const move = Number(market?.recent_move); const action = String(decision?.action || decision?.final_action || 'HOLD').toUpperCase(); const confidence = Number(decision?.confidence ?? decision?.final_confidence ?? 0) * 100; const scores = decision?.market_scores || {};
+  const votes = Object.values(decision?.votes || decision?.agent_votes || {}).map((v) => String(v).toUpperCase()); const buyVotes = votes.filter((v) => v === 'BUY').length; const sellVotes = votes.filter((v) => v === 'SELL').length; const holdVotes = votes.filter((v) => v === 'HOLD').length; const consensus = Math.max(buyVotes, sellVotes, holdVotes) / Math.max(1, votes.length) * 100; const scanner = useMemo(() => insights.slice(0, 8), [insights]);
 
-  const handlePaperToggle = async () => {
-    if (tradingMode !== 'paper' || paperActionLoading) return;
-    setPaperActionLoading(true);
-    try {
-      if (botEnabled) {
-        const response = await axios.post('/api/dashboard/paper/stop');
-        setStatus(response.data);
-        toast.success('Paper trading stopped');
-      } else {
-        const response = await axios.post('/api/dashboard/paper/start', null, {
-          params: { pair: selectedPair },
-        });
-        setStatus(response.data);
-        toast.success(response.data.message || 'Paper trading started');
-      }
-      await fetchData();
-    } catch (error) {
-      console.error('Paper trading control error:', error);
-      await fetchData();
-      const detail = error.response?.data?.detail || error.response?.data?.error || 'Paper trading control failed';
-      toast.error(detail);
-    } finally {
-      setPaperActionLoading(false);
-    }
-  };
+  return <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
+    <AppBar position="static"><Toolbar><ShowChart sx={{ mr: 1.5 }} /><Typography variant="h6" sx={{ flexGrow: 1 }}>AI Trading Dashboard</Typography><Chip label={botOn ? 'BOT ON' : 'BOT OFF'} color={botOn ? 'success' : 'default'} size="small" sx={{ mr: 1.5, fontWeight: 700 }} /><Button color="inherit" startIcon={<Refresh />} disabled={!botOn || mode !== 'paper'} onClick={analyze}>Analyze</Button><IconButton color="inherit" onClick={(e) => setMenu(e.currentTarget)}><AccountCircle /></IconButton><Menu anchorEl={menu} open={Boolean(menu)} onClose={() => setMenu(null)}><MenuItem disabled>{user?.username || 'Admin'}</MenuItem><Divider /><MenuItem onClick={() => { setMenu(null); navigate('/reports'); }}>Reports</MenuItem><MenuItem onClick={async () => { setMenu(null); await logout(); navigate('/login'); }}><Logout sx={{ mr: 1 }} fontSize="small" />Logout</MenuItem></Menu></Toolbar></AppBar>
+    {loading && <LinearProgress />}
+    <Box sx={{ p: { xs: 1.5, md: 3 } }}>
+      <Paper sx={{ p: 2.5, mb: 3 }}><Grid container spacing={2} alignItems="center"><Grid item xs={12} md={5}><Typography variant="overline" color="text.secondary">Trading Environment</Typography><Typography variant="h5">Paper Trading</Typography><Typography variant="body2" color="text.secondary">Paper execution is the active validation environment. Real trading remains locked.</Typography></Grid><Grid item xs={12} md={3}><FormControl fullWidth size="small"><InputLabel>Trading Pair</InputLabel><Select value={pair} label="Trading Pair" onChange={(e) => { setPair(e.target.value); localStorage.setItem('paperTradingPair', e.target.value); }}>{PAIRS.map(([v, label]) => <MenuItem key={v} value={v}>{label}</MenuItem>)}</Select></FormControl></Grid><Grid item xs={12} md={4} sx={{ display: 'flex', justifyContent: { md: 'flex-end' } }}><ToggleButtonGroup value={mode} exclusive onChange={(_, value) => value && setMode(value)}><ToggleButton value="paper">PAPER</ToggleButton><ToggleButton value="real" disabled><LockOutlined sx={{ mr: .5, fontSize: 17 }} />REAL</ToggleButton></ToggleButtonGroup></Grid></Grid><Alert severity={botOn ? 'success' : 'info'} sx={{ mt: 2 }}>{botOn ? `Paper bot is RUNNING on ${pairLabel}.` : 'Safety mode: BOT OFF. Selecting, refreshing, or viewing the dashboard never starts an AI cycle.'}</Alert></Paper>
 
-  const handleAnalyze = async () => {
-    if (!botEnabled || tradingMode !== 'paper') {
-      toast('Paper trading is OFF. No AI cycle was started.');
-      return;
-    }
-    try {
-      toast.loading('Analyzing...');
-      const response = await axios.post('/api/dashboard/analyze', null, { params: { symbol: selectedPair.toUpperCase() } });
-      toast.dismiss();
-      toast.success('Analysis complete!');
-      setDecision(response.data);
-      fetchData();
-    } catch (error) {
-      toast.dismiss();
-      toast.error(error.response?.data?.detail || 'Analysis failed');
-    }
-  };
+      <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={8}><Paper sx={{ p: 2.5, height: '100%' }}><Stack direction="row" justifyContent="space-between"><Box><Typography variant="h6">Market Pulse</Typography><Typography variant="caption" color="text.secondary">{pairLabel} · INDODAX public API · recent trades</Typography></Box><Typography variant="h6">{market?.last ? money(market.last) : '—'}</Typography></Stack><PriceChart points={market?.points} /><Grid container spacing={1}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h High</Typography><Typography>{market?.high ? money(market.high) : '—'}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h Low</Typography><Typography>{market?.low ? money(market.low) : '—'}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Recent Move</Typography><Typography color={move > 0 ? 'success.main' : move < 0 ? 'error.main' : 'text.primary'}>{Number.isFinite(move) ? `${move > 0 ? '+' : ''}${move.toFixed(2)}%` : '—'}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h Volume</Typography><Typography>{market?.volume ? money(market.volume) : '—'}</Typography></Grid></Grid></Paper></Grid><Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Market Scanner</Typography><Typography variant="caption" color="text.secondary">Top IDR-volume public tickers. No orders are placed.</Typography><Stack spacing={1} sx={{ mt: 1.5 }}>{scanner.map((item) => <Card key={item.pair} variant="outlined"><CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}><Stack direction="row" justifyContent="space-between"><Box><Typography variant="subtitle2">{item.pair}</Typography><Typography variant="caption" color="text.secondary">{money(item.last)} · Vol {money(item.volume_idr)}</Typography></Box><Chip icon={item.range_position >= 50 ? <TrendingUp /> : <TrendingDown />} label={item.signal} size="small" color={item.range_position >= 80 ? 'success' : item.range_position <= 20 ? 'error' : 'default'} /></Stack></CardContent></Card>)}{!scanner.length && <Typography color="text.secondary">Market scanner unavailable.</Typography>}</Stack></Paper></Grid></Grid>
 
-  const handleModeChange = (_event, newMode) => {
-    if (newMode === 'real') {
-      toast('Real Trading is visible for future use but remains locked.');
-      return;
-    }
-    if (newMode) setTradingMode(newMode);
-  };
+      <Grid container spacing={3} sx={{ mb: 3 }}>{[['Portfolio Value', money(status?.portfolio_value || status?.balance), `Balance: ${money(status?.balance)}`], ['Daily PnL', money(dailyPnl), `${status?.daily_trades || 0} trades today`], ['Active Positions', String(status?.active_positions || positions.length || 0), 'Max: 5'], ['Total Trades', String(status?.total_trades || 0), `Win rate: ${num(Number(performance?.win_rate || 0) * 100, 1)}%`]].map(([title, value, sub]) => <Grid item xs={12} sm={6} md={3} key={title}><Paper sx={{ p: 2.2 }}><Typography variant="caption" color="text.secondary">{title}</Typography><Typography variant="h6">{value}</Typography><Typography variant="caption" color="text.secondary">{sub}</Typography></Paper></Grid>)}</Grid>
 
-  const handlePairChange = (event) => {
-    const value = event.target.value;
-    setSelectedPair(value);
-    localStorage.setItem('paperTradingPair', value);
-  };
+      <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={5}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Paper Trading Control</Typography><Typography variant="caption" color="text.secondary">Manual gate. Durable Object Alarm runs only after BOT ON.</Typography><Button fullWidth sx={{ mt: 2 }} variant="contained" color={botOn ? 'error' : 'success'} disabled={actionLoading} onClick={toggleBot}>{actionLoading ? 'PROCESSING…' : botOn ? 'STOP PAPER BOT' : 'START PAPER BOT'}</Button><Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1 }}>AI source: {aiEngine.source || 'FastAPI Cloud + local fallback'}. External configured: {aiEngine.configured ? 'yes' : 'no — local fallback active'}.</Typography></Paper></Grid><Grid item xs={12} md={7}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">Agent Score Radar</Typography><Typography variant="caption" color="text.secondary">Latest multi-agent market scores. This panel never triggers analysis.</Typography><Grid container spacing={1.5} sx={{ mt: 1 }}>{['sentiment', 'technical', 'forecast', 'range_position'].map((key) => { const raw = Number(scores[key] || 0); const value = key === 'range_position' ? raw * 100 : raw * 100; return <Grid item xs={6} key={key}><Typography variant="caption" sx={{ textTransform: 'capitalize' }}>{key.replace('_', ' ')}</Typography><LinearProgress variant="determinate" value={Math.max(0, Math.min(100, value))} sx={{ height: 8, borderRadius: 4, mt: .5 }} /></Grid>; })}</Grid><Stack direction="row" spacing={1} sx={{ mt: 2 }}><Chip label={`AI ${action}`} color={action === 'BUY' ? 'success' : action === 'SELL' ? 'error' : 'default'} /><Chip label={`Confidence ${Number.isFinite(confidence) ? confidence.toFixed(1) : '—'}%`} /><Chip label={`Consensus ${consensus.toFixed(0)}%`} /></Stack></Paper></Grid></Grid>
 
-  const saveTargets = () => {
-    const normalized = {
-      daily: Math.max(0, Number(targetDraft.daily) || 0),
-      weekly: Math.max(0, Number(targetDraft.weekly) || 0),
-      monthly: Math.max(0, Number(targetDraft.monthly) || 0),
-    };
-    setTargets(normalized);
-    setTargetDraft(normalized);
-    localStorage.setItem('paperTradingTargets', JSON.stringify(normalized));
-    toast.success('Evaluation targets saved');
-  };
+      <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={5}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">System Health</Typography><Typography variant="caption" color="text.secondary">Worker and paper-state diagnostics.</Typography><Stack spacing={1.4} sx={{ mt: 2 }}><HealthItem label="Database" ok={health.database?.connected === true} value={health.database?.connected ? 'CONNECTED' : 'DISCONNECTED'} /><HealthItem label="Market data" ok={health.market_data?.fresh === true} value={health.market_data?.fresh ? 'FRESH' : 'STALE'} /><HealthItem label="Mode" ok={health.mode === 'paper'} value={String(health.mode || 'paper').toUpperCase()} /><HealthItem label="Engine" ok={health.engine?.running === true} value={health.engine?.running ? 'RUNNING' : 'OFF'} /></Stack></Paper></Grid><Grid item xs={12} md={7}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6">AI Consensus</Typography><Typography variant="caption" color="text.secondary">Votes from the latest AI result.</Typography><Stack direction="row" spacing={1} sx={{ mt: 2, mb: 2 }}><Chip label={`BUY ${buyVotes}`} color="success" /><Chip label={`HOLD ${holdVotes}`} /><Chip label={`SELL ${sellVotes}`} color="error" /></Stack><Typography variant="body2">{decision?.summary || 'Waiting for the first AI cycle.'}</Typography><Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Agents: {agents.length || 5} · Source: {decision?.source || aiEngine.source || 'AI ensemble'}</Typography></Paper></Grid></Grid>
 
-  const counts = status?.decision_counts || { BUY: 0, SELL: 0, HOLD: 0 };
-  const currentPairLabel = PAIR_OPTIONS.find(([value]) => value === selectedPair)?.[1] || selectedPair.toUpperCase();
-  const dailyActual = Number(status?.daily_pnl || 0);
-  const targetProgress = (target) => target > 0 ? Math.min(100, Math.max(0, (dailyActual / target) * 100)) : 0;
-  const insightRows = useMemo(() => insights.slice(0, 5), [insights]);
+      <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={7}><Paper sx={{ p: 2.5 }}><Typography variant="h6">Decision History</Typography><Stack spacing={1} sx={{ mt: 1.5 }}>{history.slice(0, 8).map((item, i) => <Card key={`${item.timestamp}-${i}`} variant="outlined"><CardContent sx={{ py: .9, '&:last-child': { pb: .9 } }}><Stack direction="row" justifyContent="space-between"><Typography variant="caption">{new Date(item.timestamp).toLocaleString('id-ID')}</Typography><Chip size="small" label={item.action} color={item.action === 'BUY' ? 'success' : item.action === 'SELL' ? 'error' : 'default'} /></Stack><Typography variant="caption" color="text.secondary">{item.pair} · move {item.move == null ? '—' : `${Number(item.move).toFixed(2)}%`} · confidence {Number(item.confidence || 0).toFixed(0)}%</Typography></CardContent></Card>)}{!history.length && <Typography color="text.secondary">No decisions recorded yet.</Typography>}</Stack></Paper></Grid><Grid item xs={12} md={5}><Paper sx={{ p: 2.5 }}><Typography variant="h6">Evaluation Targets</Typography><Typography variant="caption" color="text.secondary">Local targets; they do not change bot risk settings.</Typography><Stack spacing={1.5} sx={{ mt: 2 }}>{['daily', 'weekly', 'monthly'].map((key) => <Stack direction="row" alignItems="center" spacing={1} key={key}><Typography sx={{ width: 70, textTransform: 'capitalize' }}>{key}</Typography><input aria-label={`${key} target`} type="number" min="0" value={targets[key]} onChange={(e) => saveTarget(key, e.target.value)} style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #555', background: 'transparent', color: 'inherit' }} /></Stack>)}</Stack><LinearProgress variant="determinate" value={targets.daily > 0 ? Math.max(0, Math.min(100, dailyPnl / targets.daily * 100)) : 0} sx={{ mt: 2 }} /></Paper></Grid></Grid>
 
-  return (
-    <Box sx={{ flexGrow: 1, minHeight: '100vh', bgcolor: 'background.default' }}>
-      <AppBar position="static">
-        <Toolbar>
-          <ShowChart sx={{ mr: 2 }} />
-          <Typography variant="h6" sx={{ flexGrow: 1 }}>AI Trading Dashboard</Typography>
-          <Chip label={botEnabled ? 'BOT ON' : 'BOT OFF'} color={botEnabled ? 'success' : 'default'} size="small" sx={{ mr: 2, fontWeight: 700 }} />
-          <Button color="inherit" onClick={handleAnalyze} startIcon={<Refresh />} disabled={!botEnabled || tradingMode !== 'paper'}>Analyze</Button>
-          <IconButton size="large" edge="end" color="inherit" onClick={(e) => setAnchorEl(e.currentTarget)}><AccountCircle /></IconButton>
-          <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={() => setAnchorEl(null)}>
-            <MenuItem disabled><Typography variant="body2">{user?.username || 'Admin'}</Typography></MenuItem>
-            <Divider />
-            <MenuItem onClick={() => { setAnchorEl(null); navigate('/reports'); }}>Reports</MenuItem>
-            <MenuItem onClick={handleLogout}><Logout sx={{ mr: 1 }} fontSize="small" />Logout</MenuItem>
-          </Menu>
-        </Toolbar>
-      </AppBar>
-
-      <Box sx={{ p: 3 }}>
-        {loading && <LinearProgress sx={{ mb: 2 }} />}
-
-        <Paper sx={{ p: 2.5, mb: 3, border: '1px solid', borderColor: 'divider' }}>
-          <Grid container spacing={2} alignItems="center">
-            <Grid item xs={12} md={5}>
-              <Typography variant="overline" color="text.secondary">Trading Environment</Typography>
-              <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.5 }}>{tradingMode === 'paper' ? 'Paper Trading' : 'Real Trading'}</Typography>
-              <Typography variant="body2" color="text.secondary">Paper is the active validation environment. Real Trading is visible for future use only and is not connected to any exchange.</Typography>
-            </Grid>
-            <Grid item xs={12} md={3}>
-              <FormControl fullWidth size="small"><InputLabel>Trading Pair</InputLabel><Select value={selectedPair} label="Trading Pair" onChange={handlePairChange}>{PAIR_OPTIONS.map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}</Select></FormControl>
-            </Grid>
-            <Grid item xs={12} md={4} sx={{ display: 'flex', justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
-              <ToggleButtonGroup value={tradingMode} exclusive onChange={handleModeChange}><ToggleButton value="paper">PAPER</ToggleButton><ToggleButton value="real" disabled><LockOutlined sx={{ mr: 0.75, fontSize: 18 }} />REAL</ToggleButton></ToggleButtonGroup>
-            </Grid>
-          </Grid>
-          <Alert severity={botEnabled ? 'success' : 'info'} sx={{ mt: 2 }}>
-            {botEnabled
-              ? `Paper bot is RUNNING on ${currentPairLabel}. Only paper execution is enabled; real trading remains locked.`
-              : 'Safety mode: BOT OFF. Selecting, refreshing, or viewing this dashboard never starts an AI trading cycle.'}
-          </Alert>
-        </Paper>
-
-        <Grid container spacing={3} sx={{ mb: 3 }}>
-          <Grid item xs={12} md={8}><Paper sx={{ p: 2.5, height: '100%' }}><Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}><Box><Typography variant="h6">Market Pulse</Typography><Typography variant="body2" color="text.secondary">{currentPairLabel} · INDODAX public data · recent trades only</Typography></Box><Typography variant="h6">{formatMarketPrice(market?.last, market?.quote_currency)}</Typography></Stack><SimplePriceChart points={market?.points} /><Grid container spacing={1} sx={{ mt: 1 }}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h High</Typography><Typography>{formatMarketPrice(market?.high, market?.quote_currency)}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h Low</Typography><Typography>{formatMarketPrice(market?.low, market?.quote_currency)}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Recent Move</Typography><Typography color={Number(market?.recent_move || 0) >= 0 ? 'success.main' : 'error.main'}>{market?.recent_move == null ? '—' : `${Number(market.recent_move).toFixed(2)}%`}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">24h Volume</Typography><Typography>{formatIDR(market?.volume)}</Typography></Grid></Grid><Typography variant="caption" color="text.secondary">Recent Move = movement across the latest public trades returned by INDODAX, not a claimed 24h percentage change.</Typography></Paper></Grid>
-          <Grid item xs={12} md={4}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>Market Scanner</Typography><Typography variant="caption" color="text.secondary">Lightweight watchlist ranked by IDR volume. It does not place trades.</Typography><Stack spacing={1} sx={{ mt: 2 }}>{insightRows.map((item) => <Card key={item.pair} variant="outlined"><CardContent sx={{ py: 1.2, '&:last-child': { pb: 1.2 } }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle2">{item.pair}</Typography><Typography variant="caption" color="text.secondary">{formatIDR(item.last)} · Vol {formatIDR(item.volume_idr)}</Typography></Box><Chip icon={item.range_position >= 50 ? <TrendingUp /> : <TrendingDown />} label={item.signal} size="small" color={item.range_position >= 80 ? 'success' : item.range_position <= 20 ? 'error' : 'default'} /></Stack></CardContent></Card>)}{insightRows.length === 0 && <Typography color="text.secondary">Market scanner unavailable.</Typography>}</Stack></Paper></Grid>
-        </Grid>
-
-        <Paper sx={{ p: 2.5, mb: 3 }}>
-          <Grid container alignItems="center" spacing={2}>
-            <Grid item xs={12} md={8}>
-              <Typography variant="h6">Paper Trading Control</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Current state: <strong>{botEnabled ? 'RUNNING' : 'OFF'}</strong>. Start explicitly from this control; the Worker keeps the safety state in a Durable Object.
-              </Typography>
-            </Grid>
-            <Grid item xs={12} md={4} sx={{ display: 'flex', justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
-              <Button
-                variant="contained"
-                color={botEnabled ? 'error' : 'success'}
-                onClick={handlePaperToggle}
-                disabled={paperActionLoading || tradingMode !== 'paper'}
-              >
-                {paperActionLoading ? 'STARTING...' : (botEnabled ? 'STOP PAPER BOT' : 'START PAPER BOT')}
-              </Button>
-            </Grid>
-          </Grid>
-        </Paper>
-
-        <Grid container spacing={3} sx={{ mb: 3 }}>{[
-          ['Portfolio Value', formatIDR(status?.portfolio_value), `Balance: ${formatIDR(status?.balance)}`],
-          ['Daily PnL', formatIDR(dailyActual), `${status?.daily_trades || 0} trades today`],
-          ['Active Positions', status?.active_positions || 0, `Max: ${status?.max_open_positions || 5}`],
-          ['Total Trades', status?.total_trades || 0, `Win Rate: ${((performance?.win_rate || 0) * 100).toFixed(1)}%`],
-        ].map(([title, value, sub]) => <Grid item xs={12} sm={6} md={3} key={title}><Card><CardContent><Typography color="text.secondary" gutterBottom>{title}</Typography><Typography variant="h5">{value}</Typography><Typography variant="body2" color="text.secondary">{sub}</Typography></CardContent></Card></Grid>)}</Grid>
-
-        <DashboardTools market={market} decision={decision} counts={counts} runtimeHours={status?.runtime_hours || 0} cycles={status?.cycles_today || 0} targets={targets} dailyActual={dailyActual} decisionHistory={decisionHistory} positions={positions} />
-
-        <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={7}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>AI Runtime & Decisions</Typography><Grid container spacing={2}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">AI Runtime</Typography><Typography variant="h6">{Number(status?.runtime_hours || 0).toFixed(1)} h</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography variant="h6">{status?.cycles_today || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">BUY</Typography><Typography color="success.main" variant="h6">{counts.BUY || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">SELL</Typography><Typography color="error.main" variant="h6">{counts.SELL || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">HOLD</Typography><Typography variant="h6">{counts.HOLD || 0}</Typography></Grid></Grid><Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>Runtime and cycle counters update from the persistent paper-trading safety state.</Typography></Paper></Grid>
-          <Grid item xs={12} md={5}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>Evaluation Targets</Typography><Typography variant="caption" color="text.secondary">Targets measure bot quality only. They never force BUY/SELL decisions.</Typography><Stack spacing={1.2} sx={{ mt: 2 }}>{['daily', 'weekly', 'monthly'].map((period) => <TextField key={period} size="small" label={`${period[0].toUpperCase()}${period.slice(1)} target`} type="number" value={targetDraft[period]} onChange={(e) => setTargetDraft({ ...targetDraft, [period]: e.target.value })} InputProps={{ startAdornment: <Typography sx={{ mr: 1, color: 'text.secondary' }}>Rp</Typography> }} />)}<Button variant="outlined" onClick={saveTargets}>Save Targets</Button></Stack><Stack spacing={0.8} sx={{ mt: 2 }}><Typography variant="caption">Daily progress: {targets.daily > 0 ? `${targetProgress(targets.daily).toFixed(0)}%` : 'not set'}</Typography><LinearProgress variant="determinate" value={targetProgress(targets.daily)} /></Stack></Paper></Grid></Grid>
-
-        <Paper sx={{ p: 2.5, mb: 3 }}><Typography variant="h6" gutterBottom>Paper Account</Typography><Typography variant="body2" color="text.secondary">Currency: IDR · Initial validation balance: {formatIDR(10000000)} · Selected market: {currentPairLabel}</Typography>{decision && <Box sx={{ mt: 2 }}><Typography variant="subtitle2" color="text.secondary">Latest Decision</Typography><Typography variant="h4">{decision.action || 'HOLD'}</Typography><Typography variant="body2">Confidence: {((decision.confidence || 0) * 100).toFixed(1)}%</Typography><Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1 }}>{decision.votes && Object.entries(decision.votes).map(([agent, vote]) => <Chip key={agent} label={`${agent}: ${vote}`} size="small" />)}</Box></Box>}</Paper>
-
-        <Paper sx={{ p: 3, mb: 3 }}><Typography variant="h6" gutterBottom>Positions</Typography>{positions.length === 0 ? <Typography color="text.secondary">No active positions</Typography> : <Grid container spacing={2}>{positions.map((pos, index) => <Grid item xs={12} sm={6} md={4} key={index}><Card variant="outlined"><CardContent><Typography variant="h6">{pos.symbol}</Typography><Typography variant="body2">{pos.side} · {Number(pos.quantity || 0).toFixed(8)}</Typography><Typography variant="body2">Entry: {formatMarketPrice(pos.entry_price, 'IDR')}</Typography><Typography variant="body2" color={Number(pos.unrealized_pnl) >= 0 ? 'success.main' : 'error.main'}>PnL: {formatIDR(pos.unrealized_pnl)}</Typography></CardContent></Card></Grid>)}</Grid>}</Paper>
-
-        <Paper sx={{ p: 3 }}><Typography variant="h6" gutterBottom>AI Agents Status</Typography><Grid container spacing={2}>{agents.map((agent, index) => <Grid item xs={12} sm={6} md={4} key={index}><Card variant="outlined"><CardContent><Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: agent.status === 'armed' ? 'success.main' : 'text.disabled' }} /><Typography variant="subtitle1">{agent.name}</Typography></Box><Typography variant="body2" color="text.secondary">{agent.description}</Typography><Chip label={agent.status.toUpperCase()} size="small" sx={{ mt: 1 }} /></CardContent></Card></Grid>)}</Grid></Paper>
-      </Box>
+      <Grid container spacing={3}><Grid item xs={12}><Paper sx={{ p: 2.5 }}><Typography variant="h6">Active Positions</Typography>{positions.length ? <Stack spacing={1} sx={{ mt: 1.5 }}>{positions.map((p, i) => <Card key={`${p.symbol}-${i}`} variant="outlined"><CardContent sx={{ py: 1 }}><Stack direction="row" justifyContent="space-between"><Typography>{p.symbol}</Typography><Typography>{p.side} · Qty {num(p.quantity, 8)}</Typography><Typography>{money(p.unrealized_pnl)}</Typography></Stack></CardContent></Card>)}</Stack> : <Typography color="text.secondary" sx={{ mt: 1 }}>No active paper positions.</Typography>}</Paper></Grid></Grid>
     </Box>
-  );
-};
-
-export default Dashboard;
+  </Box>;
+}
