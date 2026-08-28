@@ -23,7 +23,6 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
-    "prepare:ai-engine": "rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
     "build:cloudflare": "npm run build && python -m pip install uv && uvx --from workers-py pywrangler sync",
     "deploy": "uvx --from workers-py pywrangler deploy",
     "preview": "uvx --from workers-py pywrangler dev",
