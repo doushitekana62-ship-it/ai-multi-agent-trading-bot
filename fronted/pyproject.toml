@@ -1,10 +1,11 @@
 [project]
 name = "ai-multi-agent-trading-cloudflare"
-version = "1.0.3"
+version = "1.0.4"
 description = "Lightweight Python Worker API for the AI trading dashboard on Cloudflare Workers"
 requires-python = ">=3.13"
 dependencies = [
     "workers-runtime-sdk",
+    "textblob",
 ]
 
 [dependency-groups]
