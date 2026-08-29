@@ -30,16 +30,10 @@ def _optional_json_number(value):
 
 
 def _merge_market_history(previous, current, limit=120):
-    """Persist real public-trade observations across cycles without fabrication."""
     merged = []
     seen = set()
     for point in list(previous or []) + list(current or []):
-        key = (
-            str(point.get("timestamp") or point.get("date") or ""),
-            str(point.get("price") or ""),
-            str(point.get("amount") or ""),
-            str(point.get("type") or ""),
-        )
+        key = (str(point.get("timestamp") or point.get("date") or ""), str(point.get("price") or ""), str(point.get("amount") or ""), str(point.get("type") or ""))
         if key in seen:
             continue
         seen.add(key)
@@ -54,27 +48,21 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
     ok, _, reason = await state_api.begin_cycle()
     if not ok:
         state = await state_api.get_state()
-        return {
-            "ok": False,
-            "reason": reason,
-            "state": state_response(state) if state_response else state,
-        }
+        return {"ok": False, "reason": reason, "state": state_response(state) if state_response else state}
 
     try:
         scope = {"env": env, "query_string": f"pair={pair}".encode("latin-1")}
         market = await cf_worker._market_overview(scope)
         if not market.get("available") or _json_number(market.get("last")) <= 0:
             state = await state_api.finish_cycle("market_data_unavailable")
-            return {
-                "ok": False,
-                "reason": "market_data_unavailable",
-                "state": state_response(state) if state_response else state,
-            }
+            return {"ok": False, "reason": "market_data_unavailable", "state": state_response(state) if state_response else state}
 
+        # The Worker cannot access DurableObjectStub.ctx. Keep the cycle input
+        # RPC-safe: the current public trades are already enough to build the
+        # bounded analysis window, while persistent trading state remains owned
+        # exclusively by PaperTradingState.
         points = list(market.get("points") or [])
-        previous_history = await state_api.ctx.storage.get("paper_market_history")
-        history = _merge_market_history(previous_history, points, limit=120)
-        await state_api.ctx.storage.put("paper_market_history", history)
+        history = _merge_market_history([], points, limit=120)
 
         ohlcv = []
         for point in history:
@@ -82,19 +70,8 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             if price <= 0:
                 continue
             raw_timestamp = _json_number(point.get("timestamp") or point.get("date"))
-            timestamp = (
-                datetime.fromtimestamp(raw_timestamp, tz=timezone.utc).isoformat()
-                if raw_timestamp > 0
-                else datetime.now(timezone.utc).isoformat()
-            )
-            ohlcv.append({
-                "timestamp": timestamp,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": _json_number(point.get("amount"), 1.0),
-            })
+            timestamp = datetime.fromtimestamp(raw_timestamp, tz=timezone.utc).isoformat() if raw_timestamp > 0 else datetime.now(timezone.utc).isoformat()
+            ohlcv.append({"timestamp": timestamp, "open": price, "high": price, "low": price, "close": price, "volume": _json_number(point.get("amount"), 1.0)})
 
         symbol = market["pair"].upper().replace("_", "/")
         last_price = _json_number(market.get("last"))
@@ -113,14 +90,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "data_quality_score": 0.85 if len(ohlcv) >= 80 else 0.55,
         }
 
-        orchestrator = CloudflareOrchestrator(
-            {
-                "min_confidence": 0.40,
-                "max_position_size": 0.20,
-                "debug_enabled": True,
-            },
-            env=env,
-        )
+        orchestrator = CloudflareOrchestrator({"min_confidence": 0.40, "max_position_size": 0.20, "debug_enabled": True}, env=env)
         result = await orchestrator.analyze(symbol, market_data)
 
         action = str(result.final_action or "HOLD").upper()
@@ -149,18 +119,10 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "execution_reason": result.execution_reason,
             "hold_reason": result.hold_reason,
             "summary": result.summary,
-            "agents_invoked": [
-                "Sentiment Agent",
-                "Technical Agent",
-                "Decision Agent",
-                "Forecast Agent",
-                "Reflector Agent",
-            ],
+            "agents_invoked": ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"],
             "market_history_points": len(ohlcv),
             "created_at": result.timestamp.isoformat(),
         }
-
-        await state_api.ctx.storage.put("last_orchestrator", metadata)
 
         payload = {
             "decision": action,
@@ -170,20 +132,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "reasoning": result.execution_reason or result.hold_reason or result.summary,
         }
         state = await state_api.record_cycle_payload(payload)
-        return {
-            "ok": True,
-            "action": action,
-            "raw_action": result.final_action,
-            "confidence": confidence,
-            "market": market,
-            "orchestrator": metadata,
-            "state": state_response(state) if state_response else state,
-        }
+        return {"ok": True, "action": action, "raw_action": result.final_action, "confidence": confidence, "market": market, "orchestrator": metadata, "state": state_response(state) if state_response else state}
     except Exception as exc:
         state = await state_api.finish_cycle(f"cycle_error: {exc}")
-        return {
-            "ok": False,
-            "reason": "cycle_error",
-            "error": str(exc),
-            "state": state_response(state) if state_response else state,
-        }
+        return {"ok": False, "reason": "cycle_error", "error": str(exc), "state": state_response(state) if state_response else state}
