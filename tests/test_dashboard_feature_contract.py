@@ -36,6 +36,30 @@ def test_history_api_is_bounded_and_paginated():
     assert "has_next = len(rows) > page_size" in source
 
 
+def test_dashboard_history_is_supabase_only_and_paginated():
+    source = read("fronted/src/components/DashboardTools.jsx")
+    assert "Supabase is the only source of persisted cycle history" in source
+    assert "page_size: 10" in source
+    assert "historyHasNext" in source
+    assert "No persisted cycles" in source
+    assert "decisionHistory.filter" not in source
+
+
+def test_dashboard_refresh_and_paper_reset_controls_exist():
+    source = read("fronted/src/pages/Dashboard.jsx")
+    assert "Refresh Data" in source
+    assert "refreshData" in source
+    assert "api/dashboard/paper/reset" in source
+    assert "Reset Paper Account" in source
+
+
+def test_scalping_selector_uses_live_scanner_supported_pairs_only():
+    source = read("fronted/src/pages/Dashboard.jsx")
+    assert "scalping_supported === true" in source
+    assert "const pairOptions = availablePairs" in source
+    assert "PAIRS.some" not in source
+
+
 def test_market_scanner_is_not_hard_capped_at_five():
     source = read("fronted/cf_worker.py")
     assert '"items": items[:20]' in source
