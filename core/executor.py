@@ -49,9 +49,9 @@ class Executor:
             elif self.exchange_mode=="indodax": result=self.indodax_bridge.submit_order(order.symbol,order.side,order.quantity,"market") if self.indodax_bridge else None
             elif self.exchange_mode=="alpaca": result=self.alpaca_bridge.submit_order(order.symbol,order.side,order.quantity,"market")
             else: result=None
-            if result is None:order.status=OrderStatus.REJECTED.value;return None
-            order.status=OrderStatus.FILLED.value;order.filled_at=datetime.now(timezone.utc);order.filled_quantity=order.quantity;order.filled_price=order.price;order.metadata["exchange_result"]=result;self.order_history.append(order);self.daily_trades+=1;return order
-        except Exception: order.status=OrderStatus.REJECTED.value;logger.exception("Order execution failed");return None
+            if result is None: order.status=OrderStatus.REJECTED.value; return None
+            order.status=OrderStatus.FILLED.value; order.filled_at=datetime.now(timezone.utc); order.filled_quantity=order.quantity; order.filled_price=order.price; order.metadata["exchange_result"]=result; self.order_history.append(order); self.daily_trades+=1; return order
+        except Exception: order.status=OrderStatus.REJECTED.value; logger.exception("Order execution failed"); return None
     def _get_execution_realized_pnl(self,order):
         if self.exchange_mode=="paper" and self.paper_trading.trade_history:
             t=self.paper_trading.trade_history[-1]
@@ -63,18 +63,19 @@ class Executor:
         self.active_positions.pop(symbol,None)
         if realized_pnl is not None:self._record_realized_pnl(realized_pnl)
     def _record_realized_pnl(self,pnl):
-        self._ensure_daily_baseline();self.daily_realized_pnl+=pnl;self.daily_pnl=self.daily_realized_pnl/self.daily_starting_equity
+        self._ensure_daily_baseline(); self.daily_realized_pnl+=pnl; self.daily_pnl=self.daily_realized_pnl/self.daily_starting_equity
     def monitor_positions(self,market_prices=None):
         for symbol,position in list(self.active_positions.items()):
             current_price=(market_prices or {}).get(symbol,self._get_current_price(symbol))
-            if current_price is None:continue
+            if current_price is None: continue
             position["current_pnl"]=(current_price-position["entry_price"])/position["entry_price"]
-            hit_sl=position["stop_loss"] is not None and current_price<=position["stop_loss"]; hit_tp=position["take_profit"] is not None and current_price>=position["take_profit"]
+            stop_loss=position.get("stop_loss"); take_profit=position.get("take_profit")
+            hit_sl=stop_loss is not None and current_price<=stop_loss; hit_tp=take_profit is not None and current_price>=take_profit
             if hit_sl or hit_tp:self._close_position(symbol,current_price,"STOP_LOSS" if hit_sl else "TAKE_PROFIT")
     def _close_position(self,symbol,price,reason):
         p=self.active_positions.get(symbol)
         if not p:return None
-        order=self._create_order(symbol,"SELL",p["quantity"],price,None,None);order.metadata["close_reason"]=reason;executed=self._execute_order(order)
+        order=self._create_order(symbol,"SELL",p["quantity"],price,None,None); order.metadata["close_reason"]=reason; executed=self._execute_order(order)
         if executed:self._close_position_record(symbol,self._get_execution_realized_pnl(executed))
         return executed
     def _get_current_price(self,symbol):
@@ -92,4 +93,4 @@ class Executor:
     def get_summary(self):
         return {"active_positions":len(self.active_positions),"total_trades":len(self.order_history),"daily_pnl":self.daily_pnl,"daily_realized_pnl":self.daily_realized_pnl,"daily_trades":self.daily_trades,"positions":self.active_positions,"exchange_mode":self.exchange_mode,"max_open_positions":self.max_open_positions}
     def reset_daily(self):
-        self.daily_starting_equity=self._get_portfolio_value();self.daily_realized_pnl=0.0;self.daily_pnl=0.0;self.daily_trades=0
+        self.daily_starting_equity=self._get_portfolio_value(); self.daily_realized_pnl=0.0; self.daily_pnl=0.0; self.daily_trades=0
