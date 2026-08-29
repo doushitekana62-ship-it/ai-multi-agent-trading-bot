@@ -145,11 +145,18 @@ class PaperTradingState(DurableObject):
         return state
 
     async def begin_cycle(self):
+        """Begin a cycle using an RPC-safe dictionary result.
+
+        Durable Object RPC serializes structured-clone-compatible values. Returning
+        a tuple here made the remote call fragile in the Python Worker runtime.
+        Keep the RPC contract as a plain dictionary so the Worker can reliably
+        receive the cycle lock result.
+        """
         state = await self._get()
         if not state.get("enabled"):
-            return False, state, "paper_trading_disabled"
+            return {"ok": False, "state": state, "reason": "paper_trading_disabled"}
         if state.get("cycle_running"):
-            return False, state, "cycle_already_running"
+            return {"ok": False, "state": state, "reason": "cycle_already_running"}
         now = _now()
         state["cycle_running"] = True
         state["last_error"] = None
@@ -158,7 +165,7 @@ class PaperTradingState(DurableObject):
         state["scheduler_active"] = True
         state["updated_at"] = now
         await self.ctx.storage.put("state", state)
-        return True, state, None
+        return {"ok": True, "state": state, "reason": None}
 
     async def finish_cycle(self, error=None):
         state = await self._get()
