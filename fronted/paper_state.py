@@ -8,6 +8,8 @@ from workers import DurableObject
 from paper_cycle import run_paper_cycle
 
 CYCLE_INTERVAL_MS = 60_000
+MAX_OPEN_POSITIONS = 3
+PAPER_ALLOCATION = 0.10
 
 DEFAULT_STATE = {
     "enabled": False, "mode": "paper", "cycle_running": False, "started_at": None,
@@ -15,7 +17,7 @@ DEFAULT_STATE = {
     "last_cycle_status": "idle", "cycles_today": 0, "cycle_failures": 0,
     "consecutive_cycle_failures": 0, "balance": 10_000_000.0, "initial_balance": 10_000_000.0,
     "portfolio_value": 10_000_000.0, "daily_pnl": 0.0, "total_pnl": 0.0,
-    "daily_trades": 0, "total_trades": 0, "active_positions": 0, "max_open_positions": 5,
+    "daily_trades": 0, "total_trades": 0, "active_positions": 0, "max_open_positions": MAX_OPEN_POSITIONS,
     "decision_counts": {"BUY": 0, "SELL": 0, "HOLD": 0}, "positions": [], "trade_history": [],
     "last_decision": None, "last_error": None, "paper_pair": "btc_idr", "scheduler_active": False,
     "scheduler_source": "durable_object_alarm", "last_scheduler_at": None,
@@ -67,6 +69,10 @@ class PaperTradingState(DurableObject):
         state.setdefault("last_scheduler_at", None)
         state.setdefault("scheduler_invocations", 0)
         state.setdefault("next_cycle_at", None)
+        if int(state.get("max_open_positions", MAX_OPEN_POSITIONS) or MAX_OPEN_POSITIONS) != MAX_OPEN_POSITIONS:
+            state["max_open_positions"] = MAX_OPEN_POSITIONS
+            state["updated_at"] = _now()
+            await self.ctx.storage.put("state", state)
         return state
 
     async def get_state(self):
@@ -197,14 +203,14 @@ class PaperTradingState(DurableObject):
         realized = 0.0
         trade = None
 
-        if action == "BUY" and price > 0 and position_index is None and len(positions) < int(state.get("max_open_positions", 5)):
-            allocation = min(float(state.get("balance", 0.0)) * 0.20, float(state.get("balance", 0.0)))
+        if action == "BUY" and price > 0 and position_index is None and len(positions) < MAX_OPEN_POSITIONS:
+            allocation = min(float(state.get("balance", 0.0)) * PAPER_ALLOCATION, float(state.get("balance", 0.0)))
             if allocation > 0:
                 quantity = allocation / price
                 positions.append({"symbol": symbol, "side": "BUY", "quantity": quantity, "entry_price": price, "price": price, "pnl": 0.0, "confidence": confidence, "created_at": now})
                 state["balance"] -= allocation
                 executed = True
-                trade = {"action": "BUY", "symbol": symbol, "quantity": quantity, "price": price, "pnl": 0.0, "created_at": now}
+                trade = {"action": "BUY", "symbol": symbol, "quantity": quantity, "price": price, "pnl": 0.0, "confidence": confidence, "created_at": now}
         elif action == "SELL" and price > 0 and position_index is not None:
             position = positions[position_index]
             proceeds = float(position.get("quantity", 0.0)) * price
@@ -214,7 +220,7 @@ class PaperTradingState(DurableObject):
             state["daily_pnl"] += realized
             state["total_pnl"] += realized
             executed = True
-            trade = {"action": "SELL", "symbol": symbol, "quantity": float(position.get("quantity", 0.0)), "price": price, "pnl": realized, "created_at": now}
+            trade = {"action": "SELL", "symbol": symbol, "quantity": float(position.get("quantity", 0.0)), "price": price, "pnl": realized, "confidence": confidence, "created_at": now}
 
         for position in positions:
             if position.get("symbol") == symbol and price > 0:
@@ -236,7 +242,7 @@ class PaperTradingState(DurableObject):
             state["total_trades"] = int(state.get("total_trades", 0)) + 1
         last_decision = {"action": action, "confidence": confidence, "symbol": symbol, "price": price, "executed": executed, "realized_pnl": realized, "reasoning": reasoning, "created_at": now}
         if isinstance(analysis, dict):
-            for key in ("votes", "market_scores", "confidence_components", "consensus_action", "consensus_score", "position_size", "stop_loss", "take_profit", "source", "warning", "raw_action", "summary"):
+            for key in ("votes", "market_scores", "confidence_components", "consensus_action", "consensus_score", "position_size", "stop_loss", "take_profit", "source", "warning", "raw_action", "summary", "execution_reason", "hold_reason"):
                 if key in analysis:
                     last_decision[key] = analysis[key]
         if trade:
