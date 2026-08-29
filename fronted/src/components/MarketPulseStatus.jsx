@@ -5,7 +5,6 @@ import { TrendingDown, TrendingUp, Remove } from '@mui/icons-material';
 
 const POLL_MS = 5000;
 const WINDOW_MS = 30 * 60 * 1000;
-const FLAT_THRESHOLD_PCT = 0.05;
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0);
 
 export default function MarketPulseStatus() {
@@ -27,12 +26,12 @@ export default function MarketPulseStatus() {
         const now = Date.now();
         const price = Number(data.last || 0);
         if (price > 0) {
-          const next = [...samplesRef.current, { at: now, price }].filter((item) => now - item.at <= WINDOW_MS).slice(-400);
+          const next = [...samplesRef.current, { at: now, price }].filter((item) => now - item.at <= WINDOW_MS).slice(-420);
           samplesRef.current = next;
           setSamples(next);
         }
       } catch {
-        // Market Pulse remains readable from the existing dashboard data.
+        // Keep the last pulse visible instead of inventing a market state.
       } finally {
         inFlight = false;
       }
@@ -47,7 +46,7 @@ export default function MarketPulseStatus() {
     return ((samples[samples.length - 1].price - samples[0].price) / samples[0].price) * 100;
   }, [samples]);
 
-  const status = move == null ? 'UNAVAILABLE' : Math.abs(move) < FLAT_THRESHOLD_PCT ? 'FLAT' : move > 0 ? 'UP' : 'DOWN';
+  const status = move == null ? 'UNAVAILABLE' : move > 0 ? 'UP' : move < 0 ? 'DOWN' : 'FLAT';
   const color = status === 'UP' ? 'success.main' : status === 'DOWN' ? 'error.main' : 'text.secondary';
   const Icon = status === 'UP' ? TrendingUp : status === 'DOWN' ? TrendingDown : Remove;
 
@@ -57,7 +56,7 @@ export default function MarketPulseStatus() {
         <Icon sx={{ color }} fontSize="small" />
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>MARKET PULSE · 30 MIN</Typography>
-          <Typography variant="body2" fontWeight={700}>{move == null ? 'Menunggu cukup data' : `${move >= 0 ? '+' : ''}${move.toFixed(2)}%`}</Typography>
+          <Typography variant="body2" fontWeight={700}>{move == null ? 'Menunggu cukup data' : `${move >= 0 ? '+' : ''}${move.toFixed(3)}%`}</Typography>
         </Box>
         <Chip size="small" label={status} sx={{ color, fontWeight: 700 }} />
       </Stack>
