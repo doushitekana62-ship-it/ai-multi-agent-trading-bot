@@ -107,20 +107,17 @@ class PaperTradingState(DurableObject):
         state = await self._get()
         if not state.get("enabled") or state.get("cycle_running"):
             return state
-
         current_alarm = await self.ctx.storage.getAlarm()
         if current_alarm is None:
             next_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + CYCLE_INTERVAL_MS
             self.ctx.storage.setAlarm(next_ms)
-            now = _now()
             state["scheduler_active"] = True
             state["next_cycle_at"] = _iso_from_ms(next_ms)
-            state["updated_at"] = now
+            state["updated_at"] = _now()
             await self.ctx.storage.put("state", state)
         return state
 
     async def enable_paper(self, pair="btc_idr"):
-        """Enable paper trading and schedule the first cycle; no cycle runs now."""
         state = await self._get()
         now = _now()
         clean_pair = str(pair or "btc_idr").strip().lower() or "btc_idr"
@@ -128,9 +125,6 @@ class PaperTradingState(DurableObject):
         state["mode"] = "paper"
         state["cycle_running"] = False
         state["started_at"] = now
-        state["last_cycle_at"] = None
-        state["last_cycle_started_at"] = None
-        state["last_cycle_finished_at"] = None
         state["last_cycle_status"] = "waiting"
         state["cycle_failures"] = 0
         state["consecutive_cycle_failures"] = 0
@@ -147,12 +141,10 @@ class PaperTradingState(DurableObject):
             state["next_cycle_at"] = _iso_from_ms(next_ms)
         else:
             state["next_cycle_at"] = _iso_from_ms(current_alarm)
-
         await self.ctx.storage.put("state", state)
         return state
 
     async def start(self, pair="btc_idr"):
-        """Backward-compatible alias for older callers."""
         return await self.enable_paper(pair)
 
     async def stop(self):
@@ -207,12 +199,16 @@ class PaperTradingState(DurableObject):
         await self.ctx.storage.put("state", state)
         return state
 
+    async def record_orchestrator(self, metadata):
+        """Persist read-only AI metadata through the Durable Object boundary."""
+        safe = metadata if isinstance(metadata, dict) else {}
+        await self.ctx.storage.put("last_orchestrator", safe)
+        return safe
+
     async def record_cycle(self, decision=None, confidence=0.0, symbol="BTC/IDR", price=0.0, reasoning=""):
-        """Record one completed cycle and simulate a paper-only position."""
         state = await self._get()
         if not state.get("enabled"):
             return state
-
         now = _now()
         action = str(decision or "HOLD").upper()
         if action not in {"BUY", "SELL", "HOLD"}:
@@ -230,27 +226,10 @@ class PaperTradingState(DurableObject):
             allocation = min(float(state.get("balance", 0.0)) * 0.20, float(state.get("balance", 0.0)))
             if allocation > 0:
                 quantity = allocation / price
-                position = {
-                    "symbol": symbol,
-                    "side": "BUY",
-                    "quantity": quantity,
-                    "entry_price": price,
-                    "price": price,
-                    "pnl": 0.0,
-                    "confidence": confidence,
-                    "created_at": now,
-                }
-                positions.append(position)
+                positions.append({"symbol": symbol, "side": "BUY", "quantity": quantity, "entry_price": price, "price": price, "pnl": 0.0, "confidence": confidence, "created_at": now})
                 state["balance"] -= allocation
                 executed = True
-                trade = {
-                    "action": "BUY",
-                    "symbol": symbol,
-                    "quantity": quantity,
-                    "price": price,
-                    "pnl": 0.0,
-                    "created_at": now,
-                }
+                trade = {"action": "BUY", "symbol": symbol, "quantity": quantity, "price": price, "pnl": 0.0, "created_at": now}
         elif action == "SELL" and price > 0 and position_index is not None:
             position = positions[position_index]
             proceeds = float(position.get("quantity", 0.0)) * price
@@ -260,14 +239,7 @@ class PaperTradingState(DurableObject):
             state["daily_pnl"] += realized
             state["total_pnl"] += realized
             executed = True
-            trade = {
-                "action": "SELL",
-                "symbol": symbol,
-                "quantity": float(position.get("quantity", 0.0)),
-                "price": price,
-                "pnl": realized,
-                "created_at": now,
-            }
+            trade = {"action": "SELL", "symbol": symbol, "quantity": float(position.get("quantity", 0.0)), "price": price, "pnl": realized, "created_at": now}
 
         for position in positions:
             if position.get("symbol") == symbol and price > 0:
@@ -277,13 +249,9 @@ class PaperTradingState(DurableObject):
         if trade:
             history = list(state.get("trade_history") or [])
             state["trade_history"] = [*history, trade][-100:]
-
         state["positions"] = positions
         state["active_positions"] = len(positions)
-        state["portfolio_value"] = float(state.get("balance", 0.0)) + sum(
-            float(p.get("quantity", 0.0)) * float(p.get("price", p.get("entry_price", 0.0)))
-            for p in positions
-        )
+        state["portfolio_value"] = float(state.get("balance", 0.0)) + sum(float(p.get("quantity", 0.0)) * float(p.get("price", p.get("entry_price", 0.0))) for p in positions)
         state["cycles_today"] = int(state.get("cycles_today", 0)) + 1
         state["last_cycle_at"] = now
         state["last_cycle_finished_at"] = now
@@ -293,16 +261,7 @@ class PaperTradingState(DurableObject):
         if executed:
             state["daily_trades"] = int(state.get("daily_trades", 0)) + 1
             state["total_trades"] = int(state.get("total_trades", 0)) + 1
-        state["last_decision"] = {
-            "action": action,
-            "confidence": confidence,
-            "symbol": symbol,
-            "price": price,
-            "executed": executed,
-            "realized_pnl": realized,
-            "reasoning": reasoning,
-            "created_at": now,
-        }
+        state["last_decision"] = {"action": action, "confidence": confidence, "symbol": symbol, "price": price, "executed": executed, "realized_pnl": realized, "reasoning": reasoning, "created_at": now}
         state["cycle_running"] = False
         state["last_error"] = None
         state["consecutive_cycle_failures"] = 0
@@ -311,18 +270,10 @@ class PaperTradingState(DurableObject):
         return state
 
     async def record_cycle_payload(self, payload):
-        """RPC-safe cycle recorder using one structured-cloneable argument."""
         payload = payload if isinstance(payload, dict) else {}
-        return await self.record_cycle(
-            payload.get("decision", "HOLD"),
-            payload.get("confidence", 0.0),
-            payload.get("symbol", "BTC/IDR"),
-            payload.get("price", 0.0),
-            payload.get("reasoning", ""),
-        )
+        return await self.record_cycle(payload.get("decision", "HOLD"), payload.get("confidence", 0.0), payload.get("symbol", "BTC/IDR"), payload.get("price", 0.0), payload.get("reasoning", ""))
 
     async def alarm(self, alarm_info=None):
-        """Run and reschedule one paper cycle while the manual gate is ON."""
         state = await self._get()
         now = _now()
         state["last_scheduler_at"] = now
@@ -330,7 +281,6 @@ class PaperTradingState(DurableObject):
         state["scheduler_active"] = bool(state.get("enabled"))
         state["next_cycle_at"] = None
         await self.ctx.storage.put("state", state)
-
         if not state.get("enabled"):
             self.ctx.storage.deleteAlarm()
             state["scheduler_active"] = False
