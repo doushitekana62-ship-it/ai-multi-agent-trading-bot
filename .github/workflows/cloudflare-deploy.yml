@@ -5,23 +5,10 @@ name: Validate Cloudflare Worker
 # Keeping deployment in one place prevents duplicate builds and stale bindings.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "agents/**"
-      - "core/**"
-      - "exchange_integration/**"
-      - "fronted/**"
-      - ".github/workflows/cloudflare-deploy.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "agents/**"
-      - "core/**"
-      - "exchange_integration/**"
-      - "fronted/**"
-      - ".github/workflows/cloudflare-deploy.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: cloudflare-validation-${{ github.ref }}
