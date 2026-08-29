@@ -1,11 +1,4 @@
-"""Persistent paper-trading state backed by a Durable Object.
-
-This object is the authoritative safety boundary for paper mode. It never
-contains exchange credentials and it can never execute a real order.
-
-Scheduling is driven by the Durable Object Alarm API. The user must explicitly
-turn the bot ON; while enabled, one guarded cycle is scheduled at a time.
-"""
+"""Persistent paper-trading state backed by a Durable Object."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -14,42 +7,19 @@ from workers import DurableObject
 
 from paper_cycle import run_paper_cycle
 
-
 CYCLE_INTERVAL_MS = 60_000
 
 DEFAULT_STATE = {
-    "enabled": False,
-    "mode": "paper",
-    "cycle_running": False,
-    "started_at": None,
-    "last_cycle_at": None,
-    "last_cycle_started_at": None,
-    "last_cycle_finished_at": None,
-    "last_cycle_status": "idle",
-    "cycles_today": 0,
-    "cycle_failures": 0,
-    "consecutive_cycle_failures": 0,
-    "balance": 10_000_000.0,
-    "initial_balance": 10_000_000.0,
-    "portfolio_value": 10_000_000.0,
-    "daily_pnl": 0.0,
-    "total_pnl": 0.0,
-    "daily_trades": 0,
-    "total_trades": 0,
-    "active_positions": 0,
-    "max_open_positions": 5,
-    "decision_counts": {"BUY": 0, "SELL": 0, "HOLD": 0},
-    "positions": [],
-    "trade_history": [],
-    "last_decision": None,
-    "last_error": None,
-    "paper_pair": "btc_idr",
-    "scheduler_active": False,
-    "scheduler_source": "durable_object_alarm",
-    "last_scheduler_at": None,
-    "scheduler_invocations": 0,
-    "next_cycle_at": None,
-    "updated_at": None,
+    "enabled": False, "mode": "paper", "cycle_running": False, "started_at": None,
+    "last_cycle_at": None, "last_cycle_started_at": None, "last_cycle_finished_at": None,
+    "last_cycle_status": "idle", "cycles_today": 0, "cycle_failures": 0,
+    "consecutive_cycle_failures": 0, "balance": 10_000_000.0, "initial_balance": 10_000_000.0,
+    "portfolio_value": 10_000_000.0, "daily_pnl": 0.0, "total_pnl": 0.0,
+    "daily_trades": 0, "total_trades": 0, "active_positions": 0, "max_open_positions": 5,
+    "decision_counts": {"BUY": 0, "SELL": 0, "HOLD": 0}, "positions": [], "trade_history": [],
+    "last_decision": None, "last_error": None, "paper_pair": "btc_idr", "scheduler_active": False,
+    "scheduler_source": "durable_object_alarm", "last_scheduler_at": None,
+    "scheduler_invocations": 0, "next_cycle_at": None, "updated_at": None,
 }
 
 
@@ -102,8 +72,16 @@ class PaperTradingState(DurableObject):
     async def get_state(self):
         return await self._get()
 
+    async def get_paper_market_history(self):
+        value = await self.ctx.storage.get("paper_market_history")
+        return value if isinstance(value, list) else []
+
+    async def set_paper_market_history(self, history):
+        value = history if isinstance(history, list) else []
+        await self.ctx.storage.put("paper_market_history", value[-120:])
+        return value[-120:]
+
     async def ensure_scheduler(self):
-        """Repair an enabled session that has no pending alarm."""
         state = await self._get()
         if not state.get("enabled") or state.get("cycle_running"):
             return state
@@ -120,7 +98,6 @@ class PaperTradingState(DurableObject):
     async def enable_paper(self, pair="btc_idr"):
         state = await self._get()
         now = _now()
-        clean_pair = str(pair or "btc_idr").strip().lower() or "btc_idr"
         state["enabled"] = True
         state["mode"] = "paper"
         state["cycle_running"] = False
@@ -129,11 +106,10 @@ class PaperTradingState(DurableObject):
         state["cycle_failures"] = 0
         state["consecutive_cycle_failures"] = 0
         state["last_error"] = None
-        state["paper_pair"] = clean_pair
+        state["paper_pair"] = str(pair or "btc_idr").strip().lower() or "btc_idr"
         state["scheduler_active"] = True
         state["scheduler_source"] = "durable_object_alarm"
         state["updated_at"] = now
-
         current_alarm = await self.ctx.storage.getAlarm()
         if current_alarm is None:
             next_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + CYCLE_INTERVAL_MS
@@ -162,6 +138,7 @@ class PaperTradingState(DurableObject):
 
     async def reset(self):
         self.ctx.storage.deleteAlarm()
+        await self.ctx.storage.delete("paper_market_history")
         state = _copy_default_state()
         state["updated_at"] = _now()
         await self.ctx.storage.put("state", state)
@@ -200,7 +177,6 @@ class PaperTradingState(DurableObject):
         return state
 
     async def record_orchestrator(self, metadata):
-        """Persist read-only AI metadata through the Durable Object boundary."""
         safe = metadata if isinstance(metadata, dict) else {}
         await self.ctx.storage.put("last_orchestrator", safe)
         return safe
@@ -215,7 +191,6 @@ class PaperTradingState(DurableObject):
             action = "HOLD"
         price = float(price or 0)
         confidence = max(0.0, min(1.0, float(confidence or 0.0)))
-
         positions = list(state.get("positions") or [])
         position_index = next((i for i, p in enumerate(positions) if p.get("symbol") == symbol), None)
         executed = False
@@ -233,7 +208,7 @@ class PaperTradingState(DurableObject):
         elif action == "SELL" and price > 0 and position_index is not None:
             position = positions[position_index]
             proceeds = float(position.get("quantity", 0.0)) * price
-            realized = proceeds - (float(position.get("quantity", 0.0)) * float(position.get("entry_price", price)))
+            realized = proceeds - float(position.get("quantity", 0.0)) * float(position.get("entry_price", price))
             state["balance"] += proceeds
             positions.pop(position_index)
             state["daily_pnl"] += realized
@@ -245,10 +220,8 @@ class PaperTradingState(DurableObject):
             if position.get("symbol") == symbol and price > 0:
                 position["price"] = price
                 position["pnl"] = (price - float(position.get("entry_price", price))) * float(position.get("quantity", 0.0))
-
         if trade:
-            history = list(state.get("trade_history") or [])
-            state["trade_history"] = [*history, trade][-100:]
+            state["trade_history"] = [*(list(state.get("trade_history") or [])), trade][-100:]
         state["positions"] = positions
         state["active_positions"] = len(positions)
         state["portfolio_value"] = float(state.get("balance", 0.0)) + sum(float(p.get("quantity", 0.0)) * float(p.get("price", p.get("entry_price", 0.0))) for p in positions)
@@ -287,13 +260,11 @@ class PaperTradingState(DurableObject):
             state["updated_at"] = _now()
             await self.ctx.storage.put("state", state)
             return
-
         pair = state.get("paper_pair") or "btc_idr"
         try:
             await run_paper_cycle(self.env, self, pair)
         except Exception as exc:
             await self.finish_cycle(f"alarm_cycle_error: {exc}")
-
         state = await self._get()
         if not state.get("enabled"):
             self.ctx.storage.deleteAlarm()
