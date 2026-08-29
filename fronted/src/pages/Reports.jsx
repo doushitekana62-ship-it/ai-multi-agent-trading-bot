@@ -5,6 +5,7 @@ import { AccountCircle, ArrowBack, Assessment, Logout } from '@mui/icons-materia
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import PaperHistoryLibrary from '../components/PaperHistoryLibrary';
 
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0);
 const PERIODS = ['daily', 'weekly', 'monthly', 'all-time'];
@@ -66,6 +67,7 @@ export default function Reports() {
         </Grid>
         <Paper sx={{ p: 2.5, mb: 3 }}><Typography variant="h6">Metrics</Typography><Grid container spacing={2} sx={{ mt: .5 }}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Wins</Typography><Typography>{metrics.winning_trades || 0}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Losses</Typography><Typography>{metrics.losing_trades || 0}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Best</Typography><Typography color="success.main">{idr(metrics.max_profit)}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Worst</Typography><Typography color="error.main">{idr(metrics.max_loss)}</Typography></Grid></Grid></Paper>
         <Paper sx={{ p: 2.5 }}><Typography variant="h6" gutterBottom>Trade History</Typography>{shownTrades.length === 0 ? <Typography color="text.secondary">No completed paper trades in this period.</Typography> : <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Symbol</TableCell><TableCell>Side</TableCell><TableCell>Price</TableCell><TableCell>Quantity</TableCell><TableCell>PnL</TableCell><TableCell>Status</TableCell><TableCell>Time</TableCell></TableRow></TableHead><TableBody>{shownTrades.slice(-50).reverse().map((trade, i) => <TableRow key={`${trade.created_at || ''}-${i}`}><TableCell>{trade.symbol}</TableCell><TableCell><Chip size="small" label={trade.side || trade.action} color="error" /></TableCell><TableCell>{idr(trade.price || trade.exit_price)}</TableCell><TableCell>{Number(trade.quantity || 0).toFixed(8)}</TableCell><TableCell sx={{ color: Number(trade.pnl) >= 0 ? 'success.main' : 'error.main', fontWeight: 700 }}>{idr(trade.pnl)}</TableCell><TableCell>{trade.status || 'CLOSED'}</TableCell><TableCell>{trade.created_at ? new Date(trade.created_at).toLocaleString('id-ID') : '—'}</TableCell></TableRow>)}</TableBody></Table></TableContainer>}</Paper>
+        <PaperHistoryLibrary />
       </Box>
     </Box>
   );
