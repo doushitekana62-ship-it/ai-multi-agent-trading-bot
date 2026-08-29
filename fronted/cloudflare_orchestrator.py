@@ -1,9 +1,10 @@
 """Cloudflare control-plane adapter for the external CPython AI engine.
 
 FastAPI Cloud is preferred for the full CPython multi-agent Orchestrator. The
-Worker also contains a lightweight deterministic five-agent fallback so paper
-trading remains functional when the external service is not configured or is
-temporarily unavailable. The fallback never places real orders.
+Worker also contains a bounded deterministic paper fallback so paper trading
+remains functional when the external service is not configured or unavailable.
+The fallback treats HOLD as neutral evidence rather than a veto and exposes
+which agents are suppressing a directional signal.
 """
 from __future__ import annotations
 
@@ -40,28 +41,47 @@ class CloudflareOrchestrator:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _clip(value, low=-1.0, high=1.0):
+        return max(low, min(high, value))
+
     @classmethod
     def _local_fallback(cls, symbol: str, market_data: Dict[str, Any], reason: str):
-        """Return a bounded paper-only ensemble without external dependencies."""
-        price = cls._number(
-            market_data.get("current_price") or market_data.get("unified_price")
-        )
+        """Bounded paper-only ensemble derived from the Trading Librarian rules.
+
+        The local engine is deliberately conservative: price momentum, range
+        location and liquidity are used as confirmation. A HOLD vote contributes
+        zero directional pressure instead of cancelling BUY/SELL votes.
+        """
+        price = cls._number(market_data.get("current_price") or market_data.get("unified_price"))
         high = cls._number(market_data.get("high_24h"))
         low = cls._number(market_data.get("low_24h"))
         move = cls._number(market_data.get("change_percent_24h"))
+        volume = cls._number(market_data.get("volume_24h"))
+
         if high > low > 0 and price > 0:
-            range_position = max(0.0, min(100.0, ((price - low) / (high - low)) * 100.0))
+            range_position = cls._clip(((price - low) / (high - low)) * 100.0, 0.0, 100.0)
         else:
             range_position = 50.0
 
-        # Five lightweight roles use only the real market payload supplied by
-        # INDODAX. They are intentionally conservative and never bypass paper mode.
-        sentiment = "BUY" if move >= 0.20 else "SELL" if move <= -0.20 else "HOLD"
-        technical = "BUY" if range_position >= 70.0 else "SELL" if range_position <= 30.0 else "HOLD"
-        decision_score = (move / 2.0) + ((range_position - 50.0) / 50.0) * 0.5
-        decision = "BUY" if decision_score >= 0.35 else "SELL" if decision_score <= -0.35 else "HOLD"
-        forecast = "BUY" if move >= 0.10 else "SELL" if move <= -0.10 else "HOLD"
-        reflector = "HOLD" if abs(decision_score) < 0.50 else decision
+        # Trading Librarian principles: momentum must be confirmed by structure
+        # and volume; support/resistance context matters; avoid chasing noise.
+        momentum = cls._clip(move / 0.20)
+        range_signal = ((range_position - 50.0) / 50.0)
+        volume_confirmation = 0.15 if volume > 0 else 0.0
+
+        sentiment = "BUY" if momentum >= 0.35 else "SELL" if momentum <= -0.35 else "HOLD"
+        technical_score = cls._clip(momentum * 0.65 + range_signal * 0.35)
+        technical = "BUY" if technical_score >= 0.25 else "SELL" if technical_score <= -0.25 else "HOLD"
+
+        decision_score = cls._clip(technical_score * 0.60 + momentum * 0.25 + volume_confirmation * (1 if momentum > 0 else -1 if momentum < 0 else 0))
+        decision = "BUY" if decision_score >= 0.30 else "SELL" if decision_score <= -0.30 else "HOLD"
+
+        forecast_score = cls._clip(momentum * 0.70 + range_signal * 0.30)
+        forecast = "BUY" if forecast_score >= 0.30 else "SELL" if forecast_score <= -0.30 else "HOLD"
+
+        # Reflector has no closed paper trades yet, so it is deliberately neutral.
+        reflector = "HOLD"
 
         votes = {
             "Sentiment Agent": sentiment,
@@ -70,39 +90,64 @@ class CloudflareOrchestrator:
             "Forecast Agent": forecast,
             "Reflector Agent": reflector,
         }
-        counts = {
-            action: sum(1 for vote in votes.values() if vote == action)
-            for action in ("BUY", "SELL", "HOLD")
+        scores = {
+            "sentiment": cls._clip(momentum),
+            "technical": technical_score,
+            "decision": decision_score,
+            "forecast": forecast_score,
+            "mimic_trader": decision_score,
         }
-        action = max(counts, key=counts.get)
-        agreement = counts[action] / len(votes)
-        confidence = max(0.40, min(0.85, 0.40 + agreement * 0.45))
+
+        # Directional aggregation. HOLD is neutral, not a sixth negative signal.
+        weights = {"sentiment": 0.18, "technical": 0.34, "decision": 0.25, "forecast": 0.15, "mimic_trader": 0.08}
+        directional_score = sum(scores[key] * weights[key] for key in weights)
+        directional_score = cls._clip(directional_score)
+
+        # Require a meaningful move or a strong structural location before a
+        # paper order. A flat market should legitimately remain HOLD.
+        if directional_score >= 0.25:
+            action = "BUY"
+        elif directional_score <= -0.25:
+            action = "SELL"
+        else:
+            action = "HOLD"
+
+        directional_strength = abs(directional_score)
+        confidence = cls._clip(0.45 + directional_strength * 0.70, 0.40, 0.85)
+        if abs(move) < 0.03:
+            confidence = min(confidence, 0.60)
+            action = "HOLD"
+
+        directional_agents = [name for name, vote in votes.items() if vote in {"BUY", "SELL", "STRONG_BUY", "STRONG_SELL"}]
+        hold_agents = [name for name, vote in votes.items() if vote == "HOLD"]
+        opposing_agents = []
+        if action in {"BUY", "SELL"}:
+            opposing_agents = [name for name, vote in votes.items() if vote not in {"HOLD", action}]
 
         if action == "BUY":
-            position_size = min(0.20, max(0.01, confidence * 0.20))
-            stop_loss = price * 0.95 if price > 0 else None
-            take_profit = price * 1.05 if price > 0 else None
+            position_size = min(0.10, max(0.01, confidence * 0.10))
+            stop_loss = price * 0.97 if price > 0 else None
+            take_profit = price * 1.03 if price > 0 else None
         elif action == "SELL":
-            position_size = min(0.20, max(0.01, confidence * 0.20))
-            stop_loss = price * 1.05 if price > 0 else None
-            take_profit = price * 0.95 if price > 0 else None
+            position_size = min(0.10, max(0.01, confidence * 0.10))
+            stop_loss = price * 1.03 if price > 0 else None
+            take_profit = price * 0.97 if price > 0 else None
         else:
             position_size = 0.0
             stop_loss = None
             take_profit = None
 
-        scores = {
-            "sentiment": max(-1.0, min(1.0, move / 2.0)),
-            "technical": max(-1.0, min(1.0, (range_position - 50.0) / 50.0)),
-            "decision": max(-1.0, min(1.0, decision_score)),
-            "forecast": max(-1.0, min(1.0, move / 1.5)),
-            "mimic_trader": max(-1.0, min(1.0, decision_score)),
-            "consensus": (1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0) * agreement,
-        }
-        summary = (
-            f"Local paper fallback: {action} with {agreement:.0%} five-agent agreement; "
-            f"recent move={move:.3f}%, range position={range_position:.1f}%."
+        consensus_score = directional_score
+        hold_reason = (
+            f"Flat/noisy market: recent move={move:.4f}% and directional score={directional_score:.3f}."
+            if action == "HOLD"
+            else None
         )
+        summary = (
+            f"Local paper engine: {action}; directional score={directional_score:.3f}; "
+            f"move={move:.4f}%; range={range_position:.1f}%."
+        )
+
         return SimpleNamespace(
             timestamp=datetime.now(timezone.utc),
             symbol=str(symbol).upper(),
@@ -110,24 +155,30 @@ class CloudflareOrchestrator:
             final_action=action,
             final_confidence=confidence,
             consensus_action=action,
-            consensus_score=(1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0) * agreement,
+            consensus_score=consensus_score,
             agent_votes=votes,
-            market_scores=scores,
-            confidence_components={"agreement": agreement, "fallback": 1.0},
+            market_scores={**scores, "consensus": consensus_score},
+            confidence_components={
+                "directional_score": directional_score,
+                "directional_strength": directional_strength,
+                "hold_vote_count": float(len(hold_agents)),
+                "directional_vote_count": float(len(directional_agents)),
+                "opposing_vote_count": float(len(opposing_agents)),
+                "fallback": 1.0,
+            },
             position_size=position_size,
             stop_loss=stop_loss,
             take_profit=take_profit,
             execution_reason=(
-                "Local paper fallback selected a conservative signal from public market data."
+                "Trading Librarian confirmation: momentum/structure support the directional signal."
                 if action != "HOLD" else None
             ),
-            hold_reason=(
-                "Local paper fallback found insufficient directional agreement."
-                if action == "HOLD" else None
-            ),
+            hold_reason=hold_reason,
             summary=summary,
             engine_source="local_five_agent_fallback",
             engine_warning=reason,
+            hold_agents=hold_agents,
+            opposing_agents=opposing_agents,
         )
 
     async def analyze(self, symbol: str, market_data: Dict[str, Any] | None = None):
@@ -138,10 +189,7 @@ class CloudflareOrchestrator:
         if not base_url or len(shared_secret) < 32:
             return self._local_fallback(symbol, market_data, "AI_ENGINE_URL/shared secret unavailable")
 
-        payload = {
-            "symbol": str(symbol).upper(),
-            "market_data": market_data,
-        }
+        payload = {"symbol": str(symbol).upper(), "market_data": market_data}
 
         try:
             response = await fetch(
@@ -186,6 +234,8 @@ class CloudflareOrchestrator:
                 summary=data.get("summary") or "AI engine completed analysis.",
                 engine_source="fastapi_cloud",
                 engine_warning=None,
+                hold_agents=[],
+                opposing_agents=[],
             )
         except Exception as exc:
             return self._local_fallback(symbol, market_data, f"FastAPI Cloud unavailable: {type(exc).__name__}")
