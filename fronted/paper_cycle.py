@@ -50,10 +50,13 @@ def _merge_market_history(previous, current, limit=120):
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
     """Run one guarded paper-only cycle through the AI pipeline."""
     pair = cf_worker._clean_pair(pair)
-    ok, _, reason = await state_api.begin_cycle()
-    if not ok:
+    begin = await state_api.begin_cycle()
+    if not isinstance(begin, dict):
         state = await state_api.get_state()
-        return {"ok": False, "reason": reason, "state": state_response(state) if state_response else state}
+        return {"ok": False, "reason": "invalid_cycle_lock_response", "state": state_response(state) if state_response else state}
+    if not begin.get("ok"):
+        state = begin.get("state") or await state_api.get_state()
+        return {"ok": False, "reason": begin.get("reason") or "cycle_start_rejected", "state": state_response(state) if state_response else state}
 
     try:
         scope = {"env": env, "query_string": f"pair={pair}".encode("latin-1")}
