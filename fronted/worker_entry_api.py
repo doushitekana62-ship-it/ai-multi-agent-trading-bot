@@ -1,176 +1,250 @@
-"""Production routing layer for the Cloudflare Python Worker.
+"""Canonical Cloudflare Worker routing authority for the production dashboard.
 
-The browser dashboard uses /api/dashboard/paper/* while the underlying paper
-state lives behind /api/bot/*. This module is the production compatibility
-layer and is intentionally the single place where HTTP paper controls are
-mapped to the Durable Object and shared AI cycle runner.
+Production uses this module as the single HTTP entrypoint. Paper trading is
+always gated by the Durable Object and the real exchange remains locked.
 """
 from __future__ import annotations
 
-from workers import Response
+import hashlib
+import hmac
+import time
+from urllib.parse import parse_qs, urlparse
 
+import asgi
+from js import fetch
+from pyodide.ffi import to_js
+from workers import Response, WorkerEntrypoint
+
+import cf_worker
 from paper_cycle import run_paper_cycle
-from worker_entry import (
-    Default as BaseDefault,
-    PaperTradingState,
-    _request_pair,
-    _state_response,
-    _state_stub,
-)
+from paper_state import PaperTradingState
 
 
-class Default(BaseDefault):
-    async def _handle_state_routes(self, request, path):
-        aliases = {
-            "/api/dashboard/paper/start": "/api/bot/start",
-            "/api/dashboard/paper/stop": "/api/bot/stop",
-            "/api/dashboard/paper/status": "/api/bot/status",
-            "/api/dashboard/paper/cycle": "/api/bot/cycle",
-            "/api/dashboard/paper/reset": "/api/bot/reset",
-        }
-        target = aliases.get(path, path)
+def _state_response(state: dict) -> dict:
+    counts = dict(state.get("decision_counts") or {})
+    enabled = bool(state.get("enabled"))
+    return {
+        **state,
+        "bot_enabled": enabled,
+        "enabled": enabled,
+        "mode": "paper",
+        "currency": "IDR",
+        "currency_symbol": "Rp",
+        "decision_counts": {
+            "BUY": int(counts.get("BUY", 0)),
+            "SELL": int(counts.get("SELL", 0)),
+            "HOLD": int(counts.get("HOLD", 0)),
+        },
+        "safety": {
+            "mode": "paper",
+            "real_trading_locked": True,
+            "bot_enabled": enabled,
+            "cycle_running": bool(state.get("cycle_running")),
+        },
+    }
 
-        if target == "/api/bot/start" and request.method == "POST":
-            if not await self._verify_access(request):
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
+
+def _make_refresh_token(env, username: str) -> str:
+    secret = str(getattr(env, "JWT_SECRET_KEY", "") or "").strip()
+    if len(secret) < 32:
+        raise RuntimeError("JWT_SECRET_KEY must be at least 32 characters")
+    now = int(time.time())
+    header = cf_worker._b64url(cf_worker._json_bytes({"alg": "HS256", "typ": "JWT"}))
+    payload = cf_worker._b64url(cf_worker._json_bytes({"sub": username, "iat": now, "exp": now + 7 * 24 * 60 * 60, "type": "refresh"}))
+    signing_input = f"{header}.{payload}"
+    signature = hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{cf_worker._b64url(signature)}"
+
+
+async def _state_stub(env):
+    return env.PAPER_STATE.getByName("global")
+
+
+def _pair(request, default="btc_idr"):
+    try:
+        query = parse_qs(urlparse(request.url).query)
+        value = query.get("pair", query.get("symbol", [default]))[0]
+        return cf_worker._clean_pair(value)
+    except Exception:
+        return default
+
+
+async def _verify_access(env, request):
+    value = request.headers.get("authorization", "")
+    if not value.lower().startswith("bearer "):
+        return None
+    token = value[7:].strip()
+    secret = str(getattr(env, "JWT_SECRET_KEY", "") or "").strip()
+    if len(secret) < 32:
+        return None
+    scope = {"headers": [(b"authorization", value.encode("latin-1"))], "env": env}
+    payload = cf_worker._verify_token(scope, token)
+    return payload if payload and payload.get("type") == "access" else None
+
+
+async def _supabase_health(env):
+    url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
+    key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    if not url or not key:
+        return {"connected": False, "reason": "credentials_missing"}
+    try:
+        response = await fetch(
+            f"{url}/rest/v1/decisions?select=id&limit=1",
+            to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}),
+        )
+        code = int(response.status)
+        if 200 <= code < 300:
+            return {"connected": True, "reason": "rest_probe_ok"}
+        if code in (401, 403):
+            return {"connected": False, "reason": "invalid_credentials", "http_status": code}
+        if code == 404:
+            return {"connected": False, "reason": "decisions_table_not_found", "http_status": code}
+        return {"connected": False, "reason": "supabase_http_error", "http_status": code}
+    except Exception as exc:
+        return {"connected": False, "reason": type(exc).__name__}
+
+
+class Default(WorkerEntrypoint):
+    async def _auth(self, request, path):
+        if path == "/api/auth/login" and request.method == "POST":
+            username = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
+            password = str(getattr(self.env, "ADMIN_PASSWORD", "") or "")
+            secret = str(getattr(self.env, "JWT_SECRET_KEY", "") or "").strip()
+            if not username or not password or len(secret) < 32:
+                return Response.json({"detail": "Dashboard authentication is not configured"}, status=503)
             try:
-                stub = await _state_stub(self.env)
-                pair = _request_pair(request)
-                state = await stub.enable_paper(pair)
-                cycle = await run_paper_cycle(self.env, stub, pair, state_response=_state_response)
-                payload = _state_response(cycle.get("state") or state)
-                payload.update({
-                    "ok": bool(cycle.get("ok")),
-                    "manual_control": True,
-                    "automation_enabled": True,
-                    "cycle_schedule": "durable_object_alarm_1m",
-                    "cycle": cycle,
-                    "message": "Paper trading enabled and first AI cycle completed." if cycle.get("ok") else "Paper trading enabled, but the first AI cycle failed.",
-                })
-                return Response.json(payload, status=200 if cycle.get("ok") else 503)
-            except Exception as exc:
-                return Response.json({"ok": False, "detail": "Paper trading could not be started", "reason": "paper_start_error", "error": f"{type(exc).__name__}: {exc}"}, status=503)
+                body = await request.json()
+            except Exception:
+                return Response.json({"detail": "Invalid JSON request body"}, status=400)
+            supplied_user = str(body.get("username", ""))
+            supplied_password = str(body.get("password", ""))
+            supplied = hmac.new(secret.encode(), supplied_password.encode(), hashlib.sha256).digest()
+            expected = hmac.new(secret.encode(), password.encode(), hashlib.sha256).digest()
+            if supplied_user != username or not hmac.compare_digest(supplied, expected):
+                return Response.json({"detail": "Incorrect username or password"}, status=401)
+            access = cf_worker._make_token({"env": self.env}, username)
+            refresh = _make_refresh_token(self.env, username)
+            return Response.json({"access_token": access, "refresh_token": refresh, "token_type": "bearer", "expires_in": 1800, "refresh_expires_in": 7 * 24 * 60 * 60, "username": username})
 
-        if target == "/api/bot/stop" and request.method == "POST":
-            if not await self._verify_access(request):
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
+        if path == "/api/auth/refresh" and request.method == "POST":
             try:
-                stub = await _state_stub(self.env)
-                state = await stub.stop()
-                payload = _state_response(state)
-                payload.update({"ok": True, "manual_control": True, "automation_enabled": True, "cycle_schedule": "durable_object_alarm_1m", "message": "Paper trading disabled manually. No further cycles will run."})
-                return Response.json(payload, status=200)
-            except Exception as exc:
-                return Response.json({"ok": False, "detail": "Paper trading could not be stopped", "reason": "paper_stop_error", "error": f"{type(exc).__name__}: {exc}"}, status=503)
+                body = await request.json()
+            except Exception:
+                return Response.json({"detail": "Invalid JSON request body"}, status=400)
+            payload = cf_worker._verify_token({"env": self.env}, str(body.get("refresh_token", "")))
+            username = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
+            if not payload or payload.get("type") != "refresh" or payload.get("sub") != username:
+                return Response.json({"detail": "Invalid or expired refresh token"}, status=401)
+            return Response.json({"access_token": cf_worker._make_token({"env": self.env}, username), "token_type": "bearer", "expires_in": 1800})
 
-        if target == "/api/bot/status" and request.method == "GET":
-            if not await self._verify_access(request):
+        if path == "/api/auth/verify" and request.method == "GET":
+            payload = await _verify_access(self.env, request)
+            if not payload:
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
-            stub = await _state_stub(self.env)
-            state = await stub.ensure_scheduler()
-            payload = _state_response(state)
-            payload.update({"manual_control": True, "automation_enabled": True, "cycle_schedule": "durable_object_alarm_1m"})
-            return Response.json(payload, status=200)
+            return Response.json({"username": payload.get("sub"), "is_authenticated": True})
 
-        if target == "/api/bot/cycle" and request.method == "POST":
-            if not await self._verify_access(request):
+        if path == "/api/auth/logout" and request.method == "POST":
+            if not await _verify_access(self.env, request):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
-            stub = await _state_stub(self.env)
-            cycle = await run_paper_cycle(self.env, stub, _request_pair(request), state_response=_state_response)
+            return Response.json({"message": "Logged out successfully", "status": "success"})
+        return None
+
+    async def _state_routes(self, request, path):
+        protected = path.startswith("/api/dashboard/") or path.startswith("/api/bot/")
+        if protected and not await _verify_access(self.env, request):
+            return Response.json({"detail": "Invalid or expired token"}, status=401)
+        stub = await _state_stub(self.env)
+
+        if path in ("/api/bot/status", "/api/dashboard/paper/status") and request.method == "GET":
+            return Response.json(_state_response(await stub.get_state()))
+
+        if path in ("/api/bot/start", "/api/dashboard/paper/start") and request.method == "POST":
+            pair = _pair(request)
+            state = await stub.enable_paper(pair)
+            cycle = await run_paper_cycle(self.env, stub, pair, state_response=_state_response)
+            if cycle.get("ok"):
+                return Response.json({**_state_response(cycle["state"]), "message": "Paper trading started and first cycle completed.", "cycle": cycle})
+            failed_state = cycle.get("state") or state
+            return Response.json({**_state_response(failed_state), "message": "Paper trading enabled but first cycle failed.", "cycle": cycle, "detail": cycle.get("error") or cycle.get("reason") or "paper_cycle_failed"}, status=502)
+
+        if path in ("/api/bot/stop", "/api/dashboard/paper/stop") and request.method == "POST":
+            state = await stub.stop()
+            return Response.json({**_state_response(state), "message": "Paper trading stopped. Real trading remains locked."})
+
+        if path == "/api/bot/cycle" and request.method == "POST":
+            cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response)
             return Response.json(cycle, status=200 if cycle.get("ok") else 409)
 
-        if target == "/api/dashboard/analyze" and request.method == "POST":
-            if not await self._verify_access(request):
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
-            stub = await _state_stub(self.env)
-            state = await stub.get_state()
-            if not state.get("enabled"):
+        if path == "/api/dashboard/analyze" and request.method == "POST":
+            if not (await stub.get_state()).get("enabled"):
                 return Response.json({"detail": "Paper trading is OFF. Start the bot first.", "bot_enabled": False}, status=409)
-            cycle = await run_paper_cycle(self.env, stub, _request_pair(request), state_response=_state_response)
+            cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response)
             return Response.json(cycle, status=200 if cycle.get("ok") else 409)
 
-        if target == "/api/dashboard/status" and request.method == "GET":
-            if not await self._verify_access(request):
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
-            stub = await _state_stub(self.env)
-            state = await stub.ensure_scheduler()
+        if path == "/api/bot/reset" and request.method == "POST":
+            state = await stub.reset()
+            return Response.json({**_state_response(state), "message": "Paper trading state reset."})
+
+        if path == "/api/dashboard/status" and request.method == "GET":
+            state = await stub.get_state()
+            supabase = await _supabase_health(self.env)
+            market = await cf_worker._market_overview({"env": self.env, "query_string": b"pair=btc_idr"})
+            market_ok = bool(market.get("available"))
             result = _state_response(state)
-            enabled = bool(state.get("enabled"))
-            cycle_running = bool(state.get("cycle_running"))
             result.update({
                 "daily_pnl": float(state.get("daily_pnl", 0.0)),
                 "daily_trades": int(state.get("daily_trades", 0)),
                 "total_trades": int(state.get("total_trades", 0)),
                 "active_positions": int(state.get("active_positions", 0)),
-                "manual_control": True,
-                "automation_enabled": True,
-                "cycle_schedule": "durable_object_alarm_1m",
-                "scheduler": {
-                    "active": bool(state.get("scheduler_active")) and enabled,
-                    "source": state.get("scheduler_source", "durable_object_alarm"),
-                    "last_run_at": state.get("last_scheduler_at"),
-                    "next_run_at": state.get("next_cycle_at"),
-                    "invocations": int(state.get("scheduler_invocations", 0)),
-                },
-                "cycle": {
-                    "number": int(state.get("cycles_today", 0)),
-                    "status": state.get("last_cycle_status", "idle"),
-                    "last_started_at": state.get("last_cycle_started_at"),
-                    "last_finished_at": state.get("last_cycle_finished_at"),
-                    "last_cycle_at": state.get("last_cycle_at"),
-                    "failures": int(state.get("cycle_failures", 0)),
-                    "consecutive_failures": int(state.get("consecutive_cycle_failures", 0)),
-                    "last_error": state.get("last_error"),
-                },
-                "system_health": {
-                    "database": {"connected": True, "diagnostic": "durable_object_state"},
-                    "market_data": {"fresh": True, "stale": False, "age_seconds": 0},
-                    "mode": "paper",
-                    "engine": {
-                        "running": enabled,
-                        "enabled": enabled,
-                        "cycle_running": cycle_running,
-                        "state": "RUNNING" if enabled else "OFF",
-                        "last_cycle_status": state.get("last_cycle_status", "idle"),
-                        "last_error": state.get("last_error"),
-                    },
-                },
+                "database": {"configured": bool(supabase.get("reason") != "credentials_missing"), **supabase},
+                "market_data": {"source": "INDODAX public market data", "available": market_ok, "fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None},
+                "system_health": {"database": {"connected": bool(supabase.get("connected"))}, "market_data": {"fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}},
             })
-            return Response.json(result, status=200)
+            return Response.json(result)
 
-        if target == "/api/dashboard/recent-decision" and request.method == "GET":
-            if not await self._verify_access(request):
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
-            stub = await _state_stub(self.env)
+        if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state()
-            return Response.json({"decision": state.get("last_decision")}, status=200)
+            return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "currency": "IDR", "currency_symbol": "Rp"})
 
-        if target == "/api/dashboard/agents" and request.method == "GET":
-            if not await self._verify_access(request):
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
-            stub = await _state_stub(self.env)
+        if path == "/api/dashboard/performance" and request.method == "GET":
             state = await stub.get_state()
-            enabled = bool(state.get("enabled"))
-            invoked = bool(state.get("last_decision"))
+            history = list(state.get("trade_history") or [])
+            closed = [x for x in history if x.get("action") == "SELL"]
+            wins = sum(1 for x in closed if float(x.get("pnl") or 0) > 0)
+            return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0)), "daily_pnl": float(state.get("daily_pnl", 0)), "closed_trades": len(closed), "win_rate": wins / len(closed) if closed else 0.0, "currency": "IDR", "currency_symbol": "Rp"}})
+
+        if path == "/api/dashboard/recent-decision" and request.method == "GET":
+            state = await stub.get_state()
+            return Response.json({"decision": state.get("last_decision")})
+
+        if path == "/api/dashboard/agents" and request.method == "GET":
+            enabled = bool((await stub.get_state()).get("enabled"))
             status = "armed" if enabled else "idle"
-            suffix = "Last cycle produced a decision." if invoked else "Waiting for the next paper cycle."
-            return Response.json({"agents": [{"name": name, "status": status, "description": suffix} for name in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
-
-        return await super()._handle_state_routes(request, target)
+            return Response.json({"agents": [{"name": n, "status": status, "description": "Paper execution pipeline; AI agents run through the configured AI engine or safe fallback."} for n in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
+        return None
 
     async def scheduled(self, controller, env, ctx):
         stub = await _state_stub(env)
         state = await stub.get_state()
-        if not state.get("enabled"):
-            return
-        pair = state.get("paper_pair") or "btc_idr"
-        try:
-            await run_paper_cycle(env, stub, pair, state_response=_state_response)
-        except Exception as exc:
+        if state.get("enabled"):
             try:
-                await stub.finish_cycle(f"legacy_scheduler_error: {type(exc).__name__}: {exc}")
-            except Exception:
-                pass
+                await run_paper_cycle(env, stub, state.get("paper_pair") or "btc_idr", state_response=_state_response)
+            except Exception as exc:
+                await stub.finish_cycle(f"scheduled_cycle_error: {exc}")
+
+    async def fetch(self, request):
+        path = urlparse(request.url).path
+        try:
+            auth = await self._auth(request, path)
+            if auth is not None:
+                return auth
+            state = await self._state_routes(request, path)
+            if state is not None:
+                return state
+            return await asgi.fetch(cf_worker.app, request, self.env)
+        except Exception as exc:
+            print(f"[worker:fetch] path={path} type={type(exc).__name__}: {exc}")
+            return Response.json({"detail": "Worker request failed", "error_type": type(exc).__name__, "path": path}, status=500)
 
 
 __all__ = ["Default", "PaperTradingState"]
