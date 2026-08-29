@@ -1,22 +1,6 @@
 name: Backend FastAPI Smoke Test
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "requirements.txt"
-      - "Dockerfile"
-      - "docker-compose.yml"
-      - ".github/workflows/backend-smoke.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "requirements.txt"
-      - "Dockerfile"
-      - "docker-compose.yml"
-      - ".github/workflows/backend-smoke.yml"
   workflow_dispatch:
 
 permissions:
