@@ -309,22 +309,37 @@ class Default(WorkerEntrypoint):
         return None
 
     async def scheduled(self, controller, env, ctx):
-        # If a Cron Trigger is later configured, every scheduled invocation
-        # becomes a paper cycle only while the persistent bot gate is enabled.
-        state = await env.PAPER_STATE.getByName("global").get_state()
-        if state.get("enabled"):
-            await _paper_cycle(env)
+        # Cron is not required for the paper scheduler. The Durable Object
+        # alarm is the authoritative scheduler and is only armed by explicit
+        # paper-bot enablement.
+        try:
+            state = await env.PAPER_STATE.getByName("global").get_state()
+            if state.get("enabled"):
+                await _paper_cycle(env, state.get("paper_pair") or "btc_idr")
+        except Exception as exc:
+            print(f"[worker:schedule] unhandled scheduled error type={type(exc).__name__}: {exc}")
 
     async def fetch(self, request):
         url = urlparse(request.url)
         path = url.path
-        auth_response = await self._handle_auth(request, path)
-        if auth_response is not None:
-            return auth_response
-        state_response = await self._handle_state_routes(request, path)
-        if state_response is not None:
-            return state_response
-        return await asgi.fetch(cf_worker.app, request, self.env)
+        try:
+            auth_response = await self._handle_auth(request, path)
+            if auth_response is not None:
+                return auth_response
+            state_response = await self._handle_state_routes(request, path)
+            if state_response is not None:
+                return state_response
+            return await asgi.fetch(cf_worker.app, request, self.env)
+        except Exception as exc:
+            # Never let a route exception become Cloudflare's generic
+            # "Worker script exception" page. Keep the response safe and put
+            # the actual exception in the Cloudflare runtime log.
+            print(f"[worker:fetch] unhandled request error path={path} type={type(exc).__name__}: {exc}")
+            return Response.json({
+                "detail": "Worker request failed",
+                "error_type": type(exc).__name__,
+                "path": path,
+            }, status=500)
 
 
 __all__ = ["Default", "PaperTradingState"]
