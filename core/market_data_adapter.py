@@ -67,12 +67,27 @@ class MarketDataAdapter:
             if price is None or price <= 0:
                 return self._create_error_response(symbol, "Invalid price from Indodax")
             ohlcv = self._indodax_client.get_historical_data(symbol, timeframe, limit) or []
-            recent = ohlcv[-24:] if len(ohlcv) >= 24 else ohlcv
-            return MarketDataResponse(True, symbol, price, ohlcv,
-                sum(float(c.get("volume", 0)) for c in recent),
-                max((float(c.get("high", price)) for c in recent), default=price),
-                min((float(c.get("low", price)) for c in recent), default=price),
-                datetime.now(timezone.utc), source=source)
+            valid = []
+            for candle in ohlcv:
+                try:
+                    ts = float(candle["timestamp"])
+                    if ts > 1_000_000_000_000:
+                        ts /= 1000.0
+                    candle = dict(candle)
+                    candle["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                    if float(candle["open"]) > 0 and float(candle["high"]) > 0 and float(candle["low"]) > 0 and float(candle["close"]) > 0:
+                        valid.append(candle)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+            valid.sort(key=lambda x: x["timestamp"])
+            if not valid:
+                return self._create_error_response(symbol, "Indodax returned no valid OHLCV candles")
+            last_ts = datetime.fromisoformat(valid[-1]["timestamp"])
+            return MarketDataResponse(True, symbol, price, valid,
+                sum(float(c.get("volume", 0)) for c in valid[-24:]),
+                max((float(c.get("high", price)) for c in valid[-24:]), default=price),
+                min((float(c.get("low", price)) for c in valid[-24:]), default=price),
+                last_ts, source=source)
         except Exception as exc:
             return self._create_error_response(symbol, f"Indodax market-data error: {exc}")
 
@@ -84,11 +99,19 @@ class MarketDataAdapter:
             price = self._alpaca_client.get_current_price(symbol)
             ohlcv = self._alpaca_client.get_historical_data(symbol, timeframe, limit) or []
             recent = ohlcv[-24:] if len(ohlcv) >= 24 else ohlcv
+            timestamp = datetime.now(timezone.utc)
+            if ohlcv:
+                try:
+                    ts = float(ohlcv[-1]["timestamp"])
+                    if ts > 1_000_000_000_000: ts /= 1000.0
+                    timestamp = datetime.fromtimestamp(ts, tz=timezone.utc)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
             return MarketDataResponse(True, symbol, price, ohlcv,
                 sum(c.get("volume", 0) for c in recent),
                 max((c.get("high", price) for c in recent), default=price),
                 min((c.get("low", price) for c in recent), default=price),
-                datetime.now(timezone.utc), source="alpaca")
+                timestamp, source="alpaca")
         except Exception as exc:
             return self._create_error_response(symbol, f"Alpaca error: {exc}")
 
