@@ -31,7 +31,9 @@ class Default(BaseDefault):
             if not await self._verify_access(request): return Response.json({"detail": "Invalid or expired token"}, status=401)
             query = request.url.split("?", 1)[1] if "?" in request.url else ""
             market = await cf_worker._market_overview({"env": self.env, "query_string": query.encode("latin-1")})
-            return Response.json(market, status=200 if market.get("available") else 503)
+            # Market-data unavailability is a degraded data condition, not a dashboard transport failure.
+            # Keep the response 200 so the dashboard can continue rendering paper state and diagnostics.
+            return Response.json(market, status=200)
 
         if target == "/api/market/insights" and request.method == "GET":
             if not await self._verify_access(request): return Response.json({"detail": "Invalid or expired token"}, status=401)
