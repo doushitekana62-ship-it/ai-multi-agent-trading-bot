@@ -11,8 +11,6 @@ import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
 import CycleUpdateToast from './components/CycleUpdateToast';
 import TradingLibraryAlertToast from './components/TradingLibraryAlertToast';
-import MarketPulseLegend from './components/MarketPulseLegend';
-import MarketPulseStatus from './components/MarketPulseStatus';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const ProtectedRoute = ({ children }) => {
@@ -25,7 +23,6 @@ const ProtectedRoute = ({ children }) => {
 function App() {
   const [mode, setMode] = useState(() => localStorage.getItem('dashboardTheme') || 'dark');
   const toggleMode = () => { const next = mode === 'dark' ? 'light' : 'dark'; setMode(next); localStorage.setItem('dashboardTheme', next); };
-
   const theme = createTheme({
     palette: {
       mode,
@@ -44,7 +41,6 @@ function App() {
       MuiToggleButton: { styleOverrides: { root: { borderRadius: 8, textTransform: 'none', fontWeight: 700 } } },
     },
   });
-
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -57,8 +53,6 @@ function App() {
           </Routes>
           <CycleUpdateToast />
           <TradingLibraryAlertToast />
-          <MarketPulseStatus />
-          <MarketPulseLegend />
           <Box sx={{ position: 'fixed', right: 18, bottom: 18, zIndex: 1400 }}>
             <Tooltip title={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
               <IconButton onClick={toggleMode} aria-label="toggle dashboard theme" sx={{ width: 46, height: 46, color: 'primary.main', bgcolor: 'background.paper', border: '1px solid', borderColor: 'divider', boxShadow: 4, '&:hover': { bgcolor: 'action.hover' } }}>
