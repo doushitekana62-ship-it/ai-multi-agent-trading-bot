@@ -10,27 +10,19 @@ on:
 permissions:
   contents: read
 
-jobs:
-  syntax:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-      - name: Compile Python sources
-        run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fronted fastapi_cloud_app.py
-      - name: Run Cloudflare paper control contract tests
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest
-          pytest -q tests/test_cloudflare_paper_control_contract.py tests/test_paper_scheduler_contract.py
+concurrency:
+  group: ai-trading-bot-ci-${{ github.ref }}
+  cancel-in-progress: true
 
-  fastapi-cloud-engine:
-    name: FastAPI Cloud AI engine validation
+jobs:
+  quality-gate:
+    name: Full quality gate
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
+      CI: true
+      NODE_ENV: production
+      PYTHONPATH: .
       AI_ENGINE_SHARED_SECRET: ci-test-secret-1234567890-abcdefghijklmnopqrstuvwxyz
     steps:
       - name: Checkout
@@ -40,44 +32,28 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-
-      - name: Install AI engine dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -e . pytest
-
-      - name: Run FastAPI Cloud engine integration tests
-        run: pytest -q tests/test_fastapi_cloud_engine.py
-
-  deployment-contract:
-    name: Deployment contract validation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-      - name: Run deployment contract tests
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest
-          pytest -q tests/test_deployment_contract.py
-
-  frontend-cloudflare:
-    name: Frontend and Cloudflare validation
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      CI: true
-      NODE_ENV: production
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+          cache: pip
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: fronted/package.json
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest pytest-timeout requests ccxt numpy pandas scipy scikit-learn textblob ta
+
+      - name: Compile all Python sources
+        run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fronted fastapi_cloud_app.py
+
+      - name: Run paper and deployment contract tests
+        run: pytest -q tests/test_cloudflare_paper_control_contract.py tests/test_paper_scheduler_contract.py tests/test_deployment_contract.py
+
+      - name: Run FastAPI Cloud engine tests
+        run: pytest -q tests/test_fastapi_cloud_engine.py
 
       - name: Install frontend dependencies
         working-directory: fronted
@@ -87,6 +63,6 @@ jobs:
         working-directory: fronted
         run: npm run build
 
-      - name: Validate dashboard Cloudflare Worker
+      - name: Validate Cloudflare Worker bundle
         working-directory: fronted
         run: npx wrangler deploy --dry-run
