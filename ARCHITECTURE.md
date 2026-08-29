@@ -1,994 +1,299 @@
 # AI Multi-Agent Trading Bot — Architecture Contract
 
-> **Purpose:** This document is the architectural source of truth for the project. It exists to prevent feature drift, duplicated responsibilities, unsafe trading logic, and uncontrolled changes to the system boundary.
->
-> **Rule:** If a proposed change conflicts with this document, update the architecture first. Do not silently change the architecture through implementation.
+Status: CANONICAL / IMPLEMENTATION BASELINE — 2026-08-29
 
-## 1. Project Mission
+This document is the source of truth for the trading system. The repository must implement this contract; code must not silently redefine it.
 
-The project is a **multi-agent AI-assisted trading system** that produces market analysis, forecasts, sentiment/context signals, trading decisions, risk-controlled execution instructions, and operational reporting.
+## 1. Mission
 
-The system must prioritize:
+Build an auditable Indodax-focused multi-agent paper-trading system that identifies short-horizon opportunities without turning missing data, unavailable AI, or agent disagreement into unexplained HOLD decisions.
 
-1. capital protection and explicit risk controls;
-2. deterministic and auditable trading behavior;
-3. separation between AI analysis and order execution;
-4. paper trading before live trading;
-5. modular agents with clearly bounded responsibilities;
-6. reproducibility, observability, and testability.
+Safety remains mandatory: AI proposes evidence and a candidate; deterministic risk controls decide whether execution is allowed. Live trading is not the default and is not enabled by this document.
 
-The project is **not** intended to become a generic AI platform, unrestricted autonomous agent framework, social application, or collection of unrelated trading experiments.
-
-## 2. Architectural Principles
-
-### 2.1 AI advises; the trading core controls
-
-LLM/AI agents may analyze, forecast, classify, rank, explain, and recommend. They must not bypass the deterministic risk and execution layer.
-
-No AI agent may directly place an exchange order unless the request passes the central risk/execution pipeline.
-
-### 2.2 One responsibility per agent
-
-Each agent owns one analytical domain. Agents must not duplicate another agent's responsibility merely because additional logic is convenient.
-
-### 2.3 Risk is a hard boundary
-
-Risk controls are mandatory and cannot be overridden by an AI-generated recommendation.
-
-At minimum, the system must respect configured limits such as:
-
-- maximum position size;
-- daily loss limit;
-- maximum open positions;
-- paper/live trading mode;
-- exchange/account constraints.
-
-### 2.4 Paper trading is the default development path
-
-New trading behavior must be validated in paper/simulation mode before any live execution capability is enabled.
-
-### 2.5 Exchange integration is an adapter
-
-Exchange-specific code belongs behind an integration boundary. Strategy and agent code must not depend directly on exchange-specific SDK details.
-
-### 2.6 No hidden state
-
-Important decisions, signals, risk checks, orders, fills, and errors must be observable and persistable. Avoid business-critical state that exists only inside an AI prompt or process memory.
-
-## 3. High-Level System
+## 2. Non-negotiable architecture
 
 ```text
-                        MARKET / EXTERNAL DATA
-                                 |
-             +-------------------+-------------------+
-             |                   |                   |
-        Price/Market        News/Sentiment       Exchange Data
-             |                   |                   |
-             +-------------------+-------------------+
-                                 |
-                                 v
-                       +-------------------+
-                       |   DATA / CONTEXT   |
-                       | normalization      |
-                       | validation         |
-                       | feature/context    |
-                       +---------+---------+
-                                 |
-                                 v
-              +---------------------------------------+
-              |             AI AGENT LAYER            |
-              |                                       |
-              | Technical | Forecast | Sentiment      |
-              | Decision  | Reflection | Librarian    |
-              +-------------------+-------------------+
-                                  |
-                                  v
-                       +-------------------+
-                       | DECISION / SIGNAL  |
-                       | aggregation        |
-                       | confidence         |
-                       | rationale          |
-                       +---------+---------+
-                                 |
-                                 v
-                       +-------------------+
-                       |   RISK GATE         |
-                       | position limits     |
-                       | loss limits         |
-                       | exposure checks     |
-                       | mode checks         |
-                       +---------+---------+
-                                 |
-                          approved only
-                                 |
-                                 v
-                       +-------------------+
-                       | EXECUTION SERVICE  |
-                       | paper/live adapter  |
-                       | order lifecycle    |
-                       +---------+---------+
-                                 |
-                                 v
-                       +-------------------+
-                       | EXCHANGE ADAPTER   |
-                       +-------------------+
-                                 |
-                                 v
-                            MARKET ACCOUNT
-
-        API / Dashboard / Reports / Monitoring
-                    <---- read/control ---->
-                         Backend service
+INDODAX ADAPTER
+    -> ONE UNIFIED MARKET SNAPSHOT
+    -> DATA QUALITY GATE
+    -> SPECIALIST EVIDENCE
+    -> EVIDENCE / SIGNAL BUS
+    -> BULL/BEAR CONFLICT REVIEW
+    -> ONE TRADER / DECISION SYNTHESIZER
+    -> DETERMINISTIC RISK GATE
+    -> ONE PAPER EXECUTION LEDGER
+    -> PERSISTENCE / OBSERVABILITY
+    -> REFLECTION / LEARNING
 ```
 
-## 4. Repository Boundaries
+There must be one authoritative path from market data to execution. Alternative implementations may exist only as tests, adapters, or explicitly disabled experiments.
 
-The current repository already separates major responsibilities into `agents`, `backend`, `core`, `data`, and `exchange_integration`. Preserve these boundaries rather than moving business logic into arbitrary files.
+## 3. Responsibility boundaries
 
-### `agents/`
+### Market-data adapter
+Owns exchange I/O and normalization. It is the only component allowed to obtain the authoritative market snapshot for a cycle. Agents must not fetch a second price source.
 
-AI/analytical agents only.
+### Data-quality gate
+Determines whether the snapshot is usable. It produces `OK`, `STALE`, or `UNAVAILABLE` plus explicit reasons. Data failure is never represented as normal HOLD.
 
-Current conceptual roles:
+### Technical / Structure Agent
+Owns price structure: OHLCV, candle geometry, support/resistance, trend structure, breakout/rejection, RSI/MACD/MA as supporting evidence. It does not own final action, portfolio risk, or execution.
 
-- `agent_technical.py` — technical market analysis;
-- `agent_forecast.py` — forecasting/probabilistic market outlook;
-- `agent_sentiment.py` — sentiment and external-context analysis;
-- `agent_decision.py` — decision synthesis from available signals;
-- `agent_reflector.py` — post-decision/self-review and consistency checks;
-- `agent_trading_librarian.py` — trading knowledge/context retrieval and organization.
+RSI overbought is not automatically bearish. Momentum direction and structure have priority over oscillator contrarian interpretation for scalping.
 
-Agents should return structured outputs. They should not own database persistence, exchange credentials, HTTP routing, or direct order execution.
+### Forecast Agent
+Owns probabilistic short-horizon outlook. For scalping, horizons are expressed in market bars/minutes, not days. It may be unavailable when insufficient history exists. Unavailable forecast is not a HOLD vote.
 
-### `backend/`
+### Sentiment / Context Agent
+Owns external/contextual bias. It is advisory only. Missing news/social data is explicitly `UNAVAILABLE` rather than fabricated neutral evidence. It cannot veto technical/momentum evidence.
 
-Application/API boundary.
+### Trading Librarian
+Owns shared trading knowledge retrieval and context. It informs analysts but never creates an execution order.
 
-Responsibilities:
+### Bull/Bear Conflict Review
+Constructs explicit bullish thesis, bearish thesis, contradictions, confirmation requirements, and invalidation conditions. It is a debate/review layer, not another execution engine.
 
-- HTTP API;
-- authentication and authorization;
-- dashboard-facing endpoints;
-- orchestration of application operations;
-- persistence access through defined services/modules;
-- paper-trading controls;
-- reports and operational status.
+### Trader / Decision Synthesizer
+This is the only AI component allowed to convert evidence into a candidate action: `BUY`, `SELL`, `HOLD`, or `NO_EDGE`. It does not perform deterministic risk approval.
 
-The backend is the application boundary, not the place for uncontrolled strategy experimentation.
+### Risk Gate
+Pure deterministic control plane. It can approve or reject a candidate. It must never convert BUY into SELL or invent a directional signal. Required checks include mode, symbol, position limit, exposure, balance, daily loss, size, liquidity/spread, and stop/target validity.
 
-### `core/`
+### Paper Execution Ledger
+There is one authoritative paper-account ledger. No agent, dashboard, or second paper engine may maintain a competing balance/position state.
 
-Domain-level shared logic.
+### Reflector
+Evaluates completed decisions and outcomes. It may produce learning/evaluation data but cannot rewrite historical decisions or bypass risk.
 
-Responsibilities should remain reusable and independent from HTTP/UI concerns where practical.
+## 4. Canonical signal contract
 
-Examples include:
+Every specialist output must expose:
 
-- trading/domain models;
-- risk rules;
-- configuration;
-- decision schemas;
-- portfolio/order abstractions;
-- deterministic validation.
+- `direction`: `BULLISH | BEARISH | NEUTRAL`;
+- `score`: `-1..+1`;
+- `confidence`: `0..1`;
+- `timeframe`;
+- `evidence`;
+- `data_timestamp`;
+- `data_age_seconds`;
+- `status`: `OK | DEGRADED | UNAVAILABLE`.
 
-If a rule is fundamental to trading correctness, prefer placing it here rather than inside a route or AI prompt.
+`HOLD` is an action, not an analyst failure state.
 
-### `exchange_integration/`
+The common contract is implemented in `core/signal_contract.py`.
 
-Exchange adapters and exchange-specific functionality.
+## 5. Canonical scalping context
 
-Responsibilities:
+A valid scalping snapshot should contain, where source data permits:
 
-- authentication to exchanges;
-- market data adapters;
-- account/balance queries;
-- order submission/cancellation;
-- exchange-specific symbol and precision handling;
-- normalization into project-level models.
+- current price;
+- bid/ask or spread when available;
+- recent trades;
+- 1m OHLCV;
+- derived 5m, 15m, and 30m movement;
+- volume;
+- volatility;
+- timestamp and age;
+- source;
+- data-quality status.
 
-Do not leak exchange-specific response formats into agents or frontend code.
+When native candles are unavailable, bounded trade buckets may derive candles. A single trade is never a candle.
 
-### `data/`
+## 6. Agent conflict policy
 
-Local/runtime data only.
+Agents do not vote equally and do not repeatedly make final decisions.
 
-This directory must not become an uncontrolled source-code or business-logic dumping ground. Secrets and production credentials must never be committed here.
-
-### `frontend/`
-
-Dashboard/UI only.
-
-The frontend consumes backend APIs. It must not implement authoritative risk rules, exchange credentials, or autonomous trading logic.
-
-## 5. Agent Contract
-
-Every agent should conceptually follow this contract:
+Evidence is combined using reliability-aware scoring:
 
 ```text
-Input context
-    -> validate required inputs
-    -> perform domain-specific analysis
-    -> produce structured result
-    -> expose confidence/uncertainty
-    -> expose timestamp/data freshness
-    -> return to orchestrator
+usable evidence
+  -> directional strength
+  -> confidence-weighted evidence
+  -> timeframe alignment
+  -> conflict review
+  -> trader candidate
 ```
 
-A useful agent result should contain, where applicable:
+Missing/degraded evidence is excluded from directional scoring and recorded separately. It must not be treated as a bearish, bullish, or HOLD vote.
 
-- symbol/market;
-- timeframe;
-- signal or assessment;
-- confidence;
-- supporting evidence;
-- uncertainty/limitations;
-- timestamp;
-- data freshness;
-- model/prompt/version metadata.
+Strong conflict reduces confidence and can produce `NO_EDGE`; it does not manufacture an arbitrary opposite direction.
 
-Free-form prose may be included for explanation, but prose must not be the sole machine-readable representation of a trading decision.
+A candidate BUY/SELL with confidence >= 0.75 may enter risk evaluation without unanimous agent agreement, provided minimum independent confirmations and opportunity criteria are satisfied.
 
-## 6. Decision Pipeline
+## 7. Opportunity-first scalping policy
 
-The canonical trading flow is:
+The system is not required to trade every cycle. It is required to detect valid opportunities when the evidence exists.
+
+Preferred short-horizon evidence:
+
+- 1m momentum;
+- 5m momentum;
+- 15m alignment;
+- 30m regime;
+- volume expansion;
+- breakout/rejection;
+- market structure;
+- spread/liquidity.
+
+Suggested initial candidate policy:
 
 ```text
-Collect data
-  -> validate/normalize
-  -> run analytical agents
-  -> aggregate agent outputs
-  -> generate candidate decision
-  -> deterministic risk validation
-  -> execution eligibility check
-  -> paper/live execution adapter
-  -> record order/fill/result
-  -> reflect/evaluate
-  -> report/monitor
+BUY/SELL candidate requires:
+- valid data;
+- at least 2 independent directional confirmations;
+- opportunity score >= 0.55;
+- candidate confidence >= 0.60;
+- no severe conflict;
+- valid stop/target geometry.
+
+Risk execution eligibility requires:
+- candidate confidence >= 0.75;
+- deterministic risk gate PASS.
 ```
 
-No new execution path should be introduced without documenting it here.
+These are strategy controls, not excuses to force trades. They may be calibrated with replay tests.
 
-## 7. Risk Boundary
-
-Risk management is a deterministic control plane.
-
-The risk layer must be able to reject a candidate trade even when every AI agent recommends it.
-
-Required conceptual checks include:
+## 8. Position lifecycle — spot paper scope
 
 ```text
-candidate order
-      |
-      +-- trading mode allowed?
-      +-- symbol allowed?
-      +-- position size <= limit?
-      +-- portfolio exposure <= limit?
-      +-- daily loss <= limit?
-      +-- open positions < limit?
-      +-- sufficient balance?
-      +-- exchange constraints satisfied?
-      |
-   ALL PASS
-      |
-   execution
+NO POSITION + BUY  -> OPEN LONG
+OPEN LONG + SELL    -> CLOSE/REDUCE LONG
+OPEN LONG + BUY     -> MANAGE / NO NEW DUPLICATE POSITION
+NO POSITION + SELL  -> NO ACTION (shorting is not enabled)
 ```
 
-Risk configuration currently includes values such as `MAX_POSITION_SIZE`, `DAILY_LOSS_LIMIT`, and `MAX_OPEN_POSITIONS`. These are guardrails, not suggestions.
+## 9. Explicit state taxonomy
 
-## 8. Execution Safety
+A cycle must distinguish:
 
-The system must maintain a strict distinction between:
+`DATA_UNAVAILABLE`
+`DATA_STALE`
+`AI_DEGRADED`
+`ANALYZED`
+`NO_EDGE`
+`HOLD_EXISTING_POSITION`
+`RISK_REJECTED`
+`EXECUTED`
 
-- analysis;
-- decision proposal;
-- risk approval;
-- order execution;
-- order/fill reconciliation.
+Compatibility `action` may remain `BUY | SELL | HOLD`, but `cycle_status` explains why the action did or did not execute.
 
-An AI response must never be treated as proof that an order was executed.
+## 10. Anti-HOLD diagnostics
 
-Execution should return an explicit status and an exchange/order identifier where available. Failures, partial fills, cancellations, and rejected orders must be represented explicitly.
+Persist and expose:
 
-## 9. Paper vs Live Mode
+- consecutive HOLD count;
+- consecutive no-edge count;
+- missing movement count;
+- degraded-AI count;
+- repeated-score detection;
+- dominant and opposing evidence;
+- conflict reason;
+- risk rejection reason.
 
-The system must make the operating mode explicit.
+Ten consecutive ordinary HOLD cycles must create a diagnostic event. Ten consecutive cycles caused by missing/stale data must flag the data pipeline, not the strategy.
 
-Recommended states:
+A repeated HOLD pattern must be classifiable as one of:
 
-```text
-DEVELOPMENT
-    -> PAPER
-        -> LIVE (only after explicit operational approval)
-```
+`GENUINE_NO_EDGE`, `DATA_PROBLEM`, `AI_DEGRADED`, `CONFLICT`, `RISK_REJECTION`, `POSITION_MANAGEMENT`.
 
-A live exchange key must not implicitly switch the application into live trading.
+## 11. AI degradation
 
-Paper trading must remain usable without live credentials.
+External AI is optional compute. If unavailable:
 
-## 10. API Boundary
+1. record `AI_DEGRADED`;
+2. continue deterministic market-data-derived technical/momentum analysis;
+3. require stronger confirmation;
+4. reduce confidence/size according to configuration;
+5. never fabricate an AI vote;
+6. never turn the degraded state into normal HOLD.
 
-FastAPI/backend routes expose application capabilities to the dashboard and external callers.
+If market data itself is unusable, stop analysis with `DATA_UNAVAILABLE` or `DATA_STALE`.
 
-Routes should call application/domain services rather than embedding large blocks of trading logic.
+## 12. Paper trading
 
-Conceptual boundary:
+Paper mode is the default. Maximum simultaneous paper positions is user-selectable but hard-capped at 3 and must be server-authoritative.
 
-```text
-Frontend / API Client
-        |
-        v
-     Routes
-        |
-        v
- Application Services / Orchestrator
-        |
-        +---- Agents
-        +---- Core / Risk
-        +---- Data
-        +---- Exchange adapters
-        |
-        v
- Database / External Services
-```
+Paper balance, positions, realized/unrealized PnL, fills, and lifecycle state must come from one ledger. Mark-to-market uses the same cycle snapshot used by analysis.
 
-Authentication/security code belongs at the API/security boundary. Exchange credentials must remain isolated and protected.
+## 13. Execution boundary
 
-## 11. Persistence
+No AI agent may call an exchange order endpoint. Every candidate must pass:
 
-PostgreSQL is the primary service database in the current containerized architecture, with Redis available for caching/runtime coordination. The repository also supports a SQLite configuration example for local development.
+`candidate -> deterministic risk gate -> execution adapter -> ledger -> persistence`.
 
-Persist business-critical records such as:
+Execution status must distinguish approved, rejected, filled, partially filled, cancelled, and failed.
 
-- market/context snapshots where required for reproducibility;
-- agent outputs when needed for audit/debugging;
-- candidate decisions;
-- risk checks/results;
-- orders;
-- fills;
-- positions/balances where applicable;
-- trading sessions;
-- errors and operational events.
+## 14. Persistence / observability
 
-Caching must not become the authoritative source of trading history.
+Each cycle must be reconstructable from stored data. Persist the market snapshot or normalized evidence used by the decision, agent evidence, conflict review, candidate, risk result, execution result, and cycle status.
 
-## 12. External AI Engine
+Never persist raw API secrets, tokens, or private credentials.
 
-The repository includes configuration for an external FastAPI AI engine through `AI_ENGINE_URL` and a shared secret.
+## 15. Canonical runtime
 
-Treat this as an optional service boundary, not a second independent trading brain.
+`core/orchestrator.py` is the authoritative AI coordination entry point.
 
-The external engine may perform AI computation, but the authoritative application must still enforce:
+`core/scalping_controller.py` is the authoritative short-horizon strategy helper. `core/adaptive_scalping.py` must not become a second decision brain; it may only expose compatibility behavior or delegate to the canonical signal pipeline.
 
-```text
-AI output -> validation -> risk gate -> execution
-```
+`core/risk_engine.py` and `core/execution_gate.py` are mandatory before execution.
 
-The external AI engine must not create a parallel order-execution path.
+`core/live_paper_cycle.py` must use the same orchestrator, risk gate, and paper ledger as other application entry points.
 
-## 13. Deployment Architecture
+The Cloudflare worker is an API/runtime adapter, not a separate trading brain.
 
-The current containerized deployment concept contains:
+## 16. Testing contract
 
-- backend API;
-- frontend;
-- PostgreSQL;
-- Redis;
-- Nginx/reverse proxy.
+Tests must prove both safety and liveness:
 
-These components are already represented in `docker-compose.yml`. Deployment work should improve reliability of this architecture rather than introduce unnecessary infrastructure.
+- deterministic unit tests for indicators, signal normalization, risk, sizing, and lifecycle;
+- integration tests for data -> agents -> trader -> risk -> execution;
+- replay fixtures for bullish trend, bearish trend, breakout, reversal, range, high volatility, and degraded data;
+- explicit tests proving a valid directional opportunity can reach the risk gate;
+- explicit tests proving missing data is not HOLD;
+- explicit tests proving degraded AI is not HOLD;
+- 10+ consecutive HOLD anomaly detection;
+- cycle idempotency and no double-counting.
 
-Cloudflare/VPS/deployment automation is an infrastructure concern. It must not alter trading-domain semantics.
+A test that directly calls a low-level scalping engine is not sufficient evidence that the production AI pipeline works.
 
-## 14. Observability
+## 17. Change-control rules
 
-Every production-relevant trading operation should be traceable through logs and persisted records.
+Before changing trading behavior, answer:
 
-At minimum, capture:
-
-- operation/session identifier;
-- symbol;
-- mode (paper/live);
-- decision timestamp;
-- agent outputs or references;
-- risk result;
-- execution result;
-- error details;
-- latency where useful.
-
-Never log raw secrets, API keys, private credentials, or authentication tokens.
-
-## 15. Testing Strategy
-
-Testing should follow the same boundaries as the architecture.
-
-### Unit tests
-
-Test deterministic domain logic independently:
-
-- risk calculations;
-- position sizing;
-- signal normalization;
-- validation;
-- order state transitions;
-- exchange response normalization.
-
-### Integration tests
-
-Test boundaries:
-
-- backend ↔ database;
-- backend ↔ Redis where applicable;
-- backend ↔ exchange adapter;
-- agent orchestration;
-- external AI engine contract.
-
-### Paper-trading tests
-
-Paper trading is the principal safety environment for end-to-end trading behavior.
-
-### Live trading tests
-
-Do not use real capital merely to test application logic. Use mocked/sandbox/paper exchange behavior wherever possible.
-
-## 16. Change Control — Anti-Drift Rules
-
-Before implementing a new feature, classify it into exactly one primary architectural area:
-
-1. Agent/AI analysis
-2. Data/context
-3. Decision/orchestration
-4. Risk/control
-5. Execution/exchange
-6. Backend/API
-7. Frontend/dashboard
-8. Persistence
-9. Infrastructure/DevOps
-10. Testing/observability
-
-If it does not fit any category, stop and review the architecture before coding.
-
-Every substantial change must answer:
-
-- What problem does this solve?
-- Which architectural boundary owns it?
-- Which existing component should own the behavior?
-- Does it create a second implementation of an existing responsibility?
-- Does it create a new path to exchange execution?
-- Does it weaken or bypass risk controls?
-- Does it require a change to this document?
-
-## 17. Explicit Non-Goals
-
-Unless explicitly approved and documented, do not add:
-
-- unrelated AI assistants;
-- generic chatbot features;
-- social/community features;
-- arbitrary blockchain/Web3 functionality;
-- unrelated SaaS functionality;
-- duplicate exchange clients;
-- duplicate risk engines;
-- direct agent-to-exchange execution;
-- production live trading as the default mode;
-- large rewrites solely for stylistic reasons.
-
-## 18. Definition of Done for Trading Features
-
-A trading-related feature is not complete merely because its code runs.
-
-It should satisfy the following:
-
-- belongs to a defined architectural boundary;
-- has a clear input/output contract;
-- does not duplicate another component;
-- respects paper/live mode;
-- passes deterministic risk controls;
-- is observable;
-- has appropriate tests;
-- does not expose secrets;
-- can be explained and traced from input to final outcome.
-
-## 19. Source-of-Truth Hierarchy
-
-When documents or implementation disagree, use this order:
-
-1. Explicit product/safety requirements approved by the project owner;
-2. `ARCHITECTURE.md`;
-3. domain/core contracts and schemas;
-4. backend/application behavior;
-5. agent implementations;
-6. deployment/configuration details;
-7. ad-hoc notes or temporary experiments.
-
-If implementation contradicts the architecture, do not silently normalize the architecture to match the implementation. First determine whether the implementation or architecture is wrong.
-
-## 20. Final Rule
-
-**Do not add code because it is technically interesting. Add it only when it advances the trading system's defined mission and fits an existing architectural boundary.**
-
-When in doubt: preserve the boundary, prefer the smallest change, keep execution deterministic, keep risk centralized, and document architectural changes before implementing them.
-
----
-
-# 21. Approved Product / Trading Behavior Contract — Brainstorm A–L
-
-> **Status: APPROVED BY PROJECT OWNER FOR FUTURE IMPLEMENTATION.**
->
-> This section records the decisions accepted during the architecture brainstorming phase. It is a binding product/architecture contract for subsequent implementation work. It does not authorize implementation by itself; implementation follows only when explicitly requested.
-
-The project owner has approved the following twelve architectural directions. They must be treated as one integrated system rather than twelve isolated UI features.
-
-### A — Shared Trading Knowledge Library for Every Agent
-
-All analytical agents must consume a common trading-knowledge layer supplied by the project's Trading Library / AI Trading Library.
-
-The library is not merely a text repository. It is the common knowledge/context layer for concepts such as:
-
-- candlestick behavior and formations;
-- trend and momentum interpretation;
-- support/resistance and market structure;
-- volume interpretation;
-- volatility and range behavior;
-- forecasting methodology;
-- confidence calibration;
-- scalping-specific context;
-- conditions under which a signal should be ignored;
-- historical examples and outcomes where available.
-
-The purpose is to prevent each agent from inventing an incompatible trading methodology. Agents remain specialized, but their domain reasoning must be informed by the same canonical knowledge base.
-
-The librarian agent owns retrieval/organization of this knowledge. It must not become an execution agent.
-
-### B — Explicit Candlestick and Market-Structure Analysis
-
-Technical analysis must explicitly account for price structure rather than treating a ticker value as sufficient information.
-
-The system should consume normalized OHLC/OHLCV data and derive, where data availability permits:
-
-- candle body size;
-- upper/lower wick characteristics;
-- bullish/bearish/neutral candle classification;
-- sequences of candles;
-- engulfing/reversal/continuation patterns;
-- support/resistance interactions;
-- breakouts and failed breakouts;
-- momentum/range expansion or contraction;
-- volume confirmation or divergence.
-
-A candlestick pattern is evidence, not an unconditional order instruction. The final decision still passes through aggregation and deterministic risk controls.
-
-### C — Forecasting and Opportunity Detection
-
-Forecasting must be a first-class analytical output rather than an unused agent result.
-
-The Forecast Agent must produce a structured outlook containing, where sufficient data exists:
-
-- direction/bias;
-- forecast horizon/timeframe;
-- expected range or projected movement;
-- confidence;
-- supporting evidence;
-- uncertainty;
-- invalidation conditions;
-- data timestamp/freshness.
-
-The system must be able to surface an informational opportunity alert when market evidence crosses the configured opportunity criteria. An alert does not itself execute a trade.
-
-### D — Consensus Must Explain Conflict, Not Hide It
-
-Agent disagreement is a diagnostic signal and must remain observable.
-
-The orchestrator must preserve each agent's recommendation and confidence before producing the final consensus. Consensus must not simply collapse conflicting outputs into an unexplained HOLD.
-
-The system must expose:
-
-- each agent's action;
-- each agent's confidence;
-- weighted contribution where applicable;
-- final consensus;
-- conflict/disagreement state;
-- reason for HOLD when HOLD wins;
-- dominant and opposing agents when determinable.
-
-The objective is to identify the actual cause of persistent HOLD behavior rather than repeatedly changing thresholds blindly.
-
-### E — Confidence-Based Execution Threshold
-
-The approved product behavior is that a sufficiently strong directional decision may proceed to the risk gate without requiring unanimous agent agreement.
-
-For the current paper-trading policy, a candidate **BUY or SELL with confidence above 75%** is eligible for execution evaluation, provided the deterministic risk gate passes.
-
-This does **not** mean confidence alone can bypass risk. The canonical flow remains:
-
-```text
-agent evidence
- -> consensus/candidate decision
- -> confidence threshold
- -> deterministic risk gate
- -> paper execution
-```
-
-If confidence is above the threshold but risk rejects the trade, the trade must remain unexecuted and the rejection must be observable.
-
-The 75% threshold is a product policy and may later be made configurable, but changing it is an architectural/product decision, not an arbitrary frontend constant.
-
-### F — Paper Position Limit Must Be User-Selectable, Hard-Capped at Three
-
-Paper trading must expose a persistent configuration for maximum simultaneous positions.
-
-Allowed values are:
-
-```text
-1 position
-2 positions
-3 positions
-```
-
-Three is the hard architectural ceiling for the current paper-trading product contract.
-
-The selected value must be persisted server-side and used by the actual risk/execution layer. A frontend dropdown alone is insufficient.
-
-Changing the value must survive refreshes, new dashboard sessions, and subsequent cycles. The UI must reflect the server-authoritative value.
-
-### G — Paper Account Must Behave Like an Actual Simulation
-
-Paper trading is not a counter demo. It must maintain a coherent simulated account ledger.
-
-When a paper BUY is filled:
-
-- available cash decreases by the simulated purchase cost plus configured fees if applicable;
-- the acquired position is recorded;
-- equity reflects the current mark price;
-- exposure and position count update.
-
-When a paper SELL is filled:
-
-- the position quantity decreases/ closes;
-- proceeds return to available cash;
-- realized PnL is recorded;
-- equity and daily PnL update.
-
-Unrealized PnL must be derived from current market price for open positions. The initial paper balance must not remain artificially fixed while positions change.
-
-All paper fills must be deterministic and auditable from stored state.
-
-### H — Cycle Is a Complete Runtime Transaction and Must Be Live
-
-A cycle is one complete paper-analysis/runtime iteration, not a candle and not merely a frontend refresh.
-
-Conceptually:
-
-```text
-market/context snapshot
- -> agent analysis
- -> aggregation/consensus
- -> decision
- -> risk evaluation
- -> paper execution if eligible
- -> persistence
- -> runtime counters/status update
-```
-
-The exact cycle interval remains an implementation/runtime parameter and must be defined by the active scheduler. It must not be inferred from the candle timeframe.
-
-The dashboard must update from server state without requiring a hard browser refresh. A live paper session must therefore provide a reliable runtime update mechanism (polling, SSE, WebSocket, or an equivalent server-driven strategy) while preserving a single authoritative backend state.
-
-Each completed cycle must increment the server-side cycle counter exactly once. Retries/reconnects must not double-count a cycle.
-
-### I — Cycle Completion Notification
-
-The dashboard must provide a minimal informational popup when a new cycle is successfully committed.
-
-The canonical message is:
-
-> `1 cycle is update`
-
-The popup is informational only. It must not initiate a trading action, alter risk, or become a second state store.
-
-A reconnect or UI re-render must not replay old cycle notifications indefinitely. Notification delivery should be tied to a new persisted cycle/event identifier.
-
-### J — Market Pulse Must Represent Movement Clearly
-
-Market Pulse must remain based on real exchange market data and must retain:
-
-- current/latest price;
-- 24h high;
-- 24h low;
-- recent movement;
-- 24h volume.
-
-The visualization must not depend exclusively on a single line that is difficult to interpret.
-
-A compact movement/status representation is approved:
-
-- **GREEN** = price/movement up;
-- **RED** = price/movement down;
-- **GRAY** = flat/indeterminate movement.
-
-The movement indicator may reset/rebase every 30 minutes and begin a new comparison window. The reset must not delete authoritative 24h high, 24h low, or 24h volume values; those remain exchange-derived metrics.
-
-The 30-minute reset is a presentation/analysis window, not a destructive database reset and not a replacement for the exchange's 24h statistics.
-
-### K — Trading Flow, Agent Score, and Market Participation Visualization
-
-The dashboard must make analytical state understandable without requiring the user to inspect raw logs.
-
-#### Trading Flow Chart
-
-The approved chart semantics are:
-
-- gray = market price;
-- green = profitable PnL / positive result;
-- red = loss PnL / negative result;
-- blue dashed = AI forecast projection.
-
-The chart must use real persisted/runtime data and must distinguish missing data from zero values. It must never fabricate forecast points merely to fill the chart.
-
-#### Agent Score Radar / Agent Score View
-
-The agent score visualization must clearly communicate each agent's contribution and current state. It must be backed by the same structured agent outputs used by consensus, not independently calculated frontend values.
-
-At minimum it should make visible:
-
-- Sentiment;
-- Technical;
-- Decision;
-- Forecast;
-- Reflector;
-- Consensus/dominance where applicable.
-
-The visualization is explanatory; the authoritative decision remains in the orchestrator/risk pipeline.
-
-#### Market Participation / Coin Interest Diagram
-
-Where reliable Indodax data exists, the system may provide an informational diagram showing relative market participation/liquidity/volume across a selectable set of scalping candidates.
-
-The system must not claim that exchange volume equals a literal count of individual traders. If trader-count data is unavailable, the UI must label the metric honestly (for example, volume/share of market activity) rather than inventing a participant count.
-
-This visualization is optional only when the underlying exchange data cannot support the requested semantic accurately.
-
-### L — Persistent History Library and Auditability
-
-Paper trading history must be persistent and queryable by date.
-
-Supabase/PostgreSQL is the authoritative persistence layer for the paper history library. The dashboard must be able to select a trading date and retrieve the cycles belonging to that date.
-
-Each persisted cycle/history record should retain, where available:
-
-- cycle identifier;
-- session identifier;
-- timestamp;
-- symbol/market;
-- market snapshot/reference;
-- agent outputs;
-- individual agent confidence;
-- candidate decision;
-- consensus;
-- final action;
-- risk result;
-- execution result;
-- price;
-- balance/equity;
-- open-position count;
-- realized/unrealized PnL;
-- forecast data;
-- data source/freshness;
-- error/event information.
-
-The history library must distinguish:
-
-1. a genuine persisted trading cycle;
-2. a dashboard observation/fallback record;
-3. an execution/fill event;
-4. an operational error.
-
-A fallback observation may help the dashboard remain useful, but it must never be silently presented as a persisted execution record.
-
-Date filtering must use a consistent timezone policy and must not produce `API route not found` merely because no records exist for a selected date. Empty history is a valid state and must be represented as such.
-
----
-
-# 22. Integrated AI Trading Library and Agent Decision Model
-
-The approved design requires all agents to use the Trading Library as shared knowledge while retaining specialized responsibilities.
-
-The intended model is:
-
-```text
-                     AI TRADING LIBRARY
-                shared trading knowledge/context
-                              |
-        +---------------------+----------------------+
-        |                     |                      |
-   Technical              Forecast              Sentiment
-   candle/structure       future bias            context
-        |                     |                      |
-        +---------------------+----------------------+
-                              |
-                       Decision Agent
-                       synthesis/candidate
-                              |
-                        Reflector Agent
-                     conflict/quality review
-                              |
-                       Orchestrator
-                 consensus + confidence
-                              |
-                         Risk Gate
-                              |
-                      Paper Execution
-```
-
-The library should inform the agents; it must not force every market into the same pattern. Knowledge retrieval must include relevance, timeframe, data freshness, and uncertainty wherever practical.
-
-## 23. Persistent State and Single-Writer Principle
-
-The paper runtime must have one authoritative state owner.
-
-The Durable Object/runtime state may coordinate the live paper session, but persistent history must be committed to Supabase/PostgreSQL through a defined persistence service.
-
-The frontend must never independently mutate authoritative portfolio, cycle, position, PnL, consensus, or risk state.
-
-The preferred state flow is:
-
-```text
-Market data
-   -> backend/runtime
-   -> authoritative paper state
-   -> persistence
-   -> dashboard API/stream
-```
-
-A UI reconnect may rehydrate state from the backend, but it must not manufacture state locally.
-
-## 24. Data Freshness and Missing-Data Contract
-
-The system must distinguish at least three conditions:
-
-```text
-FRESH DATA
-STALE DATA
-UNAVAILABLE DATA
-```
-
-A missing AI result is not equivalent to a HOLD recommendation.
-
-A missing market series is not equivalent to a flat market.
-
-A failed persistence request is not equivalent to a successfully persisted cycle.
-
-The frontend must display these states explicitly and the backend must retain the underlying error where relevant.
-
-## 25. HOLD Diagnostic Contract
-
-Persistent HOLD behavior must be diagnosable from structured data.
-
-For every HOLD cycle, the system should be able to answer:
-
-1. Which agents recommended BUY, SELL, or HOLD?
-2. What confidence did each agent assign?
-3. Which agent(s) had the strongest directional evidence?
-4. Which agent(s) opposed that direction?
-5. Did the consensus layer override a directional signal?
-6. Did the risk gate reject an otherwise eligible BUY/SELL?
-7. Was the market actually unavailable/stale?
-8. Was the final HOLD caused by analysis, consensus policy, risk, execution eligibility, or missing data?
-
-A generic `HOLD` label without the causal information is considered insufficient observability.
-
-## 26. Runtime Update Contract
-
-The dashboard is a live operational interface, not a static report.
-
-While paper trading is RUNNING:
-
-- cycle count must advance automatically;
-- session runtime must advance automatically;
-- decision history must update automatically;
-- agent scores must update automatically when new results arrive;
-- consensus must update automatically;
-- balance/equity/PnL must update after fills and mark-price changes;
-- positions must update automatically;
-- chart data must update automatically;
-- a completed-cycle popup may appear once per new cycle.
-
-Hard refresh is a recovery mechanism, not the normal operating mechanism.
-
-## 27. Failure and Recovery Contract
-
-Runtime failures must fail closed for execution but remain recoverable for observation.
-
-If an agent, AI engine, market-data request, database operation, or execution operation fails:
-
-- do not fabricate a successful result;
-- do not silently convert an infrastructure failure into a valid HOLD;
-- preserve the error/event;
-- keep the paper safety state coherent;
-- expose a useful status to the dashboard;
-- permit the next cycle to recover when safe.
-
-A successful `RUNNING` status must mean the runtime is actually able to execute the paper cycle path, not merely that a button changed state.
-
-## 28. Deployment and GitHub Actions Contract
-
-**Production runtime is independent of GitHub Actions.**
-
-The approved deployment model for this project is:
-
-```text
-GitHub repository
-      |
-      | source/configuration
-      v
-Cloudflare deployment + external FastAPI runtime
-      |
-      v
-Production dashboard/runtime
-```
-
-GitHub Actions may remain as an optional/manual validation mechanism, but production correctness must never depend on a GitHub Actions workflow succeeding.
-
-Implementation work must not add or trigger GitHub Actions as a substitute for production verification.
-
-For this project workflow:
-
-- code changes are made directly in the repository;
-- Cloudflare deployment is the primary frontend/Worker runtime validation;
-- external FastAPI deployment is the AI-engine runtime validation;
-- production errors are diagnosed from actual deployed behavior and deployment/runtime logs;
-- GitHub Actions failures are not the primary acceptance criterion for production runtime;
-- workflow files must not be modified merely to make a validation check green unless explicitly requested.
-
-This rule is important because exhausted Actions credits must not block development or production debugging.
-
-## 29. Security and Manual Exchange Connection
-
-Exchange credentials must never be placed in frontend source, committed configuration, logs, or AI prompts.
-
-The eventual dashboard exchange-connection workflow must use a secure backend-managed credential path. The frontend may collect or initiate configuration, but secret storage and exchange authentication belong behind the backend/security boundary.
-
-Paper mode remains isolated from live execution. Enabling an exchange connection must not implicitly enable live trading.
-
-## 30. Implementation Order for the Approved Contract
-
-When implementation of this contract is explicitly requested, changes should be performed as coordinated vertical slices rather than unrelated one-file patches.
-
-Preferred order:
-
-```text
-1. Verify data contracts and runtime state
-2. Verify cycle scheduler and single-cycle persistence
-3. Verify paper ledger / positions / PnL
-4. Verify Supabase history persistence and date retrieval
-5. Verify all agent structured outputs
-6. Verify Trading Library retrieval/context
-7. Verify consensus + HOLD diagnostics
-8. Verify >75% directional execution eligibility + risk gate
-9. Verify live dashboard update transport
-10. Verify Market Pulse movement representation
-11. Verify Agent Score + Forecast visualization
-12. Verify notifications and final dashboard integration
-```
-
-A feature is not considered complete when only its UI changes. The complete path from data source through backend/runtime, persistence, and dashboard must work together.
-
-## 31. Contract Discipline
-
-The project owner has explicitly approved the directions in Section 21 for the next implementation phase.
-
-During subsequent discussion or implementation, if a proposed change conflicts with this contract, the assistant must explicitly flag the conflict before proceeding.
-
-In particular, the assistant must warn the project owner if a request would:
-
-- bypass the central risk gate;
-- silently reintroduce permanent HOLD behavior;
-- create a second execution path;
-- make the frontend authoritative over trading state;
-- discard persistent history;
-- replace real market data with fabricated values;
-- confuse a cycle with a candle/timeframe;
-- depend on GitHub Actions for production runtime;
-- modify unrelated UI when the requested problem is backend/runtime behavior;
-- introduce a new architecture without first updating this document.
-
-The architecture is intended to prevent implementation drift during long iterative debugging sessions. If a later decision intentionally changes one of these rules, the architecture must be updated first and that decision must be treated as an explicit contract revision.
+1. Which boundary owns it?
+2. Is another component already doing this?
+3. Does it create another BUY/SELL/HOLD generator?
+4. Does it introduce another market-data source?
+5. Can it bypass risk?
+6. Can failure become indistinguishable from HOLD?
+7. Does it require a schema/test update?
+
+If any answer is unclear, stop and resolve the architecture first.
+
+## 18. Definition of done
+
+A trading feature is complete only when:
+
+- it belongs to one boundary;
+- it uses the canonical signal contract;
+- it has explicit failure states;
+- it cannot bypass risk;
+- it does not duplicate an existing decision engine;
+- it is observable;
+- replay tests cover both directional opportunities and neutral markets;
+- paper accounting remains coherent;
+- the result is reproducible from persisted state.
+
+## 19. Source-of-truth hierarchy
+
+1. Explicit project-owner requirements.
+2. This `ARCHITECTURE.md`.
+3. Core/domain contracts.
+4. Orchestrator/application services.
+5. Specialist agents.
+6. Adapters/UI/infrastructure.
+7. Temporary experiments.
+
+## 20. Final rule
+
+Do not add a new brain when an existing brain can own the responsibility. Do not make missing information look like HOLD. Do not allow an analyst to become an execution controller. Prefer one clear pipeline, explicit evidence, explicit conflict, deterministic risk, and one paper ledger.
