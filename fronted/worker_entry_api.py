@@ -1,10 +1,9 @@
-"""Compatibility routing layer for the Cloudflare Python Worker.
+"""Production routing layer for the Cloudflare Python Worker.
 
-The dashboard uses /api/dashboard/paper/* while the Worker runtime exposes
-its authoritative paper controls under /api/bot/*. Paper execution is manually
-gated: the user explicitly turns the bot ON/OFF. While ON, the Durable Object
-Alarm scheduler runs one guarded paper cycle per minute. The alarm can never
-enable the bot by itself.
+The browser dashboard uses /api/dashboard/paper/* while the underlying paper
+state lives behind /api/bot/*. This module is the production compatibility
+layer and is intentionally the single place where HTTP paper controls are
+mapped to the Durable Object and shared AI cycle runner.
 """
 from __future__ import annotations
 
@@ -38,22 +37,37 @@ class Default(BaseDefault):
                 stub = await _state_stub(self.env)
                 pair = _request_pair(request)
                 state = await stub.enable_paper(pair)
-                payload = _state_response(state)
+
+                # Do not make the user wait for the first Durable Object alarm.
+                # The explicit START action executes one guarded AI paper cycle
+                # immediately; the alarm then continues at one-minute cadence.
+                cycle = await run_paper_cycle(
+                    self.env,
+                    stub,
+                    pair,
+                    state_response=_state_response,
+                )
+                payload = _state_response(cycle.get("state") or state)
                 payload.update({
-                    "ok": True,
+                    "ok": bool(cycle.get("ok")),
                     "manual_control": True,
                     "automation_enabled": True,
                     "cycle_schedule": "durable_object_alarm_1m",
-                    "message": "Paper trading enabled manually. Cycles run only while BOT ON.",
+                    "cycle": cycle,
+                    "message": (
+                        "Paper trading enabled and first AI cycle completed."
+                        if cycle.get("ok")
+                        else "Paper trading enabled, but the first AI cycle failed."
+                    ),
                 })
-                return Response.json(payload, status=200)
+                return Response.json(payload, status=200 if cycle.get("ok") else 503)
             except Exception as exc:
                 return Response.json(
                     {
                         "ok": False,
-                        "detail": "Paper trading could not be enabled",
-                        "reason": "paper_state_rpc_error",
-                        "error": str(exc),
+                        "detail": "Paper trading could not be started",
+                        "reason": "paper_start_error",
+                        "error": f"{type(exc).__name__}: {exc}",
                     },
                     status=503,
                 )
@@ -78,8 +92,8 @@ class Default(BaseDefault):
                     {
                         "ok": False,
                         "detail": "Paper trading could not be stopped",
-                        "reason": "paper_state_rpc_error",
-                        "error": str(exc),
+                        "reason": "paper_stop_error",
+                        "error": f"{type(exc).__name__}: {exc}",
                     },
                     status=503,
                 )
@@ -90,7 +104,7 @@ class Default(BaseDefault):
             stub = await _state_stub(self.env)
             state = await stub.ensure_scheduler()
             payload = _state_response(state)
-            payload["last_orchestrator"] = None
+            payload["last_orchestrator"] = await stub.ctx.storage.get("last_orchestrator")
             payload.update({
                 "manual_control": True,
                 "automation_enabled": True,
@@ -110,6 +124,24 @@ class Default(BaseDefault):
             )
             return Response.json(cycle, status=200 if cycle.get("ok") else 409)
 
+        if target == "/api/dashboard/analyze" and request.method == "POST":
+            if not await self._verify_access(request):
+                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            stub = await _state_stub(self.env)
+            state = await stub.get_state()
+            if not state.get("enabled"):
+                return Response.json(
+                    {"detail": "Paper trading is OFF. Start the bot first.", "bot_enabled": False},
+                    status=409,
+                )
+            cycle = await run_paper_cycle(
+                self.env,
+                stub,
+                _request_pair(request),
+                state_response=_state_response,
+            )
+            return Response.json(cycle, status=200 if cycle.get("ok") else 409)
+
         if target == "/api/dashboard/status" and request.method == "GET":
             if not await self._verify_access(request):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
@@ -120,7 +152,7 @@ class Default(BaseDefault):
             result["daily_trades"] = int(state.get("daily_trades", 0))
             result["total_trades"] = int(state.get("total_trades", 0))
             result["active_positions"] = int(state.get("active_positions", 0))
-            result["last_orchestrator"] = None
+            result["last_orchestrator"] = await stub.ctx.storage.get("last_orchestrator")
             enabled = bool(state.get("enabled"))
             cycle_running = bool(state.get("cycle_running"))
             result["manual_control"] = True
@@ -163,8 +195,7 @@ class Default(BaseDefault):
                 return Response.json({"detail": "Invalid or expired token"}, status=401)
             stub = await _state_stub(self.env)
             state = await stub.get_state()
-            decision = state.get("last_decision")
-            return Response.json({"decision": decision}, status=200)
+            return Response.json({"decision": state.get("last_decision")}, status=200)
 
         if target == "/api/dashboard/agents" and request.method == "GET":
             if not await self._verify_access(request):
@@ -175,17 +206,23 @@ class Default(BaseDefault):
             invoked = bool(state.get("last_decision"))
             status = "armed" if enabled else "idle"
             suffix = "Last cycle produced a decision." if invoked else "Waiting for the next paper cycle."
-            return Response.json({"agents": [{"name": name, "status": status, "description": suffix} for name in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
+            return Response.json({
+                "agents": [
+                    {"name": name, "status": status, "description": suffix}
+                    for name in [
+                        "Sentiment Agent",
+                        "Technical Agent",
+                        "Decision Agent",
+                        "Forecast Agent",
+                        "Reflector Agent",
+                    ]
+                ]
+            })
 
         return await super()._handle_state_routes(request, target)
 
     async def scheduled(self, controller, env, ctx):
-        """Compatibility path for legacy Cron deployments.
-
-        The production scheduler is the Durable Object alarm. If a legacy Cron
-        trigger remains attached during propagation, it is harmless: it only
-        checks the same persistent gate and does not enable the bot.
-        """
+        """Legacy Cron compatibility; Durable Object alarms are authoritative."""
         stub = await _state_stub(env)
         state = await stub.get_state()
         if not state.get("enabled"):
@@ -195,7 +232,7 @@ class Default(BaseDefault):
             await run_paper_cycle(env, stub, pair, state_response=_state_response)
         except Exception as exc:
             try:
-                await stub.finish_cycle(f"legacy_scheduler_error: {exc}")
+                await stub.finish_cycle(f"legacy_scheduler_error: {type(exc).__name__}: {exc}")
             except Exception:
                 pass
 
