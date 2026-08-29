@@ -1,11 +1,6 @@
 name: Cloudflare Worker Smoke Test
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "fronted/**"
-      - ".github/workflows/cloudflare-worker-smoke.yml"
   workflow_dispatch:
 
 jobs:
