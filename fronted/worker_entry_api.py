@@ -34,17 +34,8 @@ def _state_response(state: dict) -> dict:
         "currency_symbol": "Rp",
         "max_open_positions": max(1, min(3, int(state.get("max_open_positions", 3) or 3))),
         "active_positions": len(positions),
-        "decision_counts": {
-            "BUY": int(counts.get("BUY", 0)),
-            "SELL": int(counts.get("SELL", 0)),
-            "HOLD": int(counts.get("HOLD", 0)),
-        },
-        "safety": {
-            "mode": "paper",
-            "real_trading_locked": True,
-            "bot_enabled": enabled,
-            "cycle_running": bool(state.get("cycle_running")),
-        },
+        "decision_counts": {"BUY": int(counts.get("BUY", 0)), "SELL": int(counts.get("SELL", 0)), "HOLD": int(counts.get("HOLD", 0))},
+        "safety": {"mode": "paper", "real_trading_locked": True, "bot_enabled": enabled, "cycle_running": bool(state.get("cycle_running"))},
     }
 
 
@@ -92,207 +83,136 @@ async def _supabase_health(env):
     if not url or not key:
         return {"connected": False, "reason": "credentials_missing"}
     try:
-        response = await fetch(
-            f"{url}/rest/v1/decisions?select=id&limit=1",
-            to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}),
-        )
+        response = await fetch(f"{url}/rest/v1/decisions?select=id&limit=1", to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}))
         code = int(response.status)
-        if 200 <= code < 300:
-            return {"connected": True, "reason": "rest_probe_ok"}
-        if code in (401, 403):
-            return {"connected": False, "reason": "invalid_credentials", "http_status": code}
-        if code == 404:
-            return {"connected": False, "reason": "decisions_table_not_found", "http_status": code}
+        if 200 <= code < 300: return {"connected": True, "reason": "rest_probe_ok"}
+        if code in (401, 403): return {"connected": False, "reason": "invalid_credentials", "http_status": code}
+        if code == 404: return {"connected": False, "reason": "decisions_table_not_found", "http_status": code}
         return {"connected": False, "reason": "supabase_http_error", "http_status": code}
     except Exception as exc:
         return {"connected": False, "reason": type(exc).__name__}
 
 
 async def _history(env, request):
+    """Read exactly one bounded page from Supabase paper_history.
+
+    The UI owns page navigation; this endpoint deliberately returns at most
+    eleven rows so it can determine whether a next page exists without loading
+    the entire table into the Worker.
+    """
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
     key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
     if not url or not key:
-        return Response.json({"history": [], "count": 0, "connected": False, "reason": "credentials_missing"}, status=503)
+        return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": 1, "page_size": 10, "reason": "credentials_missing"}, status=503)
     query = parse_qs(urlparse(request.url).query)
     date = str(query.get("date", [""])[0]).strip()
     pair = str(query.get("pair", [""])[0]).strip().upper()
-    params = [("select", "*"), ("order", "cycle_at.desc"), ("limit", "200")]
-    if date:
-        params.append(("trading_date", f"eq.{date}"))
-    if pair:
-        params.append(("pair", f"eq.{pair}"))
     try:
-        response = await fetch(
-            f"{url}/rest/v1/paper_history?{urlencode(params)}",
-            to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}),
-        )
+        page = max(1, int(query.get("page", ["1"])[0]))
+        page_size = max(1, min(10, int(query.get("page_size", ["10"])[0])))
+    except (TypeError, ValueError):
+        page, page_size = 1, 10
+    offset = (page - 1) * page_size
+    params = [("select", "*"), ("order", "cycle_at.desc"), ("limit", str(page_size + 1)), ("offset", str(offset))]
+    if date: params.append(("trading_date", f"eq.{date}"))
+    if pair: params.append(("pair", f"eq.{pair}"))
+    try:
+        response = await fetch(f"{url}/rest/v1/paper_history?{urlencode(params)}", to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}))
         code = int(response.status)
         text = await response.text()
         if code < 200 or code >= 300:
-            return Response.json({"history": [], "count": 0, "connected": False, "reason": f"http_{code}", "detail": text[:500]}, status=502)
+            return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": page, "page_size": page_size, "reason": f"http_{code}", "detail": text[:500]}, status=502)
         rows = json.loads(text) if text else []
         rows = rows if isinstance(rows, list) else []
-        return Response.json({"history": rows, "count": len(rows), "date": date or None, "pair": pair or None, "connected": True})
+        has_next = len(rows) > page_size
+        rows = rows[:page_size]
+        return Response.json({"history": rows, "count": len(rows), "connected": True, "has_next": has_next, "page": page, "page_size": page_size, "date": date or None, "pair": pair or None})
     except Exception as exc:
-        return Response.json({"history": [], "count": 0, "connected": False, "reason": type(exc).__name__}, status=502)
+        return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": page, "page_size": page_size, "reason": type(exc).__name__}, status=502)
 
 
 class Default(WorkerEntrypoint):
     async def _auth(self, request, path):
         if path == "/api/auth/login" and request.method == "POST":
-            username = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
-            password = str(getattr(self.env, "ADMIN_PASSWORD", "") or "")
-            secret = str(getattr(self.env, "JWT_SECRET_KEY", "") or "").strip()
-            if not username or not password or len(secret) < 32:
-                return Response.json({"detail": "Dashboard authentication is not configured"}, status=503)
-            try:
-                body = await request.json()
-            except Exception:
-                return Response.json({"detail": "Invalid JSON request body"}, status=400)
-            supplied_user = str(body.get("username", ""))
-            supplied_password = str(body.get("password", ""))
-            supplied = hmac.new(secret.encode(), supplied_password.encode(), hashlib.sha256).digest()
-            expected = hmac.new(secret.encode(), password.encode(), hashlib.sha256).digest()
-            if supplied_user != username or not hmac.compare_digest(supplied, expected):
-                return Response.json({"detail": "Incorrect username or password"}, status=401)
-            access = cf_worker._make_token({"env": self.env}, username)
-            refresh = _make_refresh_token(self.env, username)
+            username = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip(); password = str(getattr(self.env, "ADMIN_PASSWORD", "") or ""); secret = str(getattr(self.env, "JWT_SECRET_KEY", "") or "").strip()
+            if not username or not password or len(secret) < 32: return Response.json({"detail": "Dashboard authentication is not configured"}, status=503)
+            try: body = await request.json()
+            except Exception: return Response.json({"detail": "Invalid JSON request body"}, status=400)
+            supplied_user = str(body.get("username", "")); supplied_password = str(body.get("password", ""))
+            supplied = hmac.new(secret.encode(), supplied_password.encode(), hashlib.sha256).digest(); expected = hmac.new(secret.encode(), password.encode(), hashlib.sha256).digest()
+            if supplied_user != username or not hmac.compare_digest(supplied, expected): return Response.json({"detail": "Incorrect username or password"}, status=401)
+            access = cf_worker._make_token({"env": self.env}, username); refresh = _make_refresh_token(self.env, username)
             return Response.json({"access_token": access, "refresh_token": refresh, "token_type": "bearer", "expires_in": 1800, "refresh_expires_in": 7 * 24 * 60 * 60, "username": username})
-
         if path == "/api/auth/refresh" and request.method == "POST":
-            try:
-                body = await request.json()
-            except Exception:
-                return Response.json({"detail": "Invalid JSON request body"}, status=400)
-            payload = cf_worker._verify_token({"env": self.env}, str(body.get("refresh_token", "")))
-            username = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
-            if not payload or payload.get("type") != "refresh" or payload.get("sub") != username:
-                return Response.json({"detail": "Invalid or expired refresh token"}, status=401)
+            try: body = await request.json()
+            except Exception: return Response.json({"detail": "Invalid JSON request body"}, status=400)
+            payload = cf_worker._verify_token({"env": self.env}, str(body.get("refresh_token", ""))); username = str(getattr(self.env, "ADMIN_USERNAME", "") or "").strip()
+            if not payload or payload.get("type") != "refresh" or payload.get("sub") != username: return Response.json({"detail": "Invalid or expired refresh token"}, status=401)
             return Response.json({"access_token": cf_worker._make_token({"env": self.env}, username), "token_type": "bearer", "expires_in": 1800})
-
         if path == "/api/auth/verify" and request.method == "GET":
             payload = await _verify_access(self.env, request)
-            if not payload:
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            if not payload: return Response.json({"detail": "Invalid or expired token"}, status=401)
             return Response.json({"username": payload.get("sub"), "is_authenticated": True})
-
         if path == "/api/auth/logout" and request.method == "POST":
-            if not await _verify_access(self.env, request):
-                return Response.json({"detail": "Invalid or expired token"}, status=401)
+            if not await _verify_access(self.env, request): return Response.json({"detail": "Invalid or expired token"}, status=401)
             return Response.json({"message": "Logged out successfully", "status": "success"})
         return None
 
     async def _state_routes(self, request, path):
         protected = path.startswith("/api/dashboard/") or path.startswith("/api/bot/")
-        if protected and not await _verify_access(self.env, request):
-            return Response.json({"detail": "Invalid or expired token"}, status=401)
+        if protected and not await _verify_access(self.env, request): return Response.json({"detail": "Invalid or expired token"}, status=401)
         stub = await _state_stub(self.env)
-
-        if path in ("/api/bot/status", "/api/dashboard/paper/status") and request.method == "GET":
-            return Response.json(_state_response(await stub.get_state()))
-
+        if path in ("/api/bot/status", "/api/dashboard/paper/status") and request.method == "GET": return Response.json(_state_response(await stub.get_state()))
         if path in ("/api/bot/start", "/api/dashboard/paper/start") and request.method == "POST":
-            pair = _pair(request)
-            state = await stub.enable_paper(pair)
-            cycle = await run_paper_cycle(self.env, stub, pair, state_response=_state_response)
-            if cycle.get("ok"):
-                return Response.json({**_state_response(cycle["state"]), "message": "Paper trading started and first cycle completed.", "cycle": cycle})
+            pair = _pair(request); state = await stub.enable_paper(pair); cycle = await run_paper_cycle(self.env, stub, pair, state_response=_state_response)
+            if cycle.get("ok"): return Response.json({**_state_response(cycle["state"]), "message": "Paper trading started and first cycle completed.", "cycle": cycle})
             failed_state = cycle.get("state") or state
             return Response.json({**_state_response(failed_state), "message": "Paper trading enabled but first cycle failed.", "cycle": cycle, "detail": cycle.get("error") or cycle.get("reason") or "paper_cycle_failed"}, status=502)
-
         if path in ("/api/bot/stop", "/api/dashboard/paper/stop") and request.method == "POST":
-            state = await stub.stop()
-            return Response.json({**_state_response(state), "message": "Paper trading stopped. Real trading remains locked."})
-
+            state = await stub.stop(); return Response.json({**_state_response(state), "message": "Paper trading stopped. Real trading remains locked."})
         if path in ("/api/bot/cycle", "/api/dashboard/paper/cycle") and request.method == "POST":
-            cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response)
-            return Response.json(cycle, status=200 if cycle.get("ok") else 409)
-
+            cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response); return Response.json(cycle, status=200 if cycle.get("ok") else 409)
         if path == "/api/dashboard/analyze" and request.method == "POST":
-            if not (await stub.get_state()).get("enabled"):
-                return Response.json({"detail": "Paper trading is OFF. Start the bot first.", "bot_enabled": False}, status=409)
-            cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response)
-            return Response.json(cycle, status=200 if cycle.get("ok") else 409)
-
+            if not (await stub.get_state()).get("enabled"): return Response.json({"detail": "Paper trading is OFF. Start the bot first.", "bot_enabled": False}, status=409)
+            cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response); return Response.json(cycle, status=200 if cycle.get("ok") else 409)
         if path in ("/api/bot/reset", "/api/dashboard/paper/reset") and request.method == "POST":
-            state = await stub.reset()
-            return Response.json({**_state_response(state), "message": "Paper trading state reset."})
-
+            state = await stub.reset(); return Response.json({**_state_response(state), "message": "Paper trading state reset."})
         if path == "/api/dashboard/paper/settings" and request.method == "POST":
-            try:
-                body = await request.json()
-                value = body.get("max_open_positions")
-            except Exception:
-                return Response.json({"detail": "Invalid JSON request body"}, status=400)
-            try:
-                value = int(value)
-            except (TypeError, ValueError):
-                return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
-            if value < 1 or value > 3:
-                return Response.json({"detail": "max_open_positions must be between 1 and 3"}, status=400)
-            state = await stub.set_position_limit(value)
-            return Response.json({**_state_response(state), "message": f"Maximum positions set to {value}."})
-
-        if path == "/api/dashboard/history" and request.method == "GET":
-            return await _history(self.env, request)
-
+            try: body = await request.json(); value = int(body.get("max_open_positions"))
+            except Exception: return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
+            if value < 1 or value > 3: return Response.json({"detail": "max_open_positions must be between 1 and 3"}, status=400)
+            state = await stub.set_position_limit(value); return Response.json({**_state_response(state), "message": f"Maximum positions set to {value}."})
+        if path == "/api/dashboard/history" and request.method == "GET": return await _history(self.env, request)
         if path == "/api/dashboard/status" and request.method == "GET":
-            state = await stub.get_state()
-            supabase = await _supabase_health(self.env)
-            pair = state.get("paper_pair") or "btc_idr"
-            market = await cf_worker._market_overview({"env": self.env, "query_string": f"pair={pair}".encode("latin-1")})
-            market_ok = bool(market.get("available"))
-            result = _state_response(state)
-            result.update({
-                "daily_pnl": float(state.get("daily_pnl", 0.0)),
-                "daily_trades": int(state.get("daily_trades", 0)),
-                "total_trades": int(state.get("total_trades", 0)),
-                "active_positions": int(state.get("active_positions", 0)),
-                "database": {"configured": bool(supabase.get("reason") != "credentials_missing"), **supabase},
-                "market_data": {"source": "INDODAX public market data", "available": market_ok, "fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None},
-                "system_health": {"database": {"connected": bool(supabase.get("connected"))}, "market_data": {"fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}},
-            })
+            state = await stub.get_state(); supabase = await _supabase_health(self.env); pair = state.get("paper_pair") or "btc_idr"
+            market = await cf_worker._market_overview({"env": self.env, "query_string": f"pair={pair}".encode("latin-1")}); market_ok = bool(market.get("available")); result = _state_response(state)
+            result.update({"daily_pnl": float(state.get("daily_pnl", 0.0)), "daily_trades": int(state.get("daily_trades", 0)), "total_trades": int(state.get("total_trades", 0)), "active_positions": int(state.get("active_positions", 0)), "database": {"configured": bool(supabase.get("reason") != "credentials_missing"), **supabase}, "market_data": {"source": "INDODAX public market data", "available": market_ok, "fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None}, "system_health": {"database": {"connected": bool(supabase.get("connected"))}, "market_data": {"fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}}})
             return Response.json(result)
-
         if path == "/api/dashboard/positions" and request.method == "GET":
-            state = await stub.get_state()
-            return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "max_open_positions": int(state.get("max_open_positions", 3)), "currency": "IDR", "currency_symbol": "Rp"})
-
+            state = await stub.get_state(); return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "max_open_positions": int(state.get("max_open_positions", 3)), "currency": "IDR", "currency_symbol": "Rp"})
         if path == "/api/dashboard/performance" and request.method == "GET":
-            state = await stub.get_state()
-            history = list(state.get("trade_history") or [])
-            closed = [x for x in history if x.get("action") == "SELL"]
-            wins = sum(1 for x in closed if float(x.get("pnl") or 0) > 0)
+            state = await stub.get_state(); history = list(state.get("trade_history") or []); closed = [x for x in history if x.get("action") == "SELL"]; wins = sum(1 for x in closed if float(x.get("pnl") or 0) > 0)
             return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0)), "daily_pnl": float(state.get("daily_pnl", 0)), "closed_trades": len(closed), "win_rate": wins / len(closed) if closed else 0.0, "currency": "IDR", "currency_symbol": "Rp"}})
-
         if path == "/api/dashboard/recent-decision" and request.method == "GET":
-            state = await stub.get_state()
-            return Response.json({"decision": state.get("last_decision")})
-
+            state = await stub.get_state(); return Response.json({"decision": state.get("last_decision")})
         if path == "/api/dashboard/agents" and request.method == "GET":
-            enabled = bool((await stub.get_state()).get("enabled"))
-            status = "armed" if enabled else "idle"
+            enabled = bool((await stub.get_state()).get("enabled")); status = "armed" if enabled else "idle"
             return Response.json({"agents": [{"name": n, "status": status, "description": "Paper execution pipeline; AI agents run through the configured AI engine or safe fallback."} for n in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]})
         return None
 
     async def scheduled(self, controller, env, ctx):
-        stub = await _state_stub(env)
-        state = await stub.get_state()
+        stub = await _state_stub(env); state = await stub.get_state()
         if state.get("enabled"):
-            try:
-                await run_paper_cycle(env, stub, state.get("paper_pair") or "btc_idr", state_response=_state_response)
-            except Exception as exc:
-                await stub.finish_cycle(f"scheduled_cycle_error: {exc}")
+            try: await run_paper_cycle(env, stub, state.get("paper_pair") or "btc_idr", state_response=_state_response)
+            except Exception as exc: await stub.finish_cycle(f"scheduled_cycle_error: {exc}")
 
     async def fetch(self, request):
         path = urlparse(request.url).path
         try:
             auth = await self._auth(request, path)
-            if auth is not None:
-                return auth
+            if auth is not None: return auth
             state = await self._state_routes(request, path)
-            if state is not None:
-                return state
+            if state is not None: return state
             return await asgi.fetch(cf_worker.app, request, self.env)
         except Exception as exc:
             print(f"[worker:fetch] path={path} type={type(exc).__name__}: {exc}")
