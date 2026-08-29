@@ -4,6 +4,10 @@
   "main": "./worker_entry_live.py",
   "compatibility_date": "2026-08-28",
   "compatibility_flags": ["python_workers"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
   "assets": {
     "directory": "./build",
     "binding": "ASSETS",
