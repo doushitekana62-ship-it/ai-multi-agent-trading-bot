@@ -96,13 +96,7 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
 
   const radarData = useMemo(() => ({
     labels: ['Sentiment', 'Technical', 'Decision', 'Forecast', 'Mimic Trader', 'Consensus'],
-    datasets: [{
-      label: 'Agent score',
-      data: radarValues,
-      fill: true,
-      borderWidth: 1.5,
-      pointRadius: 3,
-    }],
+    datasets: [{ label: 'Agent score', data: radarValues, fill: true, borderWidth: 1.5, pointRadius: 3 }],
   }), [radarValues]);
 
   const radarOptions = useMemo(() => ({
@@ -132,7 +126,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Stack>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={8}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Agent Score Radar</Typography>
@@ -142,7 +135,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Box>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Market vs AI</Typography>
@@ -157,7 +149,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           <Typography variant="caption" color="text.secondary">AI confidence: {confidence ? `${confidence.toFixed(1)}%` : '—'}</Typography>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">AI Consensus</Typography>
@@ -169,7 +160,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           <Typography variant="caption" color="text.secondary">Market condition: {marketBias} · {condition}</Typography>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Paper Session</Typography>
@@ -183,7 +173,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Grid>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={5}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Decision History</Typography>
@@ -199,7 +188,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Stack>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Risk Snapshot</Typography>
@@ -212,7 +200,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Stack>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={3}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Target Review</Typography>
