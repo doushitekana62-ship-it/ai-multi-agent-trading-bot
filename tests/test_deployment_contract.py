@@ -19,7 +19,7 @@ def test_cloudflare_worker_has_authoritative_paper_state_export():
     config = json.loads((ROOT / "fronted" / "wrangler.jsonc").read_text(encoding="utf-8"))
 
     assert config["name"] == "ai-multi-agent-trading-bot"
-    assert config["main"] == "./worker_entry_live.py"
+    assert config["main"] == "./worker_entry_api.py"
     assert config["compatibility_flags"] == ["python_workers"]
 
     bindings = config["durable_objects"]["bindings"]

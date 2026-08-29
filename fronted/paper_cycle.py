@@ -1,10 +1,16 @@
-"""Shared paper-trading cycle runner."""
+"""Shared paper-trading cycle runner.
+
+The same implementation is used by HTTP/manual triggers and the Durable
+Object alarm. It never submits real exchange orders. The decision itself is
+produced by the repository's existing multi-agent Orchestrator through the
+Cloudflare Container adapter.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import cf_worker
 from cloudflare_orchestrator import CloudflareOrchestrator
-from indodax_client import clean_pair, market_overview
 
 
 def _json_number(value, default=0.0):
@@ -24,6 +30,7 @@ def _optional_json_number(value):
 
 
 def _merge_market_history(previous, current, limit=120):
+    """Persist real public-trade observations across cycles without fabrication."""
     merged = []
     seen = set()
     for point in list(previous or []) + list(current or []):
@@ -31,7 +38,7 @@ def _merge_market_history(previous, current, limit=120):
             str(point.get("timestamp") or point.get("date") or ""),
             str(point.get("price") or ""),
             str(point.get("amount") or ""),
-            str(point.get("side") or point.get("type") or ""),
+            str(point.get("type") or ""),
         )
         if key in seen:
             continue
@@ -42,18 +49,27 @@ def _merge_market_history(previous, current, limit=120):
 
 
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
-    """Run one guarded paper-only cycle through the AI pipeline."""
-    pair = clean_pair(pair)
+    """Run one guarded paper-only cycle through the full AI pipeline."""
+    pair = cf_worker._clean_pair(pair)
     ok, _, reason = await state_api.begin_cycle()
     if not ok:
         state = await state_api.get_state()
-        return {"ok": False, "reason": reason, "state": state_response(state) if state_response else state}
+        return {
+            "ok": False,
+            "reason": reason,
+            "state": state_response(state) if state_response else state,
+        }
 
     try:
-        market = await market_overview(pair)
+        scope = {"env": env, "query_string": f"pair={pair}".encode("latin-1")}
+        market = await cf_worker._market_overview(scope)
         if not market.get("available") or _json_number(market.get("last")) <= 0:
-            state = await state_api.finish_cycle(f"market_data_unavailable:{market.get('error', 'unknown')}")
-            return {"ok": False, "reason": "market_data_unavailable", "error": market.get("error"), "state": state_response(state) if state_response else state}
+            state = await state_api.finish_cycle("market_data_unavailable")
+            return {
+                "ok": False,
+                "reason": "market_data_unavailable",
+                "state": state_response(state) if state_response else state,
+            }
 
         points = list(market.get("points") or [])
         previous_history = await state_api.ctx.storage.get("paper_market_history")
@@ -66,7 +82,11 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             if price <= 0:
                 continue
             raw_timestamp = _json_number(point.get("timestamp") or point.get("date"))
-            timestamp = datetime.fromtimestamp(raw_timestamp, tz=timezone.utc).isoformat() if raw_timestamp > 0 else datetime.now(timezone.utc).isoformat()
+            timestamp = (
+                datetime.fromtimestamp(raw_timestamp, tz=timezone.utc).isoformat()
+                if raw_timestamp > 0
+                else datetime.now(timezone.utc).isoformat()
+            )
             ohlcv.append({
                 "timestamp": timestamp,
                 "open": price,
@@ -86,7 +106,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "low_24h": _json_number(market.get("low")),
             "volume_24h": _json_number(market.get("volume")),
             "change_percent_24h": _json_number(market.get("recent_move")),
-            "timeframe": "public_trade",
+            "timeframe": "trade",
             "ohlcv": ohlcv,
             "recent_trades": points,
             "volatility": None,
@@ -94,7 +114,11 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         }
 
         orchestrator = CloudflareOrchestrator(
-            {"min_confidence": 0.40, "max_position_size": 0.20, "debug_enabled": True},
+            {
+                "min_confidence": 0.40,
+                "max_position_size": 0.20,
+                "debug_enabled": True,
+            },
             env=env,
         )
         result = await orchestrator.analyze(symbol, market_data)
@@ -109,8 +133,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
 
         confidence = _json_number(result.final_confidence)
         metadata = {
-            "source": getattr(result, "engine_source", "multi_agent_orchestrator"),
-            "engine_error": getattr(result, "engine_error", None),
+            "source": "multi_agent_orchestrator_container",
             "symbol": result.symbol,
             "action": action,
             "raw_action": str(result.final_action or "HOLD"),
@@ -126,21 +149,27 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "execution_reason": result.execution_reason,
             "hold_reason": result.hold_reason,
             "summary": result.summary,
-            "agents_invoked": list(dict(result.agent_votes or {}).keys()) or [
-                "Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"
+            "agents_invoked": [
+                "Sentiment Agent",
+                "Technical Agent",
+                "Decision Agent",
+                "Forecast Agent",
+                "Reflector Agent",
             ],
             "market_history_points": len(ohlcv),
             "created_at": result.timestamp.isoformat(),
         }
+
         await state_api.ctx.storage.put("last_orchestrator", metadata)
 
-        state = await state_api.record_cycle_payload({
+        payload = {
             "decision": action,
             "confidence": confidence,
             "symbol": symbol,
             "price": last_price,
             "reasoning": result.execution_reason or result.hold_reason or result.summary,
-        })
+        }
+        state = await state_api.record_cycle_payload(payload)
         return {
             "ok": True,
             "action": action,
@@ -152,4 +181,9 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         }
     except Exception as exc:
         state = await state_api.finish_cycle(f"cycle_error: {exc}")
-        return {"ok": False, "reason": "cycle_error", "error": str(exc), "state": state_response(state) if state_response else state}
+        return {
+            "ok": False,
+            "reason": "cycle_error",
+            "error": str(exc),
+            "state": state_response(state) if state_response else state,
+        }
