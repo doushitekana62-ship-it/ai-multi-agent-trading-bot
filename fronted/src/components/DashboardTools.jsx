@@ -16,6 +16,10 @@ import {
 ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0);
+const LIVE_POLL_MS = 5000;
+const MAX_OPEN_POSITIONS = 3;
+const ALLOCATION_PER_TRADE = 10;
+const EXECUTION_THRESHOLD = 75;
 
 const Indicator = ({ label, ok, value }) => (
   <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
@@ -34,7 +38,10 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
 
   const loadHealth = async () => {
     try {
-      const response = await axios.get('/api/dashboard/status');
+      const response = await axios.get('/api/dashboard/status', {
+        params: { _ts: Date.now() },
+        headers: { 'Cache-Control': 'no-cache' },
+      });
       setHealth(response.data?.system_health || null);
     } catch (error) {
       console.error('Unable to fetch system health:', error);
@@ -49,7 +56,7 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
 
   useEffect(() => {
     loadHealth();
-    const interval = setInterval(loadHealth, 60000);
+    const interval = setInterval(loadHealth, LIVE_POLL_MS);
     return () => clearInterval(interval);
   }, []);
 
@@ -94,6 +101,15 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
     ].map((v) => Math.max(-1, Math.min(1, Number.isFinite(v) ? v : 0)));
   }, [decision]);
 
+  const radarRows = useMemo(() => [
+    ['Sentiment', radarValues[0]],
+    ['Technical', radarValues[1]],
+    ['Decision', radarValues[2]],
+    ['Forecast', radarValues[3]],
+    ['Mimic Trader', radarValues[4]],
+    ['Consensus', radarValues[5]],
+  ], [radarValues]);
+
   const radarData = useMemo(() => ({
     labels: ['Sentiment', 'Technical', 'Decision', 'Forecast', 'Mimic Trader', 'Consensus'],
     datasets: [{ label: 'Agent score', data: radarValues, fill: true, borderWidth: 1.5, pointRadius: 3 }],
@@ -128,11 +144,30 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
       </Grid>
       <Grid item xs={12} md={8}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
-          <Typography variant="h6">Agent Score Radar</Typography>
-          <Typography variant="caption" color="text.secondary">Read-only view of the latest OrchestratorResult.market_scores. No analysis is triggered.</Typography>
-          <Box sx={{ height: 270, mt: 1 }}>
-            {decision?.market_scores ? <Radar data={radarData} options={radarOptions} /> : <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for an AI analysis result...</Box>}
-          </Box>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Typography variant="h6">Agent Score Radar</Typography>
+              <Typography variant="caption" color="text.secondary">Latest OrchestratorResult.market_scores. Live view; never triggers analysis.</Typography>
+            </Box>
+            {decision?.confidence != null && <Chip label={`Confidence ${confidence.toFixed(1)}%`} size="small" color={confidence >= EXECUTION_THRESHOLD ? 'success' : 'default'} />}
+          </Stack>
+          <Grid container spacing={2} alignItems="center" sx={{ mt: 0.5 }}>
+            <Grid item xs={12} md={7}>
+              <Box sx={{ height: 250 }}>
+                {decision?.market_scores ? <Radar data={radarData} options={radarOptions} /> : <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>Waiting for an AI analysis result...</Box>}
+              </Box>
+            </Grid>
+            <Grid item xs={12} md={5}>
+              <Stack spacing={0.7}>
+                {radarRows.map(([label, value]) => (
+                  <Stack key={label} direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="caption" color="text.secondary">{label}</Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }}>{Number(value).toFixed(2)}</Typography>
+                  </Stack>
+                ))}
+              </Stack>
+            </Grid>
+          </Grid>
         </Paper>
       </Grid>
       <Grid item xs={12} md={4}>
@@ -163,7 +198,7 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Paper Session</Typography>
-          <Typography variant="caption" color="text.secondary">Counters remain zero while BOT is OFF.</Typography>
+          <Typography variant="caption" color="text.secondary">Live counters from the persistent paper state.</Typography>
           <Grid container spacing={1.5} sx={{ mt: 1 }}>
             <Grid item xs={6}><Typography variant="caption" color="text.secondary">Runtime</Typography><Typography>{Number(runtimeHours).toFixed(1)} h</Typography></Grid>
             <Grid item xs={6}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography>{cycles || 0}</Typography></Grid>
@@ -176,7 +211,7 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
       <Grid item xs={12} md={5}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Decision History</Typography>
-          <Typography variant="caption" color="text.secondary">Last dashboard observations, stored locally.</Typography>
+          <Typography variant="caption" color="text.secondary">Latest dashboard observations, stored locally.</Typography>
           <Stack spacing={0.8} sx={{ mt: 1.5 }}>
             {decisionHistory.length === 0 && <Typography color="text.secondary">No observations yet.</Typography>}
             {decisionHistory.slice(0, 6).map((item, index) => (
@@ -191,12 +226,13 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Risk Snapshot</Typography>
-          <Typography variant="caption" color="text.secondary">Read-only paper account view.</Typography>
+          <Typography variant="caption" color="text.secondary">Paper execution policy.</Typography>
           <Stack spacing={1.2} sx={{ mt: 2 }}>
             <Stack direction="row" justifyContent="space-between"><Typography>Open positions</Typography><Typography>{positions.length}</Typography></Stack>
-            <Stack direction="row" justifyContent="space-between"><Typography>Max positions</Typography><Typography>5</Typography></Stack>
-            <Stack direction="row" justifyContent="space-between"><Typography>Exposure</Typography><Typography>{positions.length ? 'ACTIVE' : '0%'}</Typography></Stack>
-            <Chip label={positions.length <= 5 ? 'WITHIN PAPER LIMIT' : 'REVIEW REQUIRED'} color={positions.length <= 5 ? 'success' : 'warning'} size="small" />
+            <Stack direction="row" justifyContent="space-between"><Typography>Max positions</Typography><Typography>{MAX_OPEN_POSITIONS}</Typography></Stack>
+            <Stack direction="row" justifyContent="space-between"><Typography>Allocation / trade</Typography><Typography>{ALLOCATION_PER_TRADE}%</Typography></Stack>
+            <Stack direction="row" justifyContent="space-between"><Typography>Execution threshold</Typography><Typography>{EXECUTION_THRESHOLD}%</Typography></Stack>
+            <Chip label={positions.length <= MAX_OPEN_POSITIONS ? 'WITHIN PAPER LIMIT' : 'REVIEW REQUIRED'} color={positions.length <= MAX_OPEN_POSITIONS ? 'success' : 'warning'} size="small" />
           </Stack>
         </Paper>
       </Grid>
