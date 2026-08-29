@@ -1,8 +1,9 @@
 """Shared guarded paper-trading cycle runner.
 
 Every cycle uses the public Indodax source, builds a rolling 30-minute
-one-minute pulse, obtains the AI decision, then persists an audit reservation to
-Supabase before any paper execution. Supabase is the durable audit authority.
+one-minute pulse, obtains the canonical AI decision, then persists an audit
+reservation to Supabase before any paper execution. Supabase is the durable
+audit authority.
 """
 from __future__ import annotations
 
@@ -15,8 +16,7 @@ from cloudflare_orchestrator import CloudflareOrchestrator
 from js import fetch
 from pyodide.ffi import to_js
 
-EXECUTION_CONFIDENCE_THRESHOLD = 0.65
-AGGRESSIVE_SIGNAL_THRESHOLD = 0.10
+EXECUTION_CONFIDENCE_THRESHOLD = 0.75
 MAX_POSITION_SIZE = 0.10
 LIBRARY_ALERT_MARKER = "LIBRARY_ALERTS_JSON="
 PULSE_MINUTES = 30
@@ -48,18 +48,11 @@ async def _supabase_request(env, table, method="GET", query="", payload=None):
     if not url or not key:
         return {"ok": False, "saved": False, "reason": "supabase_credentials_missing"}
     try:
-        headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        }
+        headers = {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json", "Prefer": "return=representation"}
         options = {"method": method, "headers": headers}
         if payload is not None:
             options["body"] = json.dumps(payload, separators=(",", ":"))
-        endpoint = f"{url}/rest/v1/{table}{query}"
-        response = await fetch(endpoint, to_js(options))
+        response = await fetch(f"{url}/rest/v1/{table}{query}", to_js(options))
         status = int(response.status)
         text = await response.text()
         if status < 200 or status >= 300:
@@ -82,11 +75,12 @@ def _iso(value):
 
 
 def _trade_timestamp(point):
-    return _json_number(point.get("timestamp") or point.get("date"))
+    value = _json_number(point.get("timestamp") or point.get("date"))
+    return value / 1000.0 if value > 1_000_000_000_000 else value
 
 
 def _build_pulse_segments(points, now_ts=None):
-    """Return exactly 30 aligned one-minute market segments when data exists."""
+    """Return exactly 30 aligned one-minute segments when trade data exists."""
     now_ts = float(now_ts or datetime.now(timezone.utc).timestamp())
     current_bucket = int(now_ts // 60) * 60
     buckets = {}
@@ -157,14 +151,7 @@ async def _fetch_public_trades(pair):
 
 
 def _agent_details(result):
-    names = {
-        "sentiment": getattr(result, "sentiment", None),
-        "technical": getattr(result, "technical", None),
-        "decision": getattr(result, "decision", None),
-        "forecast": getattr(result, "forecast", None),
-        "reflection": getattr(result, "reflection", None),
-        "mimic_trader": getattr(result, "mimic_analysis", None),
-    }
+    names = {"sentiment": getattr(result, "sentiment", None), "technical": getattr(result, "technical", None), "decision": getattr(result, "decision", None), "forecast": getattr(result, "forecast", None), "reflection": getattr(result, "reflection", None), "mimic_trader": getattr(result, "mimic_analysis", None)}
     details = {}
     for name, value in names.items():
         raw = getattr(value, "__dict__", {}) if value is not None else {}
@@ -199,29 +186,24 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         symbol = market["pair"].upper().replace("_", "/")
         last = _json_number(market.get("last"))
         pulse_segments = _build_pulse_segments(history)
-        move_1m = _window_move(history, 1)
-        move_5m = _window_move(history, 5)
-        move_15m = _window_move(history, 15)
-        move_30m = _window_move(history, 30)
+        move_1m = _window_move(history, 1); move_5m = _window_move(history, 5); move_15m = _window_move(history, 15); move_30m = _window_move(history, 30)
         current_segment = pulse_segments[-1] if pulse_segments else {"status": "GRAY"}
         pulse_status = str(current_segment.get("status") or "GRAY")
         public_move = _json_number(market.get("recent_move"))
         effective_move = move_30m if move_30m is not None else public_move
 
+        orchestrator = CloudflareOrchestrator({"min_confidence": EXECUTION_CONFIDENCE_THRESHOLD, "max_position_size": MAX_POSITION_SIZE, "debug_enabled": True}, env=env)
         market_data = {
             "current_price": last, "unified_price": last, "price": last,
-            "high_24h": _json_number(market.get("high")), "low_24h": _json_number(market.get("low")),
-            "volume_24h": _json_number(market.get("volume")), "change_percent_24h": effective_move,
-            "short_term_move_percent": move_1m if move_1m is not None else effective_move,
+            "high_24h": _json_number(market.get("high")), "low_24h": _json_number(market.get("low")), "volume_24h": _json_number(market.get("volume")),
+            "change_percent_24h": effective_move, "short_term_move_percent": move_1m if move_1m is not None else effective_move,
             "public_trade_move_percent": public_move, "window_move_percent": effective_move,
             "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m,
-            "timeframe": "1m", "ohlcv": [], "recent_trades": history[-PULSE_FETCH_LIMIT:],
-            "pulse_segments": pulse_segments, "pulse_status": pulse_status,
-            "volatility": None, "data_quality_score": 0.90 if len(history) >= 80 else max(0.55, min(0.85, len(history) / 100.0)),
-            "trading_knowledge_context": "Momentum requires price/structure confirmation; volume is confirmation; support/resistance must be respected; risk controls remain hard boundaries.",
+            "timeframe": "1m", "ohlcv": [], "recent_trades": history[-PULSE_FETCH_LIMIT:], "pulse_segments": pulse_segments,
+            "pulse_status": pulse_status, "volatility": None,
+            "data_quality_score": 0.90 if len(history) >= 80 else max(0.55, min(0.85, len(history) / 100.0)),
+            "trading_knowledge_context": "Momentum requires price/structure confirmation; volume confirms rather than predicts; candlestick patterns require context; risk controls remain hard boundaries.",
         }
-
-        orchestrator = CloudflareOrchestrator({"min_confidence": EXECUTION_CONFIDENCE_THRESHOLD, "max_position_size": MAX_POSITION_SIZE, "debug_enabled": True}, env=env)
         result = await orchestrator.analyze(symbol, market_data)
         raw_action = str(result.final_action or "HOLD").upper()
         action = {"STRONG_BUY": "BUY", "STRONG_SELL": "SELL"}.get(raw_action, raw_action)
@@ -231,16 +213,14 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         scores = {k: _json_number(v) for k, v in dict(result.market_scores or {}).items()}
         range_high = _json_number(market.get("high")); range_low = _json_number(market.get("low"))
         range_pos = ((last - range_low) / (range_high - range_low) * 100) if range_high > range_low else 50
-        directional = 0.40 * scores.get("technical", 0) + 0.32 * scores.get("decision", 0) + 0.20 * scores.get("forecast", 0) + 0.08 * scores.get("sentiment", 0)
-        if action == "HOLD" and abs(move_1m or 0) >= 0.02 and abs(directional) >= AGGRESSIVE_SIGNAL_THRESHOLD:
-            action = "BUY" if directional > 0 else "SELL"
-            confidence = max(confidence, 0.70)
 
+        # No secondary directional override is allowed here. The Trader output is
+        # authoritative; this layer only applies the deterministic execution gate.
         gate_passed = action in {"BUY", "SELL"} and confidence >= EXECUTION_CONFIDENCE_THRESHOLD
         reasoning = result.execution_reason or result.hold_reason or result.summary
         if action in {"BUY", "SELL"} and not gate_passed:
             action = "HOLD"
-            reasoning = f"Execution gate blocked {raw_action}: confidence {confidence:.1%} below {EXECUTION_CONFIDENCE_THRESHOLD:.0%}."
+            reasoning = f"Execution gate blocked candidate: confidence {confidence:.1%} below {EXECUTION_CONFIDENCE_THRESHOLD:.0%}."
 
         hold_analysis = dict(getattr(result, "hold_analysis", {}) or {})
         library_alerts = list(getattr(result, "library_alerts", []) or [])[:4]
@@ -248,42 +228,31 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         metadata = {
             "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number,
             "source": getattr(result, "engine_source", "fastapi_cloud"), "warning": getattr(result, "engine_warning", None),
-            "symbol": result.symbol, "action": action, "raw_action": raw_action, "confidence": confidence,
+            "cycle_status": getattr(result, "cycle_status", "ANALYZED"), "symbol": result.symbol, "action": action, "raw_action": raw_action, "confidence": confidence,
             "execution_gate": {"threshold": EXECUTION_CONFIDENCE_THRESHOLD, "passed": gate_passed, "executed_action": action},
-            "consensus_action": result.consensus_action, "consensus_score": _json_number(result.consensus_score),
-            "votes": dict(result.agent_votes or {}), "market_scores": scores,
+            "consensus_action": result.consensus_action, "consensus_score": _json_number(result.consensus_score), "votes": dict(result.agent_votes or {}), "market_scores": scores,
             "confidence_components": {k: _json_number(v) for k, v in dict(result.confidence_components or {}).items()},
-            "position_size": min(MAX_POSITION_SIZE, _json_number(result.position_size)),
-            "stop_loss": _optional_json_number(result.stop_loss), "take_profit": _optional_json_number(result.take_profit),
+            "position_size": min(MAX_POSITION_SIZE, _json_number(result.position_size)), "stop_loss": _optional_json_number(result.stop_loss), "take_profit": _optional_json_number(result.take_profit),
             "execution_reason": result.execution_reason, "hold_reason": result.hold_reason, "summary": result.summary,
-            "agents_invoked": list(dict(result.agent_votes or {}).keys()),
-            "hold_agents": list(hold_analysis.get("hold_agents") or getattr(result, "hold_agents", []) or []),
-            "opposing_agents": list(hold_analysis.get("opposing_agents") or getattr(result, "opposing_agents", []) or []),
-            "hold_analysis": hold_analysis, "agent_details": _agent_details(result),
-            "market_history_points": len(history), "public_trade_move_percent": public_move,
-            "window_move_percent": effective_move, "move_1m_pct": move_1m, "move_5m_pct": move_5m,
-            "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status,
+            "agents_invoked": list(dict(result.agent_votes or {}).keys()), "hold_agents": list(hold_analysis.get("hold_agents") or getattr(result, "hold_agents", []) or []),
+            "opposing_agents": list(hold_analysis.get("opposing_agents") or getattr(result, "opposing_agents", []) or []), "hold_analysis": hold_analysis, "agent_details": _agent_details(result),
+            "market_history_points": len(history), "public_trade_move_percent": public_move, "window_move_percent": effective_move,
+            "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status,
             "pulse_segments": pulse_segments, "effective_move_percent": effective_move, "range_position": range_pos,
-            "market_timestamp": market.get("timestamp") or datetime.now(timezone.utc).isoformat(),
-            "market_source": "INDODAX public market data",
+            "market_timestamp": market.get("timestamp") or datetime.now(timezone.utc).isoformat(), "market_source": "INDODAX public market data",
             "library_version": getattr(result, "library_version", "unknown"), "library_alerts": library_alerts,
             "candle_analysis": candle_analysis, "knowledge_topics": list(getattr(result, "knowledge_topics", []) or []),
         }
 
-        # Audit-first: create the decision and a pending paper-history row before
-        # mutating the paper account. If either insert fails, this cycle cannot trade.
         decision_payload = {
-            "symbol": symbol, "action": action, "confidence": max(0, min(100, confidence * 100)),
-            "reasoning": _reasoning_with_alert_bridge(reasoning, library_alerts), "agent_votes": metadata["votes"],
-            "market_scores": scores, "confidence_components": metadata["confidence_components"],
-            "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"],
-            "position_size": metadata["position_size"], "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"],
-            "engine_source": metadata["source"], "engine_warning": metadata["warning"],
-            "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number,
-            "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"],
-            "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m,
-            "pulse_status": pulse_status, "agent_details": metadata["agent_details"], "hold_analysis": hold_analysis,
-            "execution_gate": metadata["execution_gate"], "market_snapshot": {"pair": symbol, "last": last, "bid": market.get("buy"), "ask": market.get("sell"), "high": market.get("high"), "low": market.get("low"), "volume": market.get("volume"), "pulse_segments": pulse_segments},
+            "symbol": symbol, "action": action, "confidence": max(0, min(100, confidence * 100)), "reasoning": _reasoning_with_alert_bridge(reasoning, library_alerts),
+            "agent_votes": metadata["votes"], "market_scores": scores, "confidence_components": metadata["confidence_components"],
+            "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"], "position_size": metadata["position_size"],
+            "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"], "engine_source": metadata["source"], "engine_warning": metadata["warning"],
+            "cycle_status": metadata["cycle_status"], "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number,
+            "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m,
+            "pulse_status": pulse_status, "agent_details": metadata["agent_details"], "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"],
+            "market_snapshot": {"pair": symbol, "last": last, "bid": market.get("buy"), "ask": market.get("sell"), "high": market.get("high"), "low": market.get("low"), "volume": market.get("volume"), "pulse_segments": pulse_segments},
             "persistence_status": "pending",
         }
         decision_persistence = await _supabase_request(env, "decisions", "POST", payload=decision_payload)
@@ -294,22 +263,15 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
 
         cycle_at = datetime.now(timezone.utc).isoformat()
         history_payload = {
-            "cycle_at": cycle_at, "trading_date": cycle_at[:10], "pair": symbol,
-            "action": action, "raw_action": raw_action, "confidence": confidence * 100,
-            "price": last, "balance": _json_number(pre_state.get("balance")), "portfolio_value": _json_number(pre_state.get("portfolio_value")),
-            "daily_pnl": _json_number(pre_state.get("daily_pnl")), "total_pnl": _json_number(pre_state.get("total_pnl")),
-            "active_positions": int(pre_state.get("active_positions", 0)), "positions": list(pre_state.get("positions") or []),
-            "agent_votes": metadata["votes"], "market_scores": scores, "confidence_components": metadata["confidence_components"],
-            "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"],
-            "position_size": metadata["position_size"], "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"],
-            "reasoning": decision_payload["reasoning"], "engine_source": metadata["source"], "engine_warning": metadata["warning"],
-            "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "decision_id": decision_id,
-            "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"],
-            "bid": _optional_json_number(market.get("buy")), "ask": _optional_json_number(market.get("sell")),
-            "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m,
-            "pulse_status": pulse_status, "pulse_segments": pulse_segments, "agent_details": metadata["agent_details"],
-            "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"],
-            "market_snapshot": decision_payload["market_snapshot"], "persistence_status": "pending",
+            "cycle_at": cycle_at, "trading_date": cycle_at[:10], "pair": symbol, "action": action, "raw_action": raw_action, "confidence": confidence * 100,
+            "price": last, "balance": _json_number(pre_state.get("balance")), "portfolio_value": _json_number(pre_state.get("portfolio_value")), "daily_pnl": _json_number(pre_state.get("daily_pnl")), "total_pnl": _json_number(pre_state.get("total_pnl")),
+            "active_positions": int(pre_state.get("active_positions", 0)), "positions": list(pre_state.get("positions") or []), "agent_votes": metadata["votes"], "market_scores": scores,
+            "confidence_components": metadata["confidence_components"], "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"], "position_size": metadata["position_size"],
+            "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"], "reasoning": decision_payload["reasoning"], "engine_source": metadata["source"], "engine_warning": metadata["warning"],
+            "cycle_status": metadata["cycle_status"], "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "decision_id": decision_id,
+            "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "bid": _optional_json_number(market.get("buy")), "ask": _optional_json_number(market.get("sell")),
+            "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status, "pulse_segments": pulse_segments,
+            "agent_details": metadata["agent_details"], "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"], "market_snapshot": decision_payload["market_snapshot"], "persistence_status": "pending",
         }
         history_persistence = await _supabase_request(env, "paper_history", "POST", payload=history_payload)
         if not history_persistence.get("saved"):
@@ -318,8 +280,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             return {"ok": False, "reason": "paper_history_persistence_failed", "persistence": {"decision": decision_persistence, "history": history_persistence}, "state": state_response(state) if state_response else state}
         history_id = history_persistence.get("id")
 
-        bridged_reasoning = decision_payload["reasoning"]
-        payload = {"decision": action, "confidence": confidence, "symbol": symbol, "price": last, "reasoning": bridged_reasoning, "analysis": metadata}
+        payload = {"decision": action, "confidence": confidence, "symbol": symbol, "price": last, "reasoning": decision_payload["reasoning"], "analysis": metadata}
         state = await state_api.record_cycle_payload(payload)
         trade = (state.get("last_decision") or {}).get("trade") if isinstance(state, dict) else None
 
@@ -327,30 +288,23 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         trade_id = None
         if trade:
             trade_payload = {
-                "decision_id": decision_id, "symbol": trade.get("symbol"), "action": str(trade.get("action") or "").upper(),
-                "price": _json_number(trade.get("price")), "quantity": _json_number(trade.get("quantity")),
-                "pnl": _json_number(trade.get("pnl")), "confidence": _json_number(trade.get("confidence", 0)) * 100,
-                "status": "OPEN" if str(trade.get("action") or "").upper() == "BUY" else "CLOSED",
-                "cycle_id": cycle_id, "session_id": session_id,
+                "decision_id": decision_id, "symbol": trade.get("symbol"), "action": str(trade.get("action") or "").upper(), "price": _json_number(trade.get("price")),
+                "quantity": _json_number(trade.get("quantity")), "pnl": _json_number(trade.get("pnl")), "confidence": _json_number(trade.get("confidence", 0)) * 100,
+                "status": "OPEN" if str(trade.get("action") or "").upper() == "BUY" else "CLOSED", "cycle_id": cycle_id, "session_id": session_id,
             }
-            if trade_payload["action"] == "BUY":
-                trade_payload["entry_price"] = trade_payload["price"]
-            else:
-                trade_payload["exit_price"] = trade_payload["price"]
+            if trade_payload["action"] == "BUY": trade_payload["entry_price"] = trade_payload["price"]
+            else: trade_payload["exit_price"] = trade_payload["price"]
             trade_persistence = await _supabase_request(env, "trades", "POST", payload=trade_payload)
             trade_id = trade_persistence.get("id")
 
         final_history = {
-            "balance": _json_number(state.get("balance")), "portfolio_value": _json_number(state.get("portfolio_value")),
-            "daily_pnl": _json_number(state.get("daily_pnl")), "total_pnl": _json_number(state.get("total_pnl")),
-            "active_positions": int(state.get("active_positions", 0)), "positions": list(state.get("positions") or []),
-            "trade_id": trade_id, "persistence_status": "saved" if trade_persistence.get("saved") or not trade else "saved_with_trade_persistence_error",
+            "balance": _json_number(state.get("balance")), "portfolio_value": _json_number(state.get("portfolio_value")), "daily_pnl": _json_number(state.get("daily_pnl")), "total_pnl": _json_number(state.get("total_pnl")),
+            "active_positions": int(state.get("active_positions", 0)), "positions": list(state.get("positions") or []), "trade_id": trade_id,
+            "persistence_status": "saved" if trade_persistence.get("saved") or not trade else "saved_with_trade_persistence_error",
         }
         await _supabase_request(env, "paper_history", "PATCH", f"?id=eq.{history_id}", final_history)
         await _supabase_request(env, "decisions", "PATCH", f"?id=eq.{decision_id}", {"persistence_status": "saved"})
 
-        # Durable Object is a runtime cache; the UI/history library never falls
-        # back to it. Supabase remains the authoritative cycle ledger.
         return {
             "ok": True, "action": action, "raw_action": raw_action, "confidence": confidence,
             "market": {**market, "pulse_segments": pulse_segments, "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status},
