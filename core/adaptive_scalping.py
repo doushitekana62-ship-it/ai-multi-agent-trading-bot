@@ -43,13 +43,7 @@ class AdaptiveScalpingEngine:
         bullish_primary = sum(1 for value in primary_values if value > 0.10)
         bearish_primary = sum(1 for value in primary_values if value < -0.10)
         agreement = max(bullish_primary, bearish_primary)
-        confidence = max(
-            0.0,
-            min(
-                1.0,
-                0.46 + abs(score) * 0.48 + agreement * 0.045 + abs(momentum) * 0.10,
-            ),
-        )
+        confidence = max(0.0, min(1.0, 0.46 + abs(score) * 0.48 + agreement * 0.045 + abs(momentum) * 0.10))
         confidence *= max(0.0, min(1.0, data_quality))
         high_volatility = volatility >= 0.05
         threshold = self.momentum_threshold if abs(momentum) >= 0.35 else self.base_threshold
@@ -57,10 +51,14 @@ class AdaptiveScalpingEngine:
             threshold += 0.08
         if confidence < self.min_confidence or abs(score) < threshold:
             return ScalpingSignal("HOLD", score, confidence, 0.0, "insufficient primary confirmation")
-        if score > 0 and momentum >= -0.10 and bullish_primary >= 2:
+        if score > 0 and momentum < -0.10:
+            return ScalpingSignal("HOLD", score, confidence, 0.0, "bullish score conflicts with bearish momentum")
+        if score < 0 and momentum > 0.10:
+            return ScalpingSignal("HOLD", score, confidence, 0.0, "bearish score conflicts with bullish momentum")
+        if score > 0 and bullish_primary >= 2:
             multiplier = min(self.max_position_multiplier, max(0.25, confidence))
             return ScalpingSignal("BUY", score, confidence, multiplier, "technical/forecast/trader bullish confirmation")
-        if score < 0 and momentum <= 0.10 and bearish_primary >= 2:
+        if score < 0 and bearish_primary >= 2:
             multiplier = min(self.max_position_multiplier, max(0.25, confidence))
             return ScalpingSignal("SELL", score, confidence, multiplier, "technical/forecast/trader bearish confirmation")
         return ScalpingSignal("HOLD", score, confidence, 0.0, "primary signals conflict with direction")
