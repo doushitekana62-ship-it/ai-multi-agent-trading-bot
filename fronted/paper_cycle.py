@@ -1,9 +1,9 @@
 """Shared paper-trading cycle runner.
 
 The same implementation is used by HTTP/manual triggers and the Durable
-Object alarm. It never submits real exchange orders. The decision itself is
-produced by the repository's existing multi-agent Orchestrator through the
-Cloudflare Container adapter.
+Object alarm. It never submits real exchange orders. FastAPI Cloud is the
+preferred AI engine; the Worker adapter supplies a safe local fallback when
+that service is unavailable.
 """
 from __future__ import annotations
 
@@ -33,7 +33,12 @@ def _merge_market_history(previous, current, limit=120):
     merged = []
     seen = set()
     for point in list(previous or []) + list(current or []):
-        key = (str(point.get("timestamp") or point.get("date") or ""), str(point.get("price") or ""), str(point.get("amount") or ""), str(point.get("type") or ""))
+        key = (
+            str(point.get("timestamp") or point.get("date") or ""),
+            str(point.get("price") or ""),
+            str(point.get("amount") or ""),
+            str(point.get("type") or point.get("side") or ""),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -43,7 +48,7 @@ def _merge_market_history(previous, current, limit=120):
 
 
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
-    """Run one guarded paper-only cycle through the full AI pipeline."""
+    """Run one guarded paper-only cycle through the AI pipeline."""
     pair = cf_worker._clean_pair(pair)
     ok, _, reason = await state_api.begin_cycle()
     if not ok:
@@ -57,12 +62,10 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             state = await state_api.finish_cycle("market_data_unavailable")
             return {"ok": False, "reason": "market_data_unavailable", "state": state_response(state) if state_response else state}
 
-        # The Worker cannot access DurableObjectStub.ctx. Keep the cycle input
-        # RPC-safe: the current public trades are already enough to build the
-        # bounded analysis window, while persistent trading state remains owned
-        # exclusively by PaperTradingState.
         points = list(market.get("points") or [])
-        history = _merge_market_history([], points, limit=120)
+        previous_history = await state_api.get_paper_market_history()
+        history = _merge_market_history(previous_history, points, limit=120)
+        await state_api.set_paper_market_history(history)
 
         ohlcv = []
         for point in history:
@@ -103,7 +106,8 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
 
         confidence = _json_number(result.final_confidence)
         metadata = {
-            "source": "multi_agent_orchestrator_container",
+            "source": getattr(result, "engine_source", "fastapi_cloud"),
+            "warning": getattr(result, "engine_warning", None),
             "symbol": result.symbol,
             "action": action,
             "raw_action": str(result.final_action or "HOLD"),
@@ -119,10 +123,11 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "execution_reason": result.execution_reason,
             "hold_reason": result.hold_reason,
             "summary": result.summary,
-            "agents_invoked": ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"],
+            "agents_invoked": list(dict(result.agent_votes or {}).keys()),
             "market_history_points": len(ohlcv),
             "created_at": result.timestamp.isoformat(),
         }
+        await state_api.record_orchestrator(metadata)
 
         payload = {
             "decision": action,
@@ -132,7 +137,15 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "reasoning": result.execution_reason or result.hold_reason or result.summary,
         }
         state = await state_api.record_cycle_payload(payload)
-        return {"ok": True, "action": action, "raw_action": result.final_action, "confidence": confidence, "market": market, "orchestrator": metadata, "state": state_response(state) if state_response else state}
+        return {
+            "ok": True,
+            "action": action,
+            "raw_action": result.final_action,
+            "confidence": confidence,
+            "market": market,
+            "orchestrator": metadata,
+            "state": state_response(state) if state_response else state,
+        }
     except Exception as exc:
         state = await state_api.finish_cycle(f"cycle_error: {exc}")
         return {"ok": False, "reason": "cycle_error", "error": str(exc), "state": state_response(state) if state_response else state}
