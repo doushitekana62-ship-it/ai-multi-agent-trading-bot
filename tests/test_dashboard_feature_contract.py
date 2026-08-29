@@ -19,15 +19,14 @@ def test_market_pulse_has_single_dashboard_location():
     assert ":has(> [aria-label=\"recent market price chart\"])" in legend
 
 
-def test_dashboard_analytics_features_are_present():
+def test_dashboard_analytics_features_are_present_without_duplicate_history():
     source = read("fronted/src/components/DashboardAnalytics.jsx")
-    for label in ("Conflict Analyzer", "INDODAX Scalping Radar", "Volume Share", "Paper History Library"):
+    for label in ("Conflict Analyzer", "INDODAX Scalping Radar", "Volume Share", "Market Scanner"):
         assert label in source
-    assert "page_size: 10" in source
-    assert "hasNext" in source
+    assert "Paper History Library" not in source
+    assert "Paper History · Supabase" not in source
     assert "backgroundColor" in source
     assert "tooltip" in source
-    assert "Paper History · Supabase" not in source
 
 
 def test_history_api_is_bounded_and_paginated():
