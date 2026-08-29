@@ -9,6 +9,7 @@ import { DarkMode, LightMode } from '@mui/icons-material';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
+import CycleUpdateToast from './components/CycleUpdateToast';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const ProtectedRoute = ({ children }) => {
@@ -98,6 +99,7 @@ function App() {
             <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
           </Routes>
+          <CycleUpdateToast />
           <Box sx={{ position: 'fixed', right: 18, bottom: 18, zIndex: 1400 }}>
             <Tooltip title={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
               <IconButton
