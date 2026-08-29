@@ -94,29 +94,46 @@ const Dashboard = () => {
 
   const fetchData = async () => {
     setLoading(true);
+    const requests = {
+      status: axios.get('/api/dashboard/status'),
+      positions: axios.get('/api/dashboard/positions'),
+      performance: axios.get('/api/dashboard/performance'),
+      decision: axios.get('/api/dashboard/recent-decision'),
+      agents: axios.get('/api/dashboard/agents'),
+      market: axios.get('/api/market/overview', { params: { pair: selectedPair } }),
+      insights: axios.get('/api/market/insights'),
+    };
+    const entries = Object.entries(requests);
+    const results = await Promise.allSettled(entries.map(([, request]) => request));
     try {
-      const [statusRes, positionsRes, performanceRes, decisionRes, agentsRes, marketRes, insightRes] = await Promise.all([
-        axios.get('/api/dashboard/status'),
-        axios.get('/api/dashboard/positions'),
-        axios.get('/api/dashboard/performance'),
-        axios.get('/api/dashboard/recent-decision'),
-        axios.get('/api/dashboard/agents'),
-        axios.get('/api/market/overview', { params: { pair: selectedPair } }),
-        axios.get('/api/market/insights'),
-      ]);
-      setStatus(statusRes.data);
-      setPositions(positionsRes.data.positions || []);
-      setPerformance(performanceRes.data.performance || null);
-      const nextDecision = decisionRes.data.decision || null;
-      const nextMarket = marketRes.data;
-      setDecision(nextDecision);
-      setAgents(agentsRes.data.agents || []);
-      setMarket(nextMarket);
-      setInsights(insightRes.data.items || []);
+      const data = {};
+      const failures = [];
+      results.forEach((result, index) => {
+        const [name] = entries[index];
+        if (result.status === 'fulfilled') data[name] = result.value;
+        else failures.push({ name, error: result.reason });
+      });
+
+      if (data.status) setStatus(data.status.data);
+      if (data.positions) setPositions(data.positions.data.positions || []);
+      if (data.performance) setPerformance(data.performance.data.performance || null);
+      const nextDecision = data.decision?.data?.decision || null;
+      const nextMarket = data.market?.data || null;
+      if (data.decision) setDecision(nextDecision);
+      if (data.agents) setAgents(data.agents.data.agents || []);
+      if (data.market) setMarket(nextMarket);
+      if (data.insights) setInsights(data.insights.data.items || []);
       recordDecisionObservation(nextDecision, nextMarket);
-    } catch (error) {
-      console.error('Error fetching dashboard data:', error);
-      toast.error('Failed to fetch dashboard data');
+
+      if (failures.length) {
+        console.error('Dashboard endpoint failures:', failures.map(({ name, error }) => ({
+          endpoint: name,
+          status: error?.response?.status,
+          detail: error?.response?.data?.detail || error?.message,
+        })));
+        const failedNames = failures.map(({ name }) => name).join(', ');
+        toast.error(`Dashboard data unavailable: ${failedNames}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -216,6 +233,7 @@ const Dashboard = () => {
         <Toolbar>
           <ShowChart sx={{ mr: 2 }} />
           <Typography variant="h6" sx={{ flexGrow: 1 }}>AI Trading Dashboard</Typography>
+          <Chip label="RUNTIME RECOVERY" size="small" sx={{ mr: 1, fontWeight: 700 }} />
           <Chip label={botEnabled ? 'BOT ON' : 'BOT OFF'} color={botEnabled ? 'success' : 'default'} size="small" sx={{ mr: 2, fontWeight: 700 }} />
           <Button color="inherit" onClick={handleAnalyze} startIcon={<Refresh />} disabled={!botEnabled || tradingMode !== 'paper'}>Analyze</Button>
           <IconButton size="large" edge="end" color="inherit" onClick={(e) => setAnchorEl(e.currentTarget)}><AccountCircle /></IconButton>
@@ -230,7 +248,6 @@ const Dashboard = () => {
 
       <Box sx={{ p: 3 }}>
         {loading && <LinearProgress sx={{ mb: 2 }} />}
-
         <Paper sx={{ p: 2.5, mb: 3, border: '1px solid', borderColor: 'divider' }}>
           <Grid container spacing={2} alignItems="center">
             <Grid item xs={12} md={5}>
@@ -261,19 +278,10 @@ const Dashboard = () => {
           <Grid container alignItems="center" spacing={2}>
             <Grid item xs={12} md={8}>
               <Typography variant="h6">Paper Trading Control</Typography>
-              <Typography variant="body2" color="text.secondary">
-               Current state: <strong>{botEnabled ? 'RUNNING' : 'OFF'}</strong>. Start explicitly from this control; the Worker keeps the safety state in a Durable Object.
-              </Typography>
+              <Typography variant="body2" color="text.secondary">Current state: <strong>{botEnabled ? 'RUNNING' : 'OFF'}</strong>. Start explicitly from this control; the Worker keeps the safety state in a Durable Object.</Typography>
             </Grid>
             <Grid item xs={12} md={4} sx={{ display: 'flex', justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
-              <Button
-                variant="contained"
-                color={botEnabled ? 'error' : 'success'}
-                onClick={handlePaperToggle}
-                disabled={paperActionLoading || tradingMode !== 'paper'}
-              >
-                {paperActionLoading ? 'STARTING...' : (botEnabled ? 'STOP PAPER BOT' : 'START PAPER BOT')}
-              </Button>
+              <Button variant="contained" color={botEnabled ? 'error' : 'success'} onClick={handlePaperToggle} disabled={paperActionLoading || tradingMode !== 'paper'}>{paperActionLoading ? 'STARTING...' : (botEnabled ? 'STOP PAPER BOT' : 'START PAPER BOT')}</Button>
             </Grid>
           </Grid>
         </Paper>
