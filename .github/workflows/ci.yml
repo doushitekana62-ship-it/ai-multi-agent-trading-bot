@@ -1,6 +1,10 @@
 name: AI Trading Bot CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,12 +19,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: Compile Python sources
-        run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py api.py fronted fastapi_cloud_app.py
+        run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fronted fastapi_cloud_app.py
       - name: Run Cloudflare paper control contract tests
         run: |
           python -m pip install --upgrade pip
           python -m pip install pytest
-          pytest -q tests/test_cloudflare_paper_control_contract.py
+          pytest -q tests/test_cloudflare_paper_control_contract.py tests/test_paper_scheduler_contract.py
 
   fastapi-cloud-engine:
     name: FastAPI Cloud AI engine validation
