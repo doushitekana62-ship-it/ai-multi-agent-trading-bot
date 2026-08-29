@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FRONTED = ROOT / "fronted"
 
 
 def test_fastapi_cloud_entrypoint_is_explicit():
@@ -16,47 +17,72 @@ def test_fastapi_cloud_entrypoint_is_explicit():
 
 
 def test_cloudflare_worker_has_authoritative_paper_state_export():
-    config = json.loads((ROOT / "fronted" / "wrangler.jsonc").read_text(encoding="utf-8"))
-
+    config = json.loads((FRONTED / "wrangler.jsonc").read_text(encoding="utf-8"))
     assert config["name"] == "ai-multi-agent-trading-bot"
     assert config["main"] == "./worker_entry_api.py"
     assert config["compatibility_flags"] == ["python_workers"]
-
-    bindings = config["durable_objects"]["bindings"]
-    assert bindings == [{"name": "PAPER_STATE", "class_name": "PaperTradingState"}]
-
-    export = config["exports"]["PaperTradingState"]
-    assert export == {
+    assert config["durable_objects"]["bindings"] == [
+        {"name": "PAPER_STATE", "class_name": "PaperTradingState"}
+    ]
+    assert config["exports"]["PaperTradingState"] == {
         "type": "durable-object",
         "state": "created",
         "storage": "sqlite",
     }
 
 
-def test_cloudflare_worker_does_not_depend_on_the_removed_ai_engine_service_binding():
-    config = json.loads((ROOT / "fronted" / "wrangler.jsonc").read_text(encoding="utf-8"))
+def test_cloudflare_worker_does_not_depend_on_removed_ai_engine_service_binding():
+    config = json.loads((FRONTED / "wrangler.jsonc").read_text(encoding="utf-8"))
     bindings = config.get("services", [])
     assert not any(binding.get("binding") == "AI_ENGINE" for binding in bindings)
     assert "AI_ENGINE" not in json.dumps(config)
 
 
-def test_cloudflare_and_fastapi_contract_use_the_same_secret_name():
-    worker_adapter = (ROOT / "fronted" / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
+def test_cloudflare_and_fastapi_contract_use_same_secret_name():
+    worker_adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
     fastapi_app = (ROOT / "fastapi_cloud_app.py").read_text(encoding="utf-8")
-
     assert "AI_ENGINE_URL" in worker_adapter
     assert "AI_ENGINE_SHARED_SECRET" in worker_adapter
+    assert "/engine/analyze" in worker_adapter
     assert "AI_ENGINE_SHARED_SECRET" in fastapi_app
     assert "X-AI-Engine-Key" in worker_adapter
     assert "x_ai_engine_key" in fastapi_app
     assert "Header(default=None)" in fastapi_app
 
 
-def test_paper_scheduler_is_manual_only():
-    worker = (ROOT / "fronted" / "worker_entry_api.py").read_text(encoding="utf-8")
-    state = (ROOT / "fronted" / "paper_state.py").read_text(encoding="utf-8")
+def test_paper_scheduler_is_durable_object_alarm_driven():
+    worker = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
+    state = (FRONTED / "paper_state.py").read_text(encoding="utf-8")
+    assert "await stub.enable_paper(pair)" in worker
+    assert "await stub.stop()" in worker
+    assert "async def alarm" in state
+    assert "getAlarm" in state
+    assert "setAlarm" in state
+    assert "deleteAlarm" in state
+    assert "CYCLE_INTERVAL_MS = 60_000" in state
 
-    assert 'await stub.enable_paper(pair)' in worker
-    assert 'await stub.stop()' in worker
-    assert 'if not state.get("enabled")' in state
-    assert "self.ctx.storage.setAlarm(next_ms)" in state
+
+def test_paper_position_control_is_persistent_and_bounded():
+    worker = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
+    state = (FRONTED / "paper_state.py").read_text(encoding="utf-8")
+    assert "/api/dashboard/paper/settings" in worker
+    assert "await stub.set_position_limit(value)" in worker
+    assert "async def set_position_limit" in state
+    assert "max(1, min(MAX_POSITIONS" in state
+    assert "MAX_POSITIONS = 3" in state
+
+
+def test_paper_history_route_is_on_authoritative_worker():
+    worker = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
+    cycle = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
+    migration = (ROOT / "supabase" / "migrations" / "20260829130000_create_paper_history.sql").read_text(encoding="utf-8")
+    assert 'path == "/api/dashboard/history"' in worker
+    assert '"/rest/v1/paper_history?' in worker
+    assert '"paper_history"' in cycle
+    assert "create table if not exists public.paper_history" in migration
+
+
+def test_legacy_worker_entrypoint_is_only_a_compatibility_shim():
+    source = (FRONTED / "worker_entry.py").read_text(encoding="utf-8")
+    assert "from worker_entry_api import Default, PaperTradingState" in source
+    assert "class Default" not in source
