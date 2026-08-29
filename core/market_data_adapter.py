@@ -53,12 +53,12 @@ class MarketDataAdapter:
 
     def _fetch_market_data(self, symbol: str, timeframe: str, limit: int) -> MarketDataResponse:
         if self.exchange_type in {"paper", "indodax"}:
-            return self._fetch_from_indodax(symbol, timeframe, limit, self.exchange_type)
+            return self._fetch_from_indodax(symbol, timeframe, limit)
         if self.exchange_type == "alpaca":
             return self._fetch_from_alpaca(symbol, timeframe, limit)
         return self._create_error_response(symbol, f"Unknown exchange type: {self.exchange_type}")
 
-    def _fetch_from_indodax(self, symbol: str, timeframe: str, limit: int, source: str) -> MarketDataResponse:
+    def _fetch_from_indodax(self, symbol: str, timeframe: str, limit: int) -> MarketDataResponse:
         try:
             from exchange_integration.indodax_bridge import IndodaxBridge
             if self._indodax_client is None:
@@ -87,7 +87,7 @@ class MarketDataAdapter:
                 sum(float(c.get("volume", 0)) for c in valid[-24:]),
                 max((float(c.get("high", price)) for c in valid[-24:]), default=price),
                 min((float(c.get("low", price)) for c in valid[-24:]), default=price),
-                last_ts, source=source)
+                last_ts, source="indodax")
         except Exception as exc:
             return self._create_error_response(symbol, f"Indodax market-data error: {exc}")
 
