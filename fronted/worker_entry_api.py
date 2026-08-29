@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import asgi
 from js import fetch
@@ -23,6 +24,7 @@ from paper_state import PaperTradingState
 def _state_response(state: dict) -> dict:
     counts = dict(state.get("decision_counts") or {})
     enabled = bool(state.get("enabled"))
+    positions = list(state.get("positions") or [])
     return {
         **state,
         "bot_enabled": enabled,
@@ -30,6 +32,8 @@ def _state_response(state: dict) -> dict:
         "mode": "paper",
         "currency": "IDR",
         "currency_symbol": "Rp",
+        "max_open_positions": max(1, min(3, int(state.get("max_open_positions", 3) or 3))),
+        "active_positions": len(positions),
         "decision_counts": {
             "BUY": int(counts.get("BUY", 0)),
             "SELL": int(counts.get("SELL", 0)),
@@ -104,6 +108,35 @@ async def _supabase_health(env):
         return {"connected": False, "reason": type(exc).__name__}
 
 
+async def _history(env, request):
+    url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
+    key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    if not url or not key:
+        return Response.json({"history": [], "count": 0, "connected": False, "reason": "credentials_missing"}, status=503)
+    query = parse_qs(urlparse(request.url).query)
+    date = str(query.get("date", [""])[0]).strip()
+    pair = str(query.get("pair", [""])[0]).strip().upper()
+    params = [("select", "*"), ("order", "cycle_at.desc"), ("limit", "200")]
+    if date:
+        params.append(("trading_date", f"eq.{date}"))
+    if pair:
+        params.append(("pair", f"eq.{pair}"))
+    try:
+        response = await fetch(
+            f"{url}/rest/v1/paper_history?{urlencode(params)}",
+            to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}),
+        )
+        code = int(response.status)
+        text = await response.text()
+        if code < 200 or code >= 300:
+            return Response.json({"history": [], "count": 0, "connected": False, "reason": f"http_{code}", "detail": text[:500]}, status=502)
+        rows = json.loads(text) if text else []
+        rows = rows if isinstance(rows, list) else []
+        return Response.json({"history": rows, "count": len(rows), "date": date or None, "pair": pair or None, "connected": True})
+    except Exception as exc:
+        return Response.json({"history": [], "count": 0, "connected": False, "reason": type(exc).__name__}, status=502)
+
+
 class Default(WorkerEntrypoint):
     async def _auth(self, request, path):
         if path == "/api/auth/login" and request.method == "POST":
@@ -171,7 +204,7 @@ class Default(WorkerEntrypoint):
             state = await stub.stop()
             return Response.json({**_state_response(state), "message": "Paper trading stopped. Real trading remains locked."})
 
-        if path == "/api/bot/cycle" and request.method == "POST":
+        if path in ("/api/bot/cycle", "/api/dashboard/paper/cycle") and request.method == "POST":
             cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response)
             return Response.json(cycle, status=200 if cycle.get("ok") else 409)
 
@@ -181,14 +214,33 @@ class Default(WorkerEntrypoint):
             cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response)
             return Response.json(cycle, status=200 if cycle.get("ok") else 409)
 
-        if path == "/api/bot/reset" and request.method == "POST":
+        if path in ("/api/bot/reset", "/api/dashboard/paper/reset") and request.method == "POST":
             state = await stub.reset()
             return Response.json({**_state_response(state), "message": "Paper trading state reset."})
+
+        if path == "/api/dashboard/paper/settings" and request.method == "POST":
+            try:
+                body = await request.json()
+                value = body.get("max_open_positions")
+            except Exception:
+                return Response.json({"detail": "Invalid JSON request body"}, status=400)
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
+            if value < 1 or value > 3:
+                return Response.json({"detail": "max_open_positions must be between 1 and 3"}, status=400)
+            state = await stub.set_position_limit(value)
+            return Response.json({**_state_response(state), "message": f"Maximum positions set to {value}."})
+
+        if path == "/api/dashboard/history" and request.method == "GET":
+            return await _history(self.env, request)
 
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state()
             supabase = await _supabase_health(self.env)
-            market = await cf_worker._market_overview({"env": self.env, "query_string": b"pair=btc_idr"})
+            pair = state.get("paper_pair") or "btc_idr"
+            market = await cf_worker._market_overview({"env": self.env, "query_string": f"pair={pair}".encode("latin-1")})
             market_ok = bool(market.get("available"))
             result = _state_response(state)
             result.update({
@@ -204,7 +256,7 @@ class Default(WorkerEntrypoint):
 
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state()
-            return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "currency": "IDR", "currency_symbol": "Rp"})
+            return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "max_open_positions": int(state.get("max_open_positions", 3)), "currency": "IDR", "currency_symbol": "Rp"})
 
         if path == "/api/dashboard/performance" and request.method == "GET":
             state = await stub.get_state()
