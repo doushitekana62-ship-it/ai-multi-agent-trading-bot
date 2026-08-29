@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 
 const POLL_MS = 5000;
 const ALERT_DURATION = 6500;
+const ALERT_MARKER = 'LIBRARY_ALERTS_JSON=';
 
 const normalizeAlerts = (value) => {
   if (!Array.isArray(value)) return [];
@@ -18,6 +19,17 @@ const normalizeAlerts = (value) => {
       confidence: Number(item.confidence || 0),
     }))
     .slice(0, 4);
+};
+
+const extractEmbeddedAlerts = (reasoning) => {
+  const text = String(reasoning || '');
+  const markerIndex = text.indexOf(ALERT_MARKER);
+  if (markerIndex < 0) return [];
+  try {
+    return normalizeAlerts(JSON.parse(text.slice(markerIndex + ALERT_MARKER.length).trim()));
+  } catch {
+    return [];
+  }
 };
 
 function AlertCard({ alert }) {
@@ -54,7 +66,9 @@ export default function TradingLibraryAlertToast() {
         });
         if (cancelled) return;
         const decision = response.data?.decision || {};
-        const alerts = normalizeAlerts(decision.library_alerts || decision.analysis?.library_alerts);
+        const alerts = normalizeAlerts(decision.library_alerts || decision.analysis?.library_alerts).concat(
+          extractEmbeddedAlerts(decision.reasoning),
+        ).slice(0, 4);
         const cycleKey = String(decision.created_at || '');
         const fingerprint = JSON.stringify({ cycleKey, alerts });
 
@@ -74,7 +88,7 @@ export default function TradingLibraryAlertToast() {
           });
         });
       } catch {
-        // The dashboard must remain usable if the optional alert feed is unavailable.
+        // Optional alert feed failure must never block dashboard operation.
       } finally {
         inFlight = false;
       }
