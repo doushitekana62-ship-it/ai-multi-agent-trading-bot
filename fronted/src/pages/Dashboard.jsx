@@ -262,7 +262,7 @@ const Dashboard = () => {
             <Grid item xs={12} md={8}>
               <Typography variant="h6">Paper Trading Control</Typography>
               <Typography variant="body2" color="text.secondary">
-                Current state: <strong>{botEnabled ? 'RUNNING' : 'OFF'}</strong>. Start explicitly from this control; the Worker keeps the safety state in a Durable Object.
+               Current state: <strong>{botEnabled ? 'RUNNING' : 'OFF'}</strong>. Start explicitly from this control; the Worker keeps the safety state in a Durable Object.
               </Typography>
             </Grid>
             <Grid item xs={12} md={4} sx={{ display: 'flex', justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
