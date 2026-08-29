@@ -10,17 +10,24 @@ def read(path):
 def test_market_pulse_has_single_dashboard_location():
     app = read("fronted/src/App.jsx")
     dashboard = read("fronted/src/pages/Dashboard.jsx")
+    legend = read("fronted/src/components/MarketPulseLegend.jsx")
     assert "MarketPulseStatus" not in app
     assert "<MarketPulseLegend />" in dashboard
     assert "pulseStatus" in dashboard
+    assert "recent market price chart" in legend
+    assert "GREEN / UP" in legend and "RED / DOWN" in legend and "GRAY / FLAT" in legend
+    assert ":has(> [aria-label=\"recent market price chart\"])" in legend
 
 
 def test_dashboard_analytics_features_are_present():
     source = read("fronted/src/components/DashboardAnalytics.jsx")
-    for label in ("Conflict Analyzer", "INDODAX Scalping Radar", "Volume Share", "Paper History · Supabase"):
+    for label in ("Conflict Analyzer", "INDODAX Scalping Radar", "Volume Share", "Paper History Library"):
         assert label in source
     assert "page_size: 10" in source
     assert "hasNext" in source
+    assert "backgroundColor" in source
+    assert "tooltip" in source
+    assert "Paper History · Supabase" not in source
 
 
 def test_history_api_is_bounded_and_paginated():
@@ -43,3 +50,8 @@ def test_ai_engine_and_worker_share_expanded_scalping_pairs():
         assert pair in worker
     for symbol in ("BEAT/IDR", "HYPE/IDR"):
         assert symbol in engine
+
+
+def test_fastapi_runtime_declares_requests_dependency():
+    source = read("pyproject.toml")
+    assert '"requests>=2.32,<3"' in source
