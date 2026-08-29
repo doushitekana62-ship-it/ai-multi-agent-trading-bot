@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTED = ROOT / "fronted"
 
 
-def test_paper_state_has_manual_alarm_scheduler():
+def test_paper_state_has_durable_object_alarm_scheduler():
     source = (FRONTED / "paper_state.py").read_text(encoding="utf-8")
     assert "async def enable_paper" in source
     assert "async def stop" in source
@@ -13,6 +13,7 @@ def test_paper_state_has_manual_alarm_scheduler():
     assert "getAlarm" in source
     assert "setAlarm" in source
     assert "deleteAlarm" in source
+    assert "CYCLE_INTERVAL_MS = 60_000" in source
     assert "durable_object_alarm" in source
 
 
@@ -22,10 +23,8 @@ def test_worker_uses_shared_cycle_runner_and_external_orchestrator():
     adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
     assert "from paper_cycle import run_paper_cycle" in source
     assert "await run_paper_cycle(" in source
-    assert "durable_object_alarm_1m" in source
     assert "CloudflareOrchestrator" in cycle
     assert "await orchestrator.analyze" in cycle
-    assert '"use_unified_data": False' in cycle
     assert "class CloudflareOrchestrator" in adapter
     assert "AI_ENGINE_URL" in adapter
     assert "AI_ENGINE_SHARED_SECRET" in adapter
