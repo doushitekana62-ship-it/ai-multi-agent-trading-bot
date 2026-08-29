@@ -14,6 +14,10 @@ JSON_HEADERS = [(b"content-type", b"application/json; charset=utf-8")]
 PAPER_INITIAL_BALANCE = 10_000_000.0
 MAX_OPEN_POSITIONS = 5
 INDODAX_PUBLIC_BASE = "https://indodax.com/api"
+SCALPING_PAIRS = {
+    "btc_idr", "eth_idr", "usdt_idr", "xrp_idr", "doge_idr", "sol_idr",
+    "beat_idr", "hype_idr", "ada_idr", "trx_idr", "shib_idr", "pepe_idr",
+}
 
 
 def _json_bytes(value):
@@ -154,8 +158,7 @@ def _query_value(scope, name, default=""):
 
 def _clean_pair(value):
     value = (value or "btc_idr").strip().lower().replace("/", "_")
-    allowed = {"btc_idr", "eth_idr", "usdt_idr", "xrp_idr", "doge_idr", "sol_idr"}
-    return value if value in allowed else "btc_idr"
+    return value if value in SCALPING_PAIRS else "btc_idr"
 
 
 def _recent_trade_move(points):
@@ -226,6 +229,7 @@ async def _market_insights(scope):
                 signal = "NEAR 24H LOW"
             else:
                 signal = "MID 24H RANGE"
+            normalized = pair.lower()
             items.append({
                 "pair": pair.upper().replace("_", "/"),
                 "last": last,
@@ -234,12 +238,15 @@ async def _market_insights(scope):
                 "low": low,
                 "range_position": round(range_position, 1),
                 "signal": signal,
+                "scalping_supported": normalized in SCALPING_PAIRS,
             })
         except (TypeError, ValueError, ZeroDivisionError):
             continue
     items.sort(key=lambda x: x["volume_idr"], reverse=True)
     return {
-        "items": items[:5],
+        "items": items[:20],
+        "total_idr_pairs": len(items),
+        "scalping_pairs": [item["pair"] for item in items if item["scalping_supported"]],
         "source": "INDODAX public ticker",
         "note": "Market-data watchlist only; ranked by IDR volume and 24h price range position. It does not place trades.",
     }
@@ -263,44 +270,19 @@ async def _serve_assets(scope, send):
 
 
 async def _dashboard_status(scope):
-    # Public Indodax market data and Supabase persistence are independent.
-    # Do not report the database as healthy merely because market data works.
-    supabase_configured = bool(
-        _env(scope, "SUPABASE_URL").strip()
-        and _env(scope, "SUPABASE_SERVICE_ROLE_KEY").strip()
-    )
+    supabase_configured = bool(_env(scope, "SUPABASE_URL").strip() and _env(scope, "SUPABASE_SERVICE_ROLE_KEY").strip())
     supabase_connected = await _supabase_probe(scope) if supabase_configured else False
-
-    decisions = await _supabase_request(
-        scope,
-        "/rest/v1/decisions?select=action,created_at&order=created_at.desc&limit=500",
-    ) or []
+    decisions = await _supabase_request(scope, "/rest/v1/decisions?select=action,created_at&order=created_at.desc&limit=500") or []
     buys = sum(1 for row in decisions if str(row.get("action", "")).upper() == "BUY")
     sells = sum(1 for row in decisions if str(row.get("action", "")).upper() == "SELL")
     holds = sum(1 for row in decisions if str(row.get("action", "")).upper() == "HOLD")
-
     return {
-        "portfolio_value": PAPER_INITIAL_BALANCE,
-        "balance": PAPER_INITIAL_BALANCE,
-        "daily_pnl": 0.0,
-        "daily_trades": 0,
-        "active_positions": 0,
-        "max_open_positions": MAX_OPEN_POSITIONS,
-        "total_trades": 0,
-        "currency": "IDR",
-        "currency_symbol": "Rp",
-        "mode": "paper",
-        "bot_enabled": False,
-        "cycle_running": False,
-        "cycles_today": 0,
-        "last_cycle_at": None,
-        "runtime_hours": 0.0,
+        "portfolio_value": PAPER_INITIAL_BALANCE, "balance": PAPER_INITIAL_BALANCE, "daily_pnl": 0.0,
+        "daily_trades": 0, "active_positions": 0, "max_open_positions": MAX_OPEN_POSITIONS, "total_trades": 0,
+        "currency": "IDR", "currency_symbol": "Rp", "mode": "paper", "bot_enabled": False,
+        "cycle_running": False, "cycles_today": 0, "last_cycle_at": None, "runtime_hours": 0.0,
         "decision_counts": {"BUY": buys, "SELL": sells, "HOLD": holds},
-        "database": {
-            "configured": supabase_configured,
-            "connected": supabase_connected,
-            "status": "connected" if supabase_connected else ("not_configured" if not supabase_configured else "unreachable"),
-        },
+        "database": {"configured": supabase_configured, "connected": supabase_connected, "status": "connected" if supabase_connected else ("not_configured" if not supabase_configured else "unreachable")},
         "market_data": {"source": "INDODAX public market data", "available": True},
         "safety": {"mode": "paper", "real_trading_locked": True, "bot_enabled": False},
     }
@@ -310,14 +292,7 @@ async def _dashboard_positions(scope):
     rows = await _supabase_request(scope, "/rest/v1/trades?status=eq.OPEN&select=symbol,action,entry_price,price,quantity,pnl,confidence,created_at&order=created_at.desc")
     positions = []
     for row in rows or []:
-        positions.append({
-            "symbol": row.get("symbol", ""),
-            "side": row.get("action", ""),
-            "quantity": float(row.get("quantity") or 0),
-            "entry_price": float(row.get("entry_price") or row.get("price") or 0),
-            "unrealized_pnl": float(row.get("pnl") or 0),
-            "currency": "IDR",
-        })
+        positions.append({"symbol": row.get("symbol", ""), "side": row.get("action", ""), "quantity": float(row.get("quantity") or 0), "entry_price": float(row.get("entry_price") or row.get("price") or 0), "unrealized_pnl": float(row.get("pnl") or 0), "currency": "IDR"})
     return {"positions": positions, "currency": "IDR", "currency_symbol": "Rp"}
 
 
@@ -330,21 +305,23 @@ async def _dashboard_performance(scope):
 
 
 async def _dashboard_recent_decision(scope):
-    rows = await _supabase_request(scope, "/rest/v1/decisions?select=id,symbol,action,confidence,reasoning,agent_votes,created_at&order=created_at.desc&limit=1")
+    rows = await _supabase_request(scope, "/rest/v1/decisions?select=id,symbol,action,confidence,reasoning,agent_votes,market_scores,confidence_components,consensus_action,consensus_score,position_size,stop_loss,take_profit,engine_source,engine_warning,created_at&order=created_at.desc&limit=1")
     if not rows:
         return {"decision": None}
     row = rows[0]
-    return {"decision": {"id": row.get("id"), "symbol": row.get("symbol"), "action": row.get("action", "HOLD"), "confidence": float(row.get("confidence") or 0) / 100.0, "reasoning": row.get("reasoning"), "votes": row.get("agent_votes") or {}, "created_at": row.get("created_at")}}
+    return {"decision": {
+        "id": row.get("id"), "symbol": row.get("symbol"), "action": row.get("action", "HOLD"),
+        "confidence": float(row.get("confidence") or 0) / 100.0, "reasoning": row.get("reasoning"),
+        "votes": row.get("agent_votes") or {}, "market_scores": row.get("market_scores") or {},
+        "confidence_components": row.get("confidence_components") or {}, "consensus_action": row.get("consensus_action"),
+        "consensus_score": row.get("consensus_score"), "position_size": row.get("position_size"),
+        "stop_loss": row.get("stop_loss"), "take_profit": row.get("take_profit"),
+        "engine_source": row.get("engine_source"), "engine_warning": row.get("engine_warning"), "created_at": row.get("created_at"),
+    }}
 
 
 async def _dashboard_agents(scope):
-    return {"agents": [
-        {"name": "Sentiment Agent", "status": "idle", "description": "Waiting for explicit bot start."},
-        {"name": "Technical Agent", "status": "idle", "description": "Waiting for explicit bot start."},
-        {"name": "Decision Agent", "status": "idle", "description": "Waiting for explicit bot start."},
-        {"name": "Forecast Agent", "status": "idle", "description": "Waiting for explicit bot start."},
-        {"name": "Reflector Agent", "status": "idle", "description": "Waiting for explicit bot start."},
-    ]}
+    return {"agents": [{"name": name, "status": "idle", "description": "Waiting for explicit bot start."} for name in ["Sentiment Agent", "Technical Agent", "Decision Agent", "Forecast Agent", "Reflector Agent"]]}
 
 
 async def app(scope, receive, send):
@@ -376,80 +353,43 @@ async def app(scope, receive, send):
             return
         try:
             body = json.loads((await _read_body(receive)).decode("utf-8"))
-            username = str(body.get("username", ""))
-            password = str(body.get("password", ""))
+            username = str(body.get("username", "")); password = str(body.get("password", ""))
         except Exception:
-            await _json_response(send, 400, {"detail": "Invalid JSON request body"})
-            return
+            await _json_response(send, 400, {"detail": "Invalid JSON request body"}); return
         try:
-            secret = _secret(scope)
-            supplied = _hmac_sha256(secret, password)
-            expected = _hmac_sha256(secret, configured_password)
+            secret = _secret(scope); supplied = _hmac_sha256(secret, password); expected = _hmac_sha256(secret, configured_password)
         except RuntimeError as exc:
-            await _json_response(send, 503, {"detail": str(exc)})
-            return
+            await _json_response(send, 503, {"detail": str(exc)}); return
         if username != configured_user or not hmac.compare_digest(supplied, expected):
-            await _json_response(send, 401, {"detail": "Incorrect username or password"})
-            return
+            await _json_response(send, 401, {"detail": "Incorrect username or password"}); return
         token = _make_token(scope, configured_user)
-        await _json_response(send, 200, {"access_token": token, "token_type": "bearer", "expires_in": 1800, "username": configured_user})
-        return
+        await _json_response(send, 200, {"access_token": token, "token_type": "bearer", "expires_in": 1800, "username": configured_user}); return
     if path == "/api/auth/logout" and method == "POST":
-        if not await _require_user(scope):
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 200, {"message": "Logged out successfully", "status": "success"})
-        return
+        if not await _require_user(scope): await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 200, {"message": "Logged out successfully", "status": "success"}); return
     if path == "/api/auth/verify" and method == "GET":
         payload = await _require_user(scope)
-        if not payload:
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 200, {"username": payload["sub"], "is_authenticated": True})
-        return
+        if not payload: await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 200, {"username": payload["sub"], "is_authenticated": True}); return
     if method == "GET" and path in {"/api/market/overview", "/api/market/data"}:
-        if not await _require_user(scope):
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 200, await _market_overview(scope))
-        return
+        if not await _require_user(scope): await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 200, await _market_overview(scope)); return
     if method == "GET" and path == "/api/market/insights":
-        if not await _require_user(scope):
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 200, await _market_insights(scope))
-        return
-    dashboard_routes = {
-        "/api/dashboard/status": _dashboard_status,
-        "/api/dashboard/positions": _dashboard_positions,
-        "/api/dashboard/performance": _dashboard_performance,
-        "/api/dashboard/recent-decision": _dashboard_recent_decision,
-        "/api/dashboard/agents": _dashboard_agents,
-    }
+        if not await _require_user(scope): await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 200, await _market_insights(scope)); return
+    dashboard_routes = {"/api/dashboard/status": _dashboard_status, "/api/dashboard/positions": _dashboard_positions, "/api/dashboard/performance": _dashboard_performance, "/api/dashboard/recent-decision": _dashboard_recent_decision, "/api/dashboard/agents": _dashboard_agents}
     if method == "GET" and path in dashboard_routes:
-        if not await _require_user(scope):
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 200, await dashboard_routes[path](scope))
-        return
+        if not await _require_user(scope): await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 200, await dashboard_routes[path](scope)); return
     if path == "/api/dashboard/analyze" and method == "POST":
-        if not await _require_user(scope):
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 409, {"detail": "AI analysis is disabled while BOT is OFF. An explicit start trigger is required.", "bot_enabled": False, "cycle_running": False})
-        return
+        if not await _require_user(scope): await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 409, {"detail": "AI analysis is disabled while BOT is OFF. An explicit start trigger is required.", "bot_enabled": False, "cycle_running": False}); return
     if path == "/api/bot/status" and method == "GET":
-        if not await _require_user(scope):
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 200, {"enabled": False, "mode": "paper", "runtime": "cloudflare-python-worker", "cycle_running": False, "cycles_today": 0, "last_cycle_at": None, "message": "Trading is disabled. An explicit start trigger is required before any paper cycle can run."})
-        return
+        if not await _require_user(scope): await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 200, {"enabled": False, "mode": "paper", "runtime": "cloudflare-python-worker", "cycle_running": False, "cycles_today": 0, "last_cycle_at": None, "message": "Trading is disabled. An explicit start trigger is required before any paper cycle can run."}); return
     if path in {"/api/bot/start", "/api/bot/stop"} and method == "POST":
-        if not await _require_user(scope):
-            await _json_response(send, 401, {"detail": "Invalid or expired token"})
-            return
-        await _json_response(send, 409, {"detail": "Bot control is provided by worker_entry.py.", "enabled": False, "cycle_running": False})
-        return
+        if not await _require_user(scope): await _json_response(send, 401, {"detail": "Invalid or expired token"}); return
+        await _json_response(send, 409, {"detail": "Bot control is provided by worker_entry.py.", "enabled": False, "cycle_running": False}); return
     await _json_response(send, 404, {"detail": "API route not found"})
 
 
