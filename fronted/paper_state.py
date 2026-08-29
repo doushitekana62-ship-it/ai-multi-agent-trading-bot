@@ -145,13 +145,6 @@ class PaperTradingState(DurableObject):
         return state
 
     async def begin_cycle(self):
-        """Begin a cycle using an RPC-safe dictionary result.
-
-        Durable Object RPC serializes structured-clone-compatible values. Returning
-        a tuple here made the remote call fragile in the Python Worker runtime.
-        Keep the RPC contract as a plain dictionary so the Worker can reliably
-        receive the cycle lock result.
-        """
         state = await self._get()
         if not state.get("enabled"):
             return {"ok": False, "state": state, "reason": "paper_trading_disabled"}
@@ -188,7 +181,7 @@ class PaperTradingState(DurableObject):
         await self.ctx.storage.put("last_orchestrator", safe)
         return safe
 
-    async def record_cycle(self, decision=None, confidence=0.0, symbol="BTC/IDR", price=0.0, reasoning=""):
+    async def record_cycle(self, decision=None, confidence=0.0, symbol="BTC/IDR", price=0.0, reasoning="", analysis=None):
         state = await self._get()
         if not state.get("enabled"):
             return state
@@ -241,7 +234,14 @@ class PaperTradingState(DurableObject):
         if executed:
             state["daily_trades"] = int(state.get("daily_trades", 0)) + 1
             state["total_trades"] = int(state.get("total_trades", 0)) + 1
-        state["last_decision"] = {"action": action, "confidence": confidence, "symbol": symbol, "price": price, "executed": executed, "realized_pnl": realized, "reasoning": reasoning, "created_at": now}
+        last_decision = {"action": action, "confidence": confidence, "symbol": symbol, "price": price, "executed": executed, "realized_pnl": realized, "reasoning": reasoning, "created_at": now}
+        if isinstance(analysis, dict):
+            for key in ("votes", "market_scores", "confidence_components", "consensus_action", "consensus_score", "position_size", "stop_loss", "take_profit", "source", "warning", "raw_action", "summary"):
+                if key in analysis:
+                    last_decision[key] = analysis[key]
+        if trade:
+            last_decision["trade"] = trade
+        state["last_decision"] = last_decision
         state["cycle_running"] = False
         state["last_error"] = None
         state["consecutive_cycle_failures"] = 0
@@ -251,7 +251,8 @@ class PaperTradingState(DurableObject):
 
     async def record_cycle_payload(self, payload):
         payload = payload if isinstance(payload, dict) else {}
-        return await self.record_cycle(payload.get("decision", "HOLD"), payload.get("confidence", 0.0), payload.get("symbol", "BTC/IDR"), payload.get("price", 0.0), payload.get("reasoning", ""))
+        analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else None
+        return await self.record_cycle(payload.get("decision", "HOLD"), payload.get("confidence", 0.0), payload.get("symbol", "BTC/IDR"), payload.get("price", 0.0), payload.get("reasoning", ""), analysis=analysis)
 
     async def alarm(self, alarm_info=None):
         state = await self._get()
