@@ -15,6 +15,8 @@ from cloudflare_orchestrator import CloudflareOrchestrator
 from js import fetch
 from pyodide.ffi import to_js
 
+EXECUTION_CONFIDENCE_THRESHOLD = 0.75
+
 
 def _json_number(value, default=0.0):
     try:
@@ -197,10 +199,11 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "data_quality_score": 0.85 if len(ohlcv) >= 80 else 0.55,
         }
 
-        orchestrator = CloudflareOrchestrator({"min_confidence": 0.40, "max_position_size": 0.20, "debug_enabled": True}, env=env)
+        orchestrator = CloudflareOrchestrator({"min_confidence": EXECUTION_CONFIDENCE_THRESHOLD, "max_position_size": 0.10, "debug_enabled": True}, env=env)
         result = await orchestrator.analyze(symbol, market_data)
 
-        action = str(result.final_action or "HOLD").upper()
+        raw_action = str(result.final_action or "HOLD").upper()
+        action = raw_action
         if action == "STRONG_BUY":
             action = "BUY"
         elif action == "STRONG_SELL":
@@ -209,14 +212,21 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             action = "HOLD"
 
         confidence = _json_number(result.final_confidence)
-        reasoning = result.execution_reason or result.hold_reason or result.summary
+        gate_passed = action in {"BUY", "SELL"} and confidence >= EXECUTION_CONFIDENCE_THRESHOLD
+        if action in {"BUY", "SELL"} and not gate_passed:
+            action = "HOLD"
+            reasoning = f"Execution gate blocked {raw_action}: confidence {confidence:.1%} is below the {EXECUTION_CONFIDENCE_THRESHOLD:.0%} threshold."
+        else:
+            reasoning = result.execution_reason or result.hold_reason or result.summary
+
         metadata = {
             "source": getattr(result, "engine_source", "fastapi_cloud"),
             "warning": getattr(result, "engine_warning", None),
             "symbol": result.symbol,
             "action": action,
-            "raw_action": str(result.final_action or "HOLD"),
+            "raw_action": raw_action,
             "confidence": confidence,
+            "execution_gate": {"threshold": EXECUTION_CONFIDENCE_THRESHOLD, "passed": gate_passed, "executed_action": action},
             "consensus_action": result.consensus_action,
             "consensus_score": _json_number(result.consensus_score),
             "votes": dict(result.agent_votes or {}),
