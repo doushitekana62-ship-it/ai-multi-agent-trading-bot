@@ -11,6 +11,7 @@ import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
 import CycleUpdateToast from './components/CycleUpdateToast';
 import TradingLibraryAlertToast from './components/TradingLibraryAlertToast';
+import MarketPulseLegend from './components/MarketPulseLegend';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const ProtectedRoute = ({ children }) => {
@@ -102,6 +103,7 @@ function App() {
           </Routes>
           <CycleUpdateToast />
           <TradingLibraryAlertToast />
+          <MarketPulseLegend />
           <Box sx={{ position: 'fixed', right: 18, bottom: 18, zIndex: 1400 }}>
             <Tooltip title={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
               <IconButton
