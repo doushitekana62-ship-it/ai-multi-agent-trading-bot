@@ -1,23 +1,24 @@
 """FastAPI Cloud AI engine entrypoint.
 
-This service is intentionally stateless with respect to paper account state.
-Cloudflare Durable Object remains the authoritative manual ON/OFF gate and
-paper-account ledger. FastAPI Cloud executes the CPython multi-agent engine.
+The service is stateless with respect to the paper account. Durable Object state
+remains authoritative. This service performs the multi-agent analysis and the
+Trading Librarian's deterministic candle-context analysis.
 """
 from __future__ import annotations
 
 import hmac
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.orchestrator import Orchestrator
 from agents.agent_trading_librarian import TradingLibrarianAgent
+from core.orchestrator import Orchestrator
 
-app = FastAPI(title="AI Multi-Agent Trading Bot AI Engine", version="1.1.0")
+app = FastAPI(title="AI Multi-Agent Trading Bot AI Engine", version="1.2.0")
 
 
 class AnalysisRequest(BaseModel):
@@ -44,7 +45,10 @@ class AnalysisResponse(BaseModel):
     execution_reason: Optional[str] = None
     hold_reason: Optional[str] = None
     summary: str
-    knowledge_topics: List[str] = []
+    knowledge_topics: List[str] = Field(default_factory=list)
+    library_version: str = TradingLibrarianAgent.LIBRARY_VERSION
+    candle_analysis: Dict[str, Any] = Field(default_factory=dict)
+    library_alerts: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 _ALLOWED_SYMBOLS = {"BTC/IDR", "ETH/IDR", "USDT/IDR", "XRP/IDR", "DOGE/IDR", "SOL/IDR"}
@@ -80,14 +84,52 @@ def _score_to_action(score: float) -> str:
     return "HOLD"
 
 
-def _apply_trading_knowledge_guard(result: Any, market_data: Dict[str, Any], knowledge: Dict[str, Any]):
-    """Use the Trading Librarian as shared confirmation policy.
+def _build_candles_from_trades(trades: Any, bucket_seconds: int = 60) -> List[Dict[str, Any]]:
+    """Convert bounded public trade observations into real OHLCV buckets.
 
-    The agents remain responsible for their domains. This guard only recovers a
-    directional candidate when several independent scores agree and market
-    movement is large enough to justify consideration. It never bypasses the
-    paper execution confidence/risk gate in the Worker.
+    The Worker previously represented each trade as O=H=L=C. That is not a
+    candlestick. This aggregation preserves the actual trade sequence and makes
+    candle pattern detection possible without inventing OHLC values.
     """
+    if not isinstance(trades, list):
+        return []
+    buckets: "OrderedDict[int, Dict[str, Any]]" = OrderedDict()
+    for trade in trades[-240:]:
+        if not isinstance(trade, dict):
+            continue
+        price = _clean_number(trade.get("price"))
+        if price <= 0:
+            continue
+        timestamp = _clean_number(trade.get("timestamp") or trade.get("date"))
+        if timestamp <= 0:
+            continue
+        bucket = int(timestamp // bucket_seconds) * bucket_seconds
+        volume = max(0.0, _clean_number(trade.get("amount")))
+        if bucket not in buckets:
+            buckets[bucket] = {"timestamp": datetime.fromtimestamp(bucket, tz=timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "volume": volume}
+        else:
+            candle = buckets[bucket]
+            candle["high"] = max(candle["high"], price)
+            candle["low"] = min(candle["low"], price)
+            candle["close"] = price
+            candle["volume"] += volume
+    return list(buckets.values())[-120:]
+
+
+def _prepare_candles(market_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    candles = market_data.get("ohlcv")
+    if isinstance(candles, list) and len(candles) >= 2:
+        meaningful = [
+            item for item in candles
+            if isinstance(item, dict) and abs(_clean_number(item.get("high")) - _clean_number(item.get("low"))) > 0
+        ]
+        if len(meaningful) >= 2:
+            return candles[-120:]
+    return _build_candles_from_trades(market_data.get("recent_trades"))
+
+
+def _apply_trading_knowledge_guard(result: Any, market_data: Dict[str, Any], knowledge: Dict[str, Any], candle_analysis: Dict[str, Any]):
+    """Use the shared library as confirmation, never as a risk bypass."""
     action = str(getattr(result, "final_action", "HOLD") or "HOLD").upper()
     scores = {str(k): _clean_number(v) for k, v in dict(getattr(result, "market_scores", {}) or {}).items()}
     technical = scores.get("technical", 0.0)
@@ -99,29 +141,37 @@ def _apply_trading_knowledge_guard(result: Any, market_data: Dict[str, Any], kno
     move = _clean_number(market_data.get("short_term_move_percent", market_data.get("change_percent_24h")))
     quality = _clean_number(market_data.get("data_quality_score"), 0.5)
     candidate = _score_to_action(directional)
+    candle_direction = str(candle_analysis.get("direction") or "NEUTRAL").upper()
+    candle_opportunity = bool(candle_analysis.get("opportunity"))
 
+    # The library can confirm an existing directional setup, but a candle alert
+    # alone cannot create an execution decision.
     if action == "HOLD" and candidate != "HOLD" and abs(move) >= 0.08 and quality >= 0.55:
-        existing_confidence = _clean_number(getattr(result, "final_confidence", 0.0))
-        recovered_confidence = max(existing_confidence, min(0.70, 0.50 + abs(directional) * 0.45))
-        if recovered_confidence >= 0.60:
-            result.final_action = candidate
-            result.final_confidence = recovered_confidence
-            result.consensus_action = candidate
-            result.consensus_score = directional
-            result.execution_reason = (
-                "Trading Librarian confirmation recovered a directional candidate from "
-                "technical/decision/forecast agreement; final paper risk gate still applies."
-            )
-            result.hold_reason = None
-            result.confidence_components = dict(getattr(result, "confidence_components", {}) or {})
-            result.confidence_components["knowledge_directional_score"] = directional
-            result.confidence_components["knowledge_guard_recovered"] = 1.0
-            return result
+        if candle_direction in {"NEUTRAL", candidate}:
+            existing_confidence = _clean_number(getattr(result, "final_confidence", 0.0))
+            recovered_confidence = max(existing_confidence, min(0.70, 0.50 + abs(directional) * 0.45))
+            if recovered_confidence >= 0.60:
+                result.final_action = candidate
+                result.final_confidence = recovered_confidence
+                result.consensus_action = candidate
+                result.consensus_score = directional
+                result.execution_reason = (
+                    "Trading Librarian confirmation recovered a directional candidate from "
+                    "technical/decision/forecast agreement; final paper risk gate still applies."
+                )
+                result.hold_reason = None
+                result.confidence_components = dict(getattr(result, "confidence_components", {}) or {})
+                result.confidence_components["knowledge_directional_score"] = directional
+                result.confidence_components["knowledge_guard_recovered"] = 1.0
+
+    if candle_opportunity and candle_direction == str(result.final_action).upper():
+        result.confidence_components = dict(getattr(result, "confidence_components", {}) or {})
+        result.confidence_components["library_opportunity_confirmation"] = 1.0
 
     return result
 
 
-def _result_payload(result: Any, knowledge_topics: List[str]) -> Dict[str, Any]:
+def _result_payload(result: Any, knowledge_topics: List[str], candle_analysis: Dict[str, Any]) -> Dict[str, Any]:
     action = str(getattr(result, "final_action", "HOLD") or "HOLD").upper()
     if action == "STRONG_BUY":
         action = "BUY"
@@ -130,6 +180,7 @@ def _result_payload(result: Any, knowledge_topics: List[str]) -> Dict[str, Any]:
     if action not in {"BUY", "SELL", "HOLD"}:
         action = "HOLD"
 
+    library_alerts = list(candle_analysis.get("alerts") or [])[:4]
     return {
         "ok": True,
         "timestamp": getattr(result, "timestamp", datetime.now(timezone.utc)).isoformat(),
@@ -149,6 +200,9 @@ def _result_payload(result: Any, knowledge_topics: List[str]) -> Dict[str, Any]:
         "hold_reason": getattr(result, "hold_reason", None),
         "summary": str(getattr(result, "summary", "AI engine completed analysis.") or "AI engine completed analysis."),
         "knowledge_topics": knowledge_topics,
+        "library_version": TradingLibrarianAgent.LIBRARY_VERSION,
+        "candle_analysis": candle_analysis,
+        "library_alerts": library_alerts,
     }
 
 
@@ -159,7 +213,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "runtime": "fastapi-cloud"}
+    return {"status": "healthy", "runtime": "fastapi-cloud", "library_version": TradingLibrarianAgent.LIBRARY_VERSION}
 
 
 @app.get("/ready")
@@ -170,6 +224,7 @@ async def ready():
         "ai_engine_secret_configured": secret_configured,
         "paper_state": "external_durable_object",
         "real_trading": "locked",
+        "library_version": TradingLibrarianAgent.LIBRARY_VERSION,
     }
 
 
@@ -187,14 +242,30 @@ async def analyze(request: AnalysisRequest, x_ai_engine_key: Optional[str] = Hea
     if current_price <= 0:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="current_price must be greater than zero")
 
-    ohlcv = market_data.get("ohlcv") or []
-    if not isinstance(ohlcv, list) or len(ohlcv) > 120:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ohlcv must be a list containing at most 120 points")
+    candles = _prepare_candles(market_data)
+    market_data["ohlcv"] = candles
+    candle_analysis = TradingLibrarianAgent.analyze_candles(
+        candles,
+        current_price=current_price,
+        high_24h=_clean_number(market_data.get("high_24h")),
+        low_24h=_clean_number(market_data.get("low_24h")),
+    )
 
     librarian = TradingLibrarianAgent()
-    advice = librarian.advise("scalping momentum volume support resistance risk position sizing", limit=6)
+    advice = librarian.advise(
+        "scalping momentum volume candlestick ohlcv doji engulfing hammer support resistance risk position sizing",
+        limit=8,
+    )
     knowledge = advice.get("knowledge") or []
     market_data["trading_knowledge"] = knowledge
+    market_data["library_context"] = {
+        "version": TradingLibrarianAgent.LIBRARY_VERSION,
+        "candle_analysis": candle_analysis,
+        "alert_count": len(candle_analysis.get("alerts") or []),
+    }
+
+    if not isinstance(candles, list) or len(candles) > 120:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ohlcv must contain at most 120 bounded points")
 
     try:
         orchestrator = Orchestrator({
@@ -205,8 +276,8 @@ async def analyze(request: AnalysisRequest, x_ai_engine_key: Optional[str] = Hea
             "debug_enabled": True,
         })
         result = await orchestrator.analyze(symbol, market_data)
-        result = _apply_trading_knowledge_guard(result, market_data, advice)
+        result = _apply_trading_knowledge_guard(result, market_data, advice, candle_analysis)
         topics = [str(item.get("topic")) for item in knowledge if isinstance(item, dict) and item.get("topic")]
-        return _result_payload(result, topics)
+        return _result_payload(result, topics, candle_analysis)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI engine analysis failed: {type(exc).__name__}") from exc
