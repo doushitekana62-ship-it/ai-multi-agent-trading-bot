@@ -22,7 +22,6 @@ from core.unified_market_data import UnifiedMarketSnapshot, get_market_data_prov
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class OrchestratorResult:
     timestamp: datetime
@@ -53,10 +52,8 @@ class OrchestratorResult:
     conflict_review: Dict[str, Any] = field(default_factory=dict)
     signals: List[Dict[str, Any]] = field(default_factory=list)
 
-
 class Orchestrator:
     """Single authoritative AI coordination point."""
-
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
         self.market_data_provider = get_market_data_provider(self.config)
@@ -73,7 +70,6 @@ class Orchestrator:
         symbol = symbol.upper(); supplied = dict(market_data or {})
         if supplied.get("_force_action"):
             logger.warning("Force action is disabled in production orchestration; use replay tests instead.")
-
         snapshot = None
         if self.use_unified_data:
             snapshot = self.market_data_provider.get_snapshot(symbol)
@@ -81,34 +77,29 @@ class Orchestrator:
                 snapshot = self.market_data_provider.refresh_snapshot(symbol=symbol, timeframe=supplied.get("timeframe", "1m"), limit=180)
             if snapshot is None:
                 snapshot = create_snapshot_from_market_data(self.market_data_provider, symbol, supplied)
-
         data = self._normalize_context(symbol, supplied, snapshot)
         quality, quality_reason = self._quality(data)
         if quality != SignalStatus.OK.value:
             return self._build_blocked(symbol, data, snapshot, quality_reason, quality)
-
         technical = self.technical_agent.analyze(symbol, data)
         forecast = self.forecast_agent.analyze(symbol, technical_result=technical, market_data=data)
         sentiment = self.sentiment_agent.analyze(symbol, data)
         signals = self._signals(symbol, technical, forecast, sentiment)
         debate = self._debate(signals, data)
         decision = self.decision_agent.analyze(symbol, sentiment, technical, data, forecast_result=forecast, debate=debate, evidence=signals)
-
-        # No risk decision is made here. The returned action is a candidate only.
         action = decision.action
         cycle_status = CycleStatus.NO_EDGE.value if action == "HOLD" else CycleStatus.ANALYZED.value
         reason = decision.no_trade_reason or "CANDIDATE_READY_FOR_RISK_GATE"
-        position_size = decision.suggested_position_size
         result = OrchestratorResult(
             timestamp=datetime.now(timezone.utc), symbol=symbol, current_price=data["unified_price"],
             unified_snapshot=snapshot, sentiment=sentiment, technical=technical, decision=decision,
             reflection=None, forecast=forecast, consensus_action=action, consensus_score=decision.action_score,
             agent_votes={s.agent: self._action_from_score(s.score) for s in signals if s.usable()},
-            final_action=action, final_confidence=decision.confidence, position_size=position_size,
+            final_action=action, final_confidence=decision.confidence, position_size=decision.suggested_position_size,
             stop_loss=None, take_profit=None, decision_score=decision.action_score,
             confidence_components={"evidence_agreement": 1.0 - decision.conflict_score, "candidate_confidence": decision.confidence},
-            market_scores={s.agent: s.score for s in signals},
-            summary=decision.summary, execution_reason=reason, hold_reason=reason if action == "HOLD" else None,
+            market_scores={s.agent: s.score for s in signals}, summary=decision.summary,
+            execution_reason=reason, hold_reason=reason if action == "HOLD" else None,
             cycle_status=cycle_status, conflict_review=debate, signals=[s.to_dict() for s in signals],
         )
         self.history.append(result); self.history = self.history[-self.max_history:]
@@ -126,15 +117,28 @@ class Orchestrator:
             data.setdefault("data_quality_score", getattr(snapshot, "data_quality_score", 0.0))
         data["symbol"] = symbol
         candles = data.get("ohlcv", []) or []
-        closes=[]
+        parsed = []
         for c in candles:
-            try: closes.append(safe_float(c.get("close") if isinstance(c,dict) else c.close))
-            except AttributeError: pass
-        for minutes, n in ((1,1),(5,5),(15,15),(30,30)):
-            if len(closes) > n and closes[-n-1] > 0:
-                data[f"movement_{minutes}m"] = closes[-1]/closes[-n-1]-1
-            else:
-                data[f"movement_{minutes}m"] = None
+            try:
+                ts = c.get("timestamp") if isinstance(c, dict) else c.timestamp
+                close = safe_float(c.get("close") if isinstance(c, dict) else c.close)
+                if close > 0:
+                    if isinstance(ts, (int, float)):
+                        ts = float(ts) / 1000.0 if float(ts) > 1_000_000_000_000 else float(ts)
+                        ts = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    elif isinstance(ts, str):
+                        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if ts.tzinfo is None: ts = ts.replace(tzinfo=timezone.utc)
+                    parsed.append((ts, close))
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
+        parsed.sort(key=lambda x: x[0])
+        for minutes in (1, 5, 15, 30):
+            target = parsed[-1][0].timestamp() - minutes * 60 if parsed else 0
+            prior = next(((ts, close) for ts, close in reversed(parsed[:-1]) if ts.timestamp() <= target), None)
+            data[f"movement_{minutes}m"] = (parsed[-1][1] / prior[1] - 1.0) if prior and prior[1] > 0 else None
+        data["ohlcv_valid_count"] = len(parsed)
+        data["ohlcv_last_timestamp"] = parsed[-1][0].isoformat() if parsed else None
         return data
 
     def _quality(self, data):
@@ -171,4 +175,5 @@ class Orchestrator:
 
     def _build_blocked(self,symbol,data,snapshot,reason,status):
         now=datetime.now(timezone.utc); price=safe_float(data.get("unified_price"))
-        return OrchestratorResult(now,symbol,price,snapshot,None,None,None,None,None,"HOLD",0.0,{},"HOLD",0.0,0.0,None,None,0.0,{}, {},f"Cycle blocked: {reason}",reason,None,None,status,{"contradictions":[reason]},[])
+        cycle_status = "DATA_STALE" if reason == "STALE_MARKET_DATA" else "DATA_UNAVAILABLE" if status == SignalStatus.UNAVAILABLE.value else "AI_DEGRADED"
+        return OrchestratorResult(now,symbol,price,snapshot,None,None,None,None,None,"HOLD",0.0,{},"HOLD",0.0,0.0,None,None,0.0,{}, {},f"Cycle blocked: {reason}",reason,None,None,cycle_status,{"contradictions":[reason]},[])
