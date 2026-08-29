@@ -1,17 +1,22 @@
-"""Cloudflare control-plane adapter for the external CPython AI engine."""
+"""Cloudflare control-plane adapter for the canonical AI engine.
+
+The external FastAPI engine is preferred. If it is unavailable, the fallback is
+not a fake five-agent consensus: it is an explicitly degraded deterministic
+market-data analysis using independent momentum, structure and volume evidence.
+"""
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from js import fetch
 from pyodide.ffi import to_js
 
 
 class CloudflareOrchestrator:
-    """Prefer FastAPI Cloud and use a deterministic, non-blocking fallback."""
+    """API adapter; fallback remains evidence-driven and cannot bypass risk."""
 
     def __init__(self, config: Dict[str, Any] | None = None, env: Any = None):
         self.config = config or {}
@@ -34,72 +39,171 @@ class CloudflareOrchestrator:
 
     @staticmethod
     def _clip(value, low=-1.0, high=1.0):
-        return max(low, min(high, value))
+        return max(low, min(high, float(value)))
+
+    @staticmethod
+    def _trade_timestamp(point):
+        value = CloudflareOrchestrator._number(point.get("timestamp") or point.get("date"))
+        if value > 1_000_000_000_000:
+            value /= 1000.0
+        return value
+
+    @classmethod
+    def _build_ohlcv_from_trades(cls, points: List[Dict[str, Any]], now_ts: float | None = None) -> List[Dict[str, Any]]:
+        """Build bounded 1m candles from trades when native candles are absent.
+
+        This is an aggregation of many trades per minute, never a single-trade
+        candle. Gaps remain gaps and are handled by the quality layer.
+        """
+        now_ts = float(now_ts or datetime.now(timezone.utc).timestamp())
+        current_bucket = int(now_ts // 60) * 60
+        buckets: Dict[int, Dict[str, Any]] = {}
+        for point in points or []:
+            ts = cls._trade_timestamp(point)
+            price = cls._number(point.get("price"))
+            amount = max(0.0, cls._number(point.get("amount"), 0.0))
+            if ts <= 0 or price <= 0:
+                continue
+            bucket = int(ts // 60) * 60
+            if bucket < current_bucket - 180 * 60 or bucket > current_bucket:
+                continue
+            row = buckets.setdefault(bucket, {"timestamp": bucket * 1000, "open": price, "high": price, "low": price, "close": price, "volume": 0.0, "trades": 0})
+            row["high"] = max(row["high"], price)
+            row["low"] = min(row["low"], price)
+            row["close"] = price
+            row["volume"] += amount
+            row["trades"] += 1
+        return [buckets[k] for k in sorted(buckets)]
+
+    @classmethod
+    def _market_features(cls, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        candles = list(market_data.get("ohlcv") or [])
+        if not candles:
+            candles = cls._build_ohlcv_from_trades(list(market_data.get("recent_trades") or []))
+            if candles:
+                market_data["ohlcv"] = candles
+        closes = [cls._number(c.get("close")) for c in candles if cls._number(c.get("close")) > 0]
+        volumes = [max(0.0, cls._number(c.get("volume"))) for c in candles]
+
+        def ret(n: int):
+            return (closes[-1] / closes[-n - 1] - 1.0) * 100.0 if len(closes) > n and closes[-n - 1] > 0 else None
+
+        m1 = market_data.get("move_1m_pct")
+        m5 = market_data.get("move_5m_pct")
+        m15 = market_data.get("move_15m_pct")
+        m30 = market_data.get("move_30m_pct")
+        if m1 is None: m1 = ret(1)
+        if m5 is None: m5 = ret(5)
+        if m15 is None: m15 = ret(15)
+        if m30 is None: m30 = ret(30)
+
+        momentum = cls._clip((cls._number(m1) / 0.05) * 0.45 + (cls._number(m5) / 0.15) * 0.35 + (cls._number(m15) / 0.30) * 0.20)
+        structure = 0.0
+        if len(candles) >= 10:
+            recent = candles[-5:]
+            prior = candles[-10:-5]
+            recent_high = max(cls._number(c.get("high")) for c in recent)
+            prior_high = max(cls._number(c.get("high")) for c in prior)
+            recent_low = min(cls._number(c.get("low")) for c in recent)
+            prior_low = min(cls._number(c.get("low")) for c in prior)
+            if recent_high > prior_high and recent_low > prior_low:
+                structure = 1.0
+            elif recent_high < prior_high and recent_low < prior_low:
+                structure = -1.0
+            elif recent_high > prior_high:
+                structure = 0.35
+            elif recent_low < prior_low:
+                structure = -0.35
+
+        volume = 0.0
+        volume_ratio = 1.0
+        if len(volumes) >= 10:
+            baseline = sum(volumes[-10:-1]) / 9.0
+            volume_ratio = volumes[-1] / baseline if baseline > 0 else 1.0
+            volume = cls._clip((volume_ratio - 1.0) / 0.75)
+
+        pattern = 0.0
+        pattern_name = "NONE"
+        if len(candles) >= 2:
+            a, b = candles[-2], candles[-1]
+            ao, ac = cls._number(a.get("open")), cls._number(a.get("close"))
+            bo, bh, bl, bc = cls._number(b.get("open")), cls._number(b.get("high")), cls._number(b.get("low")), cls._number(b.get("close"))
+            body = abs(bc - bo); rng = max(bh - bl, bc * 1e-9)
+            if ac < ao and bc > bo and bo <= ac and bc >= ao and body >= rng * 0.30:
+                pattern, pattern_name = 0.70, "BULLISH_ENGULFING"
+            elif ac > ao and bc < bo and bo >= ac and bc <= ao and body >= rng * 0.30:
+                pattern, pattern_name = -0.70, "BEARISH_ENGULFING"
+
+        direction_sign = 1 if momentum > 0.12 else -1 if momentum < -0.12 else 0
+        confirmations = 0
+        if direction_sign and momentum * direction_sign >= 0.20: confirmations += 1
+        if direction_sign and structure * direction_sign >= 0.20: confirmations += 1
+        if direction_sign and volume >= 0.10: confirmations += 1
+        if direction_sign and pattern * direction_sign >= 0.40: confirmations += 1
+        combined = cls._clip(momentum * 0.50 + structure * 0.30 + volume * 0.10 + pattern * 0.10)
+        if direction_sign < 0 and combined > 0: combined = -abs(combined)
+        if direction_sign > 0 and combined < 0: combined = abs(combined)
+        opportunity = min(1.0, abs(combined) * 0.70 + min(confirmations / 3.0, 1.0) * 0.30)
+        confidence = cls._clip(0.48 + abs(combined) * 0.22 + min(confirmations / 3.0, 1.0) * 0.22, 0.0, 0.82)
+        return {
+            "candles": candles, "move_1m_pct": m1, "move_5m_pct": m5, "move_15m_pct": m15, "move_30m_pct": m30,
+            "momentum": momentum, "structure": structure, "volume": volume, "volume_ratio": volume_ratio,
+            "pattern": pattern, "pattern_name": pattern_name, "confirmations": confirmations,
+            "combined": combined, "opportunity": opportunity, "confidence": confidence,
+        }
 
     @classmethod
     def _local_fallback(cls, symbol: str, market_data: Dict[str, Any], reason: str):
         price = cls._number(market_data.get("current_price") or market_data.get("unified_price"))
-        high = cls._number(market_data.get("high_24h")); low = cls._number(market_data.get("low_24h"))
-        move = cls._number(market_data.get("short_term_move_percent", market_data.get("change_percent_24h")))
-        volume = cls._number(market_data.get("volume_24h"))
-        range_position = cls._clip(((price - low) / (high - low)) * 100.0, 0.0, 100.0) if high > low > 0 and price > 0 else 50.0
-        momentum = cls._clip(move / 0.10)
-        range_signal = (range_position - 50.0) / 50.0
-        volume_confirmation = 0.12 if volume > 0 else 0.0
-
-        # Sentiment is deliberately advisory: neutral sentiment contributes zero
-        # and strong sentiment has only 8% of the directional score.
-        sentiment_score = cls._clip(momentum * 0.55) if abs(momentum) >= 0.35 else 0.0
-        technical_score = cls._clip(momentum * 0.70 + range_signal * 0.30)
-        decision_score = cls._clip(technical_score * 0.65 + momentum * 0.25 + volume_confirmation * (1 if momentum > 0 else -1 if momentum < 0 else 0))
-        forecast_score = cls._clip(momentum * 0.75 + range_signal * 0.25)
-        mimic_score = decision_score
-        scores = {"sentiment": sentiment_score, "technical": technical_score, "decision": decision_score, "forecast": forecast_score, "mimic_trader": mimic_score}
-        weights = {"sentiment": 0.08, "technical": 0.34, "decision": 0.28, "forecast": 0.18, "mimic_trader": 0.12}
-        consensus = cls._clip(sum(scores[key] * weights[key] for key in weights))
-        action = "BUY" if consensus >= 0.22 else "SELL" if consensus <= -0.22 else "HOLD"
-        if abs(move) < 0.01:
+        features = cls._market_features(market_data)
+        combined = features["combined"]
+        confirmations = features["confirmations"]
+        opportunity = features["opportunity"]
+        confidence = features["confidence"]
+        if confirmations >= 2 and opportunity >= 0.55 and confidence >= 0.60:
+            action = "BUY" if combined > 0 else "SELL"
+        else:
             action = "HOLD"
-        confidence = cls._clip(0.46 + abs(consensus) * 0.70, 0.40, 0.90)
         votes = {
-            "Sentiment Agent": "BUY" if sentiment_score >= 0.30 else "SELL" if sentiment_score <= -0.30 else "HOLD",
-            "Technical Agent": "BUY" if technical_score >= 0.25 else "SELL" if technical_score <= -0.25 else "HOLD",
-            "Decision Agent": "BUY" if decision_score >= 0.25 else "SELL" if decision_score <= -0.25 else "HOLD",
-            "Forecast Agent": "BUY" if forecast_score >= 0.25 else "SELL" if forecast_score <= -0.25 else "HOLD",
-            "Mimic Trader": "BUY" if mimic_score >= 0.25 else "SELL" if mimic_score <= -0.25 else "HOLD",
+            "Momentum Analyst": "BUY" if features["momentum"] >= 0.20 else "SELL" if features["momentum"] <= -0.20 else "NEUTRAL",
+            "Structure Analyst": "BUY" if features["structure"] >= 0.20 else "SELL" if features["structure"] <= -0.20 else "NEUTRAL",
+            "Volume/Pattern Analyst": "BUY" if (features["volume"] + features["pattern"]) >= 0.20 else "SELL" if (features["volume"] + features["pattern"]) <= -0.20 else "NEUTRAL",
         }
-        hold_agents = [name for name, vote in votes.items() if vote == "HOLD"]
-        directional_agents = [name for name, vote in votes.items() if vote in {"BUY", "SELL"}]
-        hold_analysis = {
-            "hold_agents": hold_agents,
-            "directional_agents": directional_agents,
-            "opposing_agents": [],
-            "dominant_hold_agent": max(hold_agents, key=lambda name: weights.get(name.lower().replace(" agent", "").replace("mimic trader", "mimic_trader"), 0), default=None),
-            "sentiment_role": "advisory_non_blocking",
-            "configured_weights": weights,
-            "fallback": True,
-        }
-        position_size = min(0.10, max(0.01, confidence * 0.10)) if action in {"BUY", "SELL"} else 0.0
-        stop_loss = take_profit = None
-        if price > 0 and action == "BUY": stop_loss, take_profit = price * 0.97, price * 1.03
-        if price > 0 and action == "SELL": stop_loss, take_profit = price * 1.03, price * 0.97
+        usable_votes = [v for v in votes.values() if v in {"BUY", "SELL"}]
+        opposing = int("BUY" in usable_votes and "SELL" in usable_votes)
+        confidence *= 0.92  # explicit degradation discount
+        if action in {"BUY", "SELL"} and opposing:
+            action = "HOLD"
+            confidence *= 0.80
         return SimpleNamespace(
             timestamp=datetime.now(timezone.utc), symbol=str(symbol).upper(), current_price=price,
-            final_action=action, final_confidence=confidence, consensus_action=action, consensus_score=consensus,
-            agent_votes=votes, market_scores={**scores, "consensus": consensus},
-            confidence_components={"directional_score": consensus, "directional_strength": abs(consensus), "hold_vote_count": float(len(hold_agents)), "directional_vote_count": float(len(directional_agents)), "opposing_vote_count": 0.0, "sentiment_role_advisory": 1.0, "fallback": 1.0},
-            position_size=position_size, stop_loss=stop_loss, take_profit=take_profit,
-            execution_reason=None, hold_reason=f"Directional score={consensus:.3f}; 30m/1m market pulse is monitored separately." if action == "HOLD" else None,
-            summary=f"Local fallback: {action}; score={consensus:.3f}; move={move:.4f}%; source=INDODAX public data.",
-            engine_source="local_five_agent_fallback", engine_warning=reason,
-            hold_agents=hold_agents, opposing_agents=[], hold_analysis=hold_analysis,
-            knowledge_topics=[], candle_analysis={"available": False, "pattern": "UNAVAILABLE", "direction": "NEUTRAL"}, library_alerts=[], library_version="unavailable",
+            final_action=action, final_confidence=confidence, consensus_action=action,
+            consensus_score=combined, agent_votes=votes,
+            market_scores={"momentum": features["momentum"], "structure": features["structure"], "volume": features["volume"], "pattern": features["pattern"], "consensus": combined},
+            confidence_components={"opportunity_score": opportunity, "confirmations": float(confirmations), "data_quality": 1.0 if features["candles"] else 0.0, "ai_degraded": 1.0},
+            position_size=min(0.06, max(0.0, confidence * 0.06)) if action in {"BUY", "SELL"} else 0.0,
+            stop_loss=price * (0.985 if action == "BUY" else 1.015) if price > 0 and action in {"BUY", "SELL"} else None,
+            take_profit=price * (1.025 if action == "BUY" else 0.975) if price > 0 and action in {"BUY", "SELL"} else None,
+            execution_reason="DEGRADED_MARKET_FALLBACK_CANDIDATE" if action in {"BUY", "SELL"} else None,
+            hold_reason="NO_DIRECTIONAL_EDGE" if action == "HOLD" else None,
+            summary=f"Deterministic degraded analysis: {action}; score={combined:+.3f}; confirmations={confirmations}; pattern={features['pattern_name']}; AI unavailable={reason}.",
+            engine_source="deterministic_market_fallback", engine_warning=reason,
+            hold_agents=[name for name, vote in votes.items() if vote == "NEUTRAL"],
+            opposing_agents=["BUY vs SELL evidence"] if opposing else [],
+            hold_analysis={"fallback": True, "reason": reason, "independent_evidence": votes, "confirmations": confirmations, "opportunity_score": opportunity},
+            knowledge_topics=["momentum", "market structure", "volume", "candlestick"],
+            candle_analysis={"available": bool(features["candles"]), "pattern": features["pattern_name"], "direction": "BUY" if features["pattern"] > 0 else "SELL" if features["pattern"] < 0 else "NEUTRAL"},
+            library_alerts=[], library_version="deterministic-market-library-v2",
+            cycle_status="AI_DEGRADED" if action == "HOLD" else "ANALYZED",
         )
 
     async def analyze(self, symbol: str, market_data: Dict[str, Any] | None = None):
         market_data = dict(market_data or {})
         base_url = str(getattr(self.env, "AI_ENGINE_URL", "") or "").strip().rstrip("/") if self.env is not None else ""
         shared_secret = str(getattr(self.env, "AI_ENGINE_SHARED_SECRET", "") or "").strip() if self.env is not None else ""
+        # Make derived trade candles available to the canonical FastAPI engine.
+        if not market_data.get("ohlcv") and market_data.get("recent_trades"):
+            market_data["ohlcv"] = self._build_ohlcv_from_trades(market_data.get("recent_trades") or [])
         if not base_url or len(shared_secret) < 32:
             return self._local_fallback(symbol, market_data, "AI_ENGINE_URL/shared secret unavailable")
         try:
@@ -111,7 +215,8 @@ class CloudflareOrchestrator:
                     "body": json.dumps({"symbol": str(symbol).upper(), "market_data": market_data}, separators=(",", ":")),
                 }),
             )
-            status_code = int(response.status); text = await response.text()
+            status_code = int(response.status)
+            text = await response.text()
             try:
                 data = json.loads(text)
             except Exception as exc:
@@ -129,7 +234,7 @@ class CloudflareOrchestrator:
                 opposing_agents=list(data.get("hold_analysis", {}).get("opposing_agents") or []), hold_analysis=dict(data.get("hold_analysis") or {}),
                 knowledge_topics=list(data.get("knowledge_topics") or []), candle_analysis=dict(data.get("candle_analysis") or {}),
                 library_alerts=list(data.get("library_alerts") or [])[:4], library_version=str(data.get("library_version") or "unknown"),
-                agent_details=dict(data.get("agent_details") or {}),
+                agent_details=dict(data.get("agent_details") or {}), cycle_status=str(data.get("cycle_status") or "ANALYZED"),
             )
         except Exception as exc:
             return self._local_fallback(symbol, market_data, f"FastAPI Cloud unavailable: {type(exc).__name__}")
