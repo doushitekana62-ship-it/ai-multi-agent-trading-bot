@@ -26,7 +26,7 @@ def test_dashboard_analytics_features_are_present():
 def test_history_api_is_bounded_and_paginated():
     source = read("fronted/worker_entry_api.py")
     assert "page_size = max(1, min(10" in source
-    assert "limit", "11"  # document the bounded page contract without executing Worker code
+    assert "page_size + 1" in source
     assert "has_next = len(rows) > page_size" in source
 
 
