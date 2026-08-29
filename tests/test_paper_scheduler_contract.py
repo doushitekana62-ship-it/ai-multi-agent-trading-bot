@@ -16,7 +16,7 @@ def test_paper_state_has_manual_alarm_scheduler():
     assert "durable_object_alarm" in source
 
 
-def test_worker_uses_shared_cycle_runner_and_orchestrator():
+def test_worker_uses_shared_cycle_runner_and_external_orchestrator():
     source = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
     cycle = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
     adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
@@ -27,12 +27,9 @@ def test_worker_uses_shared_cycle_runner_and_orchestrator():
     assert "await orchestrator.analyze" in cycle
     assert '"use_unified_data": False' in cycle
     assert "class CloudflareOrchestrator" in adapter
-    assert "async def _run_base_agents" in adapter
-    assert "self.sentiment_agent.analyze" in adapter
-    assert "self.technical_agent.analyze" in adapter
-    assert "self.decision_agent.analyze" in adapter
-    assert "self.forecast_agent.analyze" in adapter
-    assert "self.reflector_agent.analyze" in adapter
+    assert "AI_ENGINE_URL" in adapter
+    assert "AI_ENGINE_SHARED_SECRET" in adapter
+    assert "/engine/analyze" in adapter
 
 
 def test_browser_does_not_schedule_or_intercept_paper_cycles():
@@ -47,6 +44,7 @@ def test_cloudflare_cron_is_disabled_for_paper_scheduler():
     assert '"crons": []' in source
     assert '"PaperTradingState"' in source
     assert '"storage": "sqlite"' in source
+    assert '"main": "./worker_entry_api.py"' in source
 
 
 def test_cloudflare_build_vendors_existing_agent_modules():
