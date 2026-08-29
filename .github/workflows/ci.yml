@@ -27,42 +27,33 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
-
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: fronted/package.json
-
       - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e . pytest pytest-timeout requests ccxt numpy pandas scipy scikit-learn textblob ta
-
       - name: Compile all Python sources
         run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fronted fastapi_cloud_app.py
-
-      - name: Run paper and deployment contract tests
-        run: pytest -q tests/test_cloudflare_paper_control_contract.py tests/test_paper_scheduler_contract.py tests/test_deployment_contract.py
-
+      - name: Run contract and canonical pipeline tests
+        run: pytest -q tests/test_cloudflare_paper_control_contract.py tests/test_paper_scheduler_contract.py tests/test_deployment_contract.py tests/test_canonical_trading_pipeline.py
       - name: Run FastAPI Cloud engine tests
         run: pytest -q tests/test_fastapi_cloud_engine.py
-
       - name: Install frontend dependencies
         working-directory: fronted
         run: npm install --legacy-peer-deps
-
       - name: Build React dashboard
         working-directory: fronted
         run: npm run build
-
       - name: Validate Cloudflare Worker bundle
         working-directory: fronted
         run: npx wrangler deploy --dry-run
