@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box, Grid, Paper, Typography, Button, Card, CardContent,
@@ -28,6 +28,7 @@ const PAIR_OPTIONS = [
 ];
 
 const DEFAULT_TARGETS = { daily: 0, weekly: 0, monthly: 0 };
+const LIVE_POLL_MS = 5000;
 
 const SimplePriceChart = ({ points }) => {
   const values = (points || []).map((p) => Number(p.price)).filter((v) => Number.isFinite(v) && v > 0);
@@ -71,12 +72,14 @@ const Dashboard = () => {
     catch { return DEFAULT_TARGETS; }
   });
   const [targetDraft, setTargetDraft] = useState(targets);
+  const fetchInFlight = useRef(false);
+  const firstLoad = useRef(true);
 
   const botEnabled = Boolean(status?.enabled);
 
   const recordDecisionObservation = (nextDecision, nextMarket) => {
     if (!nextDecision) return;
-    const timestamp = nextDecision.timestamp || new Date().toISOString();
+    const timestamp = nextDecision.created_at || nextDecision.timestamp || new Date().toISOString();
     const item = {
       timestamp,
       action: String(nextDecision.action || 'HOLD').toUpperCase(),
@@ -93,19 +96,22 @@ const Dashboard = () => {
   };
 
   const fetchData = async () => {
-    setLoading(true);
-    const requests = {
-      status: axios.get('/api/dashboard/status'),
-      positions: axios.get('/api/dashboard/positions'),
-      performance: axios.get('/api/dashboard/performance'),
-      decision: axios.get('/api/dashboard/recent-decision'),
-      agents: axios.get('/api/dashboard/agents'),
-      market: axios.get('/api/market/overview', { params: { pair: selectedPair } }),
-      insights: axios.get('/api/market/insights'),
-    };
-    const entries = Object.entries(requests);
-    const results = await Promise.allSettled(entries.map(([, request]) => request));
+    if (fetchInFlight.current) return;
+    fetchInFlight.current = true;
+    if (firstLoad.current) setLoading(true);
+    const cacheBust = Date.now();
     try {
+      const requests = {
+        status: axios.get('/api/dashboard/status', { params: { _ts: cacheBust }, headers: { 'Cache-Control': 'no-cache' } }),
+        positions: axios.get('/api/dashboard/positions', { params: { _ts: cacheBust }, headers: { 'Cache-Control': 'no-cache' } }),
+        performance: axios.get('/api/dashboard/performance', { params: { _ts: cacheBust }, headers: { 'Cache-Control': 'no-cache' } }),
+        decision: axios.get('/api/dashboard/recent-decision', { params: { _ts: cacheBust }, headers: { 'Cache-Control': 'no-cache' } }),
+        agents: axios.get('/api/dashboard/agents', { params: { _ts: cacheBust }, headers: { 'Cache-Control': 'no-cache' } }),
+        market: axios.get('/api/market/overview', { params: { pair: selectedPair, _ts: cacheBust }, headers: { 'Cache-Control': 'no-cache' } }),
+        insights: axios.get('/api/market/insights', { params: { _ts: cacheBust }, headers: { 'Cache-Control': 'no-cache' } }),
+      };
+      const entries = Object.entries(requests);
+      const results = await Promise.allSettled(entries.map(([, request]) => request));
       const data = {};
       const failures = [];
       results.forEach((result, index) => {
@@ -125,7 +131,7 @@ const Dashboard = () => {
       if (data.insights) setInsights(data.insights.data.items || []);
       recordDecisionObservation(nextDecision, nextMarket);
 
-      if (failures.length) {
+      if (failures.length && firstLoad.current) {
         console.error('Dashboard endpoint failures:', failures.map(({ name, error }) => ({
           endpoint: name,
           status: error?.response?.status,
@@ -135,13 +141,15 @@ const Dashboard = () => {
         toast.error(`Dashboard data unavailable: ${failedNames}`);
       }
     } finally {
+      firstLoad.current = false;
       setLoading(false);
+      fetchInFlight.current = false;
     }
   };
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 60000);
+    const interval = setInterval(fetchData, LIVE_POLL_MS);
     return () => clearInterval(interval);
   }, [selectedPair]);
 
@@ -233,7 +241,7 @@ const Dashboard = () => {
         <Toolbar>
           <ShowChart sx={{ mr: 2 }} />
           <Typography variant="h6" sx={{ flexGrow: 1 }}>AI Trading Dashboard</Typography>
-          <Chip label="RUNTIME RECOVERY" size="small" sx={{ mr: 1, fontWeight: 700 }} />
+          <Chip label="LIVE 5s" size="small" color="success" variant="outlined" sx={{ mr: 1, fontWeight: 700 }} />
           <Chip label={botEnabled ? 'BOT ON' : 'BOT OFF'} color={botEnabled ? 'success' : 'default'} size="small" sx={{ mr: 2, fontWeight: 700 }} />
           <Button color="inherit" onClick={handleAnalyze} startIcon={<Refresh />} disabled={!botEnabled || tradingMode !== 'paper'}>Analyze</Button>
           <IconButton size="large" edge="end" color="inherit" onClick={(e) => setAnchorEl(e.currentTarget)}><AccountCircle /></IconButton>
@@ -289,13 +297,13 @@ const Dashboard = () => {
         <Grid container spacing={3} sx={{ mb: 3 }}>{[
           ['Portfolio Value', formatIDR(status?.portfolio_value), `Balance: ${formatIDR(status?.balance)}`],
           ['Daily PnL', formatIDR(dailyActual), `${status?.daily_trades || 0} trades today`],
-          ['Active Positions', status?.active_positions || 0, `Max: ${status?.max_open_positions || 5}`],
+          ['Active Positions', status?.active_positions || 0, `Max: ${status?.max_open_positions || 3}`],
           ['Total Trades', status?.total_trades || 0, `Win Rate: ${((performance?.win_rate || 0) * 100).toFixed(1)}%`],
         ].map(([title, value, sub]) => <Grid item xs={12} sm={6} md={3} key={title}><Card><CardContent><Typography color="text.secondary" gutterBottom>{title}</Typography><Typography variant="h5">{value}</Typography><Typography variant="body2" color="text.secondary">{sub}</Typography></CardContent></Card></Grid>)}</Grid>
 
         <DashboardTools market={market} decision={decision} counts={counts} runtimeHours={status?.runtime_hours || 0} cycles={status?.cycles_today || 0} targets={targets} dailyActual={dailyActual} decisionHistory={decisionHistory} positions={positions} />
 
-        <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={7}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>AI Runtime & Decisions</Typography><Grid container spacing={2}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">AI Runtime</Typography><Typography variant="h6">{Number(status?.runtime_hours || 0).toFixed(1)} h</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography variant="h6">{status?.cycles_today || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">BUY</Typography><Typography color="success.main" variant="h6">{counts.BUY || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">SELL</Typography><Typography color="error.main" variant="h6">{counts.SELL || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">HOLD</Typography><Typography variant="h6">{counts.HOLD || 0}</Typography></Grid></Grid><Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>Runtime and cycle counters update from the persistent paper-trading safety state.</Typography></Paper></Grid>
+        <Grid container spacing={3} sx={{ mb: 3 }}><Grid item xs={12} md={7}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>AI Runtime & Decisions</Typography><Grid container spacing={2}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">AI Runtime</Typography><Typography variant="h6">{Number(status?.runtime_hours || 0).toFixed(1)} h</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Cycles</Typography><Typography variant="h6">{status?.cycles_today || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">BUY</Typography><Typography color="success.main" variant="h6">{counts.BUY || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">SELL</Typography><Typography color="error.main" variant="h6">{counts.SELL || 0}</Typography></Grid><Grid item xs={4} md={2}><Typography variant="caption" color="text.secondary">HOLD</Typography><Typography variant="h6">{counts.HOLD || 0}</Typography></Grid></Grid><Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>Live state refreshes every 5 seconds without starting an AI cycle.</Typography></Paper></Grid>
           <Grid item xs={12} md={5}><Paper sx={{ p: 2.5, height: '100%' }}><Typography variant="h6" gutterBottom>Evaluation Targets</Typography><Typography variant="caption" color="text.secondary">Targets measure bot quality only. They never force BUY/SELL decisions.</Typography><Stack spacing={1.2} sx={{ mt: 2 }}>{['daily', 'weekly', 'monthly'].map((period) => <TextField key={period} size="small" label={`${period[0].toUpperCase()}${period.slice(1)} target`} type="number" value={targetDraft[period]} onChange={(e) => setTargetDraft({ ...targetDraft, [period]: e.target.value })} InputProps={{ startAdornment: <Typography sx={{ mr: 1, color: 'text.secondary' }}>Rp</Typography> }} />)}<Button variant="outlined" onClick={saveTargets}>Save Targets</Button></Stack><Stack spacing={0.8} sx={{ mt: 2 }}><Typography variant="caption">Daily progress: {targets.daily > 0 ? `${targetProgress(targets.daily).toFixed(0)}%` : 'not set'}</Typography><LinearProgress variant="determinate" value={targetProgress(targets.daily)} /></Stack></Paper></Grid></Grid>
 
         <Paper sx={{ p: 2.5, mb: 3 }}><Typography variant="h6" gutterBottom>Paper Account</Typography><Typography variant="body2" color="text.secondary">Currency: IDR · Initial validation balance: {formatIDR(10000000)} · Selected market: {currentPairLabel}</Typography>{decision && <Box sx={{ mt: 2 }}><Typography variant="subtitle2" color="text.secondary">Latest Decision</Typography><Typography variant="h4">{decision.action || 'HOLD'}</Typography><Typography variant="body2">Confidence: {((decision.confidence || 0) * 100).toFixed(1)}%</Typography><Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1 }}>{decision.votes && Object.entries(decision.votes).map(([agent, vote]) => <Chip key={agent} label={`${agent}: ${vote}`} size="small" />)}</Box></Box>}</Paper>
