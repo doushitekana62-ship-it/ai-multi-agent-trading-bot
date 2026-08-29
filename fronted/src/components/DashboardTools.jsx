@@ -53,79 +53,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
     return () => clearInterval(interval);
   }, []);
 
-  // Keep the existing dashboard layout/component. Wire the already-rendered
-  // START PAPER BOT control without replacing its visual component.
-  useEffect(() => {
-    let disposed = false;
-    let observer = null;
-    let currentButton = null;
-    let clickHandler = null;
-
-    const findStartButton = () => Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim().includes('START PAPER BOT')
-    );
-
-    const syncTopStatus = (running) => {
-      Array.from(document.querySelectorAll('*')).forEach((node) => {
-        if (node.children.length === 0 && node.textContent?.trim() === 'BOT OFF') {
-          node.textContent = running ? 'BOT ON' : 'BOT OFF';
-        }
-      });
-    };
-
-    const syncButton = async () => {
-      const button = findStartButton();
-      if (!button || disposed) return;
-
-      if (button !== currentButton) {
-        if (currentButton && clickHandler) currentButton.removeEventListener('click', clickHandler);
-        currentButton = button;
-        clickHandler = async (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (button.dataset.paperBusy === '1') return;
-          button.dataset.paperBusy = '1';
-          button.disabled = true;
-          try {
-            const pair = localStorage.getItem('paperTradingPair') || 'btc_idr';
-            const symbol = pair.replace('_', '/').toUpperCase();
-            await axios.post('/api/dashboard/paper/start', null, { params: { symbol } });
-            syncTopStatus(true);
-            await loadHealth();
-          } catch (error) {
-            console.error('Unable to start paper trading:', error);
-            window.alert(error.response?.data?.detail || 'Unable to start paper trading');
-          } finally {
-            button.dataset.paperBusy = '0';
-            button.disabled = false;
-          }
-        };
-        currentButton.addEventListener('click', clickHandler);
-      }
-
-      try {
-        const response = await axios.get('/api/dashboard/paper/status');
-        const running = response.data?.running === true;
-        button.disabled = false;
-        syncTopStatus(running);
-      } catch (error) {
-        button.disabled = false;
-      }
-    };
-
-    syncButton();
-    const interval = setInterval(syncButton, 5000);
-    observer = new MutationObserver(syncButton);
-    observer.observe(document.body, { childList: true, subtree: true });
-
-    return () => {
-      disposed = true;
-      clearInterval(interval);
-      if (observer) observer.disconnect();
-      if (currentButton && clickHandler) currentButton.removeEventListener('click', clickHandler);
-    };
-  }, []);
-
   const move = Number(market?.recent_move);
   const action = String(decision?.action || '—').toUpperCase();
   const confidence = Number(decision?.confidence || 0) * 100;
@@ -169,13 +96,7 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
 
   const radarData = useMemo(() => ({
     labels: ['Sentiment', 'Technical', 'Decision', 'Forecast', 'Mimic Trader', 'Consensus'],
-    datasets: [{
-      label: 'Agent score',
-      data: radarValues,
-      fill: true,
-      borderWidth: 1.5,
-      pointRadius: 3,
-    }],
+    datasets: [{ label: 'Agent score', data: radarValues, fill: true, borderWidth: 1.5, pointRadius: 3 }],
   }), [radarValues]);
 
   const radarOptions = useMemo(() => ({
@@ -205,7 +126,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Stack>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={8}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Agent Score Radar</Typography>
@@ -215,7 +135,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Box>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Market vs AI</Typography>
@@ -230,7 +149,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           <Typography variant="caption" color="text.secondary">AI confidence: {confidence ? `${confidence.toFixed(1)}%` : '—'}</Typography>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">AI Consensus</Typography>
@@ -242,7 +160,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           <Typography variant="caption" color="text.secondary">Market condition: {marketBias} · {condition}</Typography>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Paper Session</Typography>
@@ -256,7 +173,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Grid>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={5}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Decision History</Typography>
@@ -272,7 +188,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Stack>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={4}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Risk Snapshot</Typography>
@@ -285,7 +200,6 @@ export default function DashboardTools({ market, decision, counts, runtimeHours 
           </Stack>
         </Paper>
       </Grid>
-
       <Grid item xs={12} md={3}>
         <Paper sx={{ p: 2.5, height: '100%' }}>
           <Typography variant="h6">Target Review</Typography>
