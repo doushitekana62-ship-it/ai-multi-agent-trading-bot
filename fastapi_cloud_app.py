@@ -2,8 +2,7 @@
 
 This service is intentionally stateless with respect to paper account state.
 Cloudflare Durable Object remains the authoritative manual ON/OFF gate and
-paper-account ledger. FastAPI Cloud only executes the existing CPython
-multi-agent Orchestrator and returns an analysis result.
+paper-account ledger. FastAPI Cloud executes the CPython multi-agent engine.
 """
 from __future__ import annotations
 
@@ -16,16 +15,13 @@ from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.orchestrator import Orchestrator
+from agents.agent_trading_librarian import TradingLibrarianAgent
 
-app = FastAPI(
-    title="AI Multi-Agent Trading Bot AI Engine",
-    version="1.0.0",
-)
+app = FastAPI(title="AI Multi-Agent Trading Bot AI Engine", version="1.1.0")
 
 
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     symbol: str = Field(min_length=3, max_length=20)
     market_data: Dict[str, Any]
 
@@ -48,16 +44,10 @@ class AnalysisResponse(BaseModel):
     execution_reason: Optional[str] = None
     hold_reason: Optional[str] = None
     summary: str
+    knowledge_topics: List[str] = []
 
 
-_ALLOWED_SYMBOLS = {
-    "BTC/IDR",
-    "ETH/IDR",
-    "USDT/IDR",
-    "XRP/IDR",
-    "DOGE/IDR",
-    "SOL/IDR",
-}
+_ALLOWED_SYMBOLS = {"BTC/IDR", "ETH/IDR", "USDT/IDR", "XRP/IDR", "DOGE/IDR", "SOL/IDR"}
 
 
 def _shared_secret() -> str:
@@ -67,15 +57,9 @@ def _shared_secret() -> str:
 def _require_engine_key(value: Optional[str]) -> None:
     secret = _shared_secret()
     if len(secret) < 32:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI engine shared secret is not configured",
-        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AI engine shared secret is not configured")
     if not value or not hmac.compare_digest(value, secret):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid AI engine credential",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AI engine credential")
 
 
 def _clean_number(value: Any, default: float = 0.0) -> float:
@@ -88,7 +72,56 @@ def _clean_number(value: Any, default: float = 0.0) -> float:
     return number
 
 
-def _result_payload(result: Any) -> Dict[str, Any]:
+def _score_to_action(score: float) -> str:
+    if score >= 0.30:
+        return "BUY"
+    if score <= -0.30:
+        return "SELL"
+    return "HOLD"
+
+
+def _apply_trading_knowledge_guard(result: Any, market_data: Dict[str, Any], knowledge: Dict[str, Any]):
+    """Use the Trading Librarian as shared confirmation policy.
+
+    The agents remain responsible for their domains. This guard only recovers a
+    directional candidate when several independent scores agree and market
+    movement is large enough to justify consideration. It never bypasses the
+    paper execution confidence/risk gate in the Worker.
+    """
+    action = str(getattr(result, "final_action", "HOLD") or "HOLD").upper()
+    scores = {str(k): _clean_number(v) for k, v in dict(getattr(result, "market_scores", {}) or {}).items()}
+    technical = scores.get("technical", 0.0)
+    decision = scores.get("decision", 0.0)
+    forecast = scores.get("forecast", 0.0)
+    sentiment = scores.get("sentiment", 0.0)
+    directional = 0.38 * technical + 0.27 * decision + 0.20 * forecast + 0.15 * sentiment
+
+    move = _clean_number(market_data.get("short_term_move_percent", market_data.get("change_percent_24h")))
+    quality = _clean_number(market_data.get("data_quality_score"), 0.5)
+    candidate = _score_to_action(directional)
+
+    if action == "HOLD" and candidate != "HOLD" and abs(move) >= 0.08 and quality >= 0.55:
+        existing_confidence = _clean_number(getattr(result, "final_confidence", 0.0))
+        recovered_confidence = max(existing_confidence, min(0.70, 0.50 + abs(directional) * 0.45))
+        if recovered_confidence >= 0.60:
+            result.final_action = candidate
+            result.final_confidence = recovered_confidence
+            result.consensus_action = candidate
+            result.consensus_score = directional
+            result.execution_reason = (
+                "Trading Librarian confirmation recovered a directional candidate from "
+                "technical/decision/forecast agreement; final paper risk gate still applies."
+            )
+            result.hold_reason = None
+            result.confidence_components = dict(getattr(result, "confidence_components", {}) or {})
+            result.confidence_components["knowledge_directional_score"] = directional
+            result.confidence_components["knowledge_guard_recovered"] = 1.0
+            return result
+
+    return result
+
+
+def _result_payload(result: Any, knowledge_topics: List[str]) -> Dict[str, Any]:
     action = str(getattr(result, "final_action", "HOLD") or "HOLD").upper()
     if action == "STRONG_BUY":
         action = "BUY"
@@ -115,6 +148,7 @@ def _result_payload(result: Any) -> Dict[str, Any]:
         "execution_reason": getattr(result, "execution_reason", None),
         "hold_reason": getattr(result, "hold_reason", None),
         "summary": str(getattr(result, "summary", "AI engine completed analysis.") or "AI engine completed analysis."),
+        "knowledge_topics": knowledge_topics,
     }
 
 
@@ -140,54 +174,39 @@ async def ready():
 
 
 @app.post("/engine/analyze", response_model=AnalysisResponse)
-async def analyze(
-    request: AnalysisRequest,
-    x_ai_engine_key: Optional[str] = Header(default=None),
-):
+async def analyze(request: AnalysisRequest, x_ai_engine_key: Optional[str] = Header(default=None)):
     _require_engine_key(x_ai_engine_key)
 
     symbol = request.symbol.upper().strip().replace("_", "/")
     if symbol not in _ALLOWED_SYMBOLS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported paper symbol: {symbol}",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported paper symbol: {symbol}")
 
     market_data = dict(request.market_data or {})
-    # Never allow a remote caller to bypass the normal multi-agent voting path.
     market_data.pop("_force_action", None)
-
-    current_price = _clean_number(
-        market_data.get("current_price") or market_data.get("unified_price")
-    )
+    current_price = _clean_number(market_data.get("current_price") or market_data.get("unified_price"))
     if current_price <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="current_price must be greater than zero",
-        )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="current_price must be greater than zero")
 
     ohlcv = market_data.get("ohlcv") or []
     if not isinstance(ohlcv, list) or len(ohlcv) > 120:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="ohlcv must be a list containing at most 120 points",
-        )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ohlcv must be a list containing at most 120 points")
+
+    librarian = TradingLibrarianAgent()
+    advice = librarian.advise("scalping momentum volume support resistance risk position sizing", limit=6)
+    knowledge = advice.get("knowledge") or []
+    market_data["trading_knowledge"] = knowledge
 
     try:
-        orchestrator = Orchestrator(
-            {
-                "use_unified_data": False,
-                "use_mimic_trader": True,
-                "min_confidence": 0.40,
-                "max_position_size": 0.20,
-                "debug_enabled": True,
-            }
-        )
+        orchestrator = Orchestrator({
+            "use_unified_data": False,
+            "use_mimic_trader": True,
+            "min_confidence": 0.40,
+            "max_position_size": 0.20,
+            "debug_enabled": True,
+        })
         result = await orchestrator.analyze(symbol, market_data)
-        return _result_payload(result)
+        result = _apply_trading_knowledge_guard(result, market_data, advice)
+        topics = [str(item.get("topic")) for item in knowledge if isinstance(item, dict) and item.get("topic")]
+        return _result_payload(result, topics)
     except Exception as exc:
-        # Do not expose a stack trace or mutate paper state on engine failure.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"AI engine analysis failed: {type(exc).__name__}",
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI engine analysis failed: {type(exc).__name__}") from exc
