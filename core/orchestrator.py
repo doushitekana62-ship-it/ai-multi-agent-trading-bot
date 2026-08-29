@@ -68,13 +68,11 @@ class Orchestrator:
 
     async def analyze(self, symbol: str, market_data: Optional[Dict[str, Any]] = None) -> OrchestratorResult:
         symbol = symbol.upper(); supplied = dict(market_data or {})
-        if supplied.get("_force_action"):
-            logger.warning("Force action is disabled in production orchestration; use replay tests instead.")
         snapshot = None
         if self.use_unified_data:
             snapshot = self.market_data_provider.get_snapshot(symbol)
             if snapshot is None or snapshot.is_stale(90):
-                snapshot = self.market_data_provider.refresh_snapshot(symbol=symbol, timeframe=supplied.get("timeframe", "1m"), limit=180)
+                snapshot = self.market_data_provider.refresh_snapshot(symbol=symbol, timeframe=supplied.get("timeframe", "1m"), limit=180, force=True)
             if snapshot is None:
                 snapshot = create_snapshot_from_market_data(self.market_data_provider, symbol, supplied)
         data = self._normalize_context(symbol, supplied, snapshot)
@@ -139,6 +137,11 @@ class Orchestrator:
             data[f"movement_{minutes}m"] = (parsed[-1][1] / prior[1] - 1.0) if prior and prior[1] > 0 else None
         data["ohlcv_valid_count"] = len(parsed)
         data["ohlcv_last_timestamp"] = parsed[-1][0].isoformat() if parsed else None
+        if parsed:
+            intervals = [(parsed[i][0] - parsed[i-1][0]).total_seconds() for i in range(1, len(parsed))]
+            data["ohlcv_continuity_ok"] = not any(interval < 30 or interval > 90 for interval in intervals)
+        else:
+            data["ohlcv_continuity_ok"] = False
         return data
 
     def _quality(self, data):
@@ -147,6 +150,7 @@ class Orchestrator:
         missing=[f"movement_{x}m" for x in (1,5,15,30) if data.get(f"movement_{x}m") is None]
         if price <= 0 or len(candles) < 10: return SignalStatus.UNAVAILABLE.value, "INSUFFICIENT_MARKET_DATA"
         if age > 90: return SignalStatus.DEGRADED.value, "STALE_MARKET_DATA"
+        if not data.get("ohlcv_continuity_ok", False): return SignalStatus.UNAVAILABLE.value, "OHLCV_CONTINUITY_FAILURE"
         if len(missing) >= 3: return SignalStatus.UNAVAILABLE.value, "SHORT_HORIZON_MOVEMENT_UNAVAILABLE"
         return SignalStatus.OK.value, "OK"
 
@@ -155,7 +159,7 @@ class Orchestrator:
         out=[]
         for name,r in (("technical",technical),("forecast",forecast),("sentiment",sentiment)):
             if r is None or getattr(r,"status",SignalStatus.UNAVAILABLE.value) == SignalStatus.UNAVAILABLE.value: continue
-            score=safe_float(getattr(r,"overall_score",getattr(r,"forecast_score",0)))
+            score=safe_float(getattr(r,"overall_score",getattr(r,"forecast_score",getattr(r,"score",0))))
             direction=getattr(r,"direction",None) or ("BULLISH" if score>0.1 else "BEARISH" if score<-0.1 else "NEUTRAL")
             out.append(AnalyticalSignal(agent=name,symbol=symbol,direction=direction,score=score,confidence=safe_float(getattr(r,"confidence",0)),timeframe=str(getattr(r,"timeframe","1m")),evidence=list(getattr(r,"evidence",[]) or []),data_timestamp=getattr(r,"timestamp",datetime.now(timezone.utc)),data_age_seconds=safe_float(getattr(r,"data_age_seconds",0)),status=getattr(r,"status",SignalStatus.OK.value)))
         return out
