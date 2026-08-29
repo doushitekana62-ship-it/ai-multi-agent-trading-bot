@@ -1,13 +1,6 @@
 name: Paper Trading Execution Tests
 
 on:
-  push:
-    branches:
-      - main
-      - indodax-integration-hardening
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       test_scope:
