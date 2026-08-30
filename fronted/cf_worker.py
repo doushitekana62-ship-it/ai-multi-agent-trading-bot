@@ -120,31 +120,45 @@ def _recent_trade_move(points):
     if len(values)<2 or values[0]==0: return None
     return ((values[-1]-values[0])/values[0])*100.0
 
+def _normalize_public_trades(payload):
+    """INDODAX /api/trades/$pair_id returns a JSON array of trade rows."""
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = payload.get("trades") or payload.get("data") or []
+    else:
+        rows = []
+    points=[]
+    for item in rows:
+        if not isinstance(item,dict):
+            continue
+        try:
+            price=float(item.get("price") or 0)
+            amount=float(item.get("amount") or 0)
+            timestamp=float(item.get("date") or item.get("trade_time") or item.get("timestamp") or 0)
+            if price<=0 or timestamp<=0:
+                continue
+            trade_type=str(item.get("type") or item.get("side") or "").lower()
+            points.append({"tid":str(item.get("tid") or item.get("trade_id") or ""),"price":price,"timestamp":timestamp,"amount":amount,"type":trade_type,"side":trade_type,"source":"INDODAX public market data"})
+        except (TypeError,ValueError):
+            continue
+    return points
+
 async def _market_overview(scope):
     pair=_clean_pair(_query_value(scope,"pair","btc_idr"))
     ticker=await _public_indodax(f"/{pair}/ticker")
     trades=await _public_indodax(f"/{pair}/trades")
     if not ticker or not isinstance(ticker.get("ticker"),dict):
         return {"available":False,"pair":pair,"currency":"IDR","currency_symbol":"Rp"}
-    t=ticker["ticker"]; points=[]
-    raw_trades=trades.get("trades",[]) if isinstance(trades,dict) else []
-    for item in raw_trades[-30:]:
-        try:
-            trade_type=str(item.get("type") or "").lower()
-            points.append({
-                "price":float(item.get("price") or 0),
-                "timestamp":int(item.get("date") or item.get("trade_time") or 0),
-                "amount":float(item.get("amount") or 0),
-                "type":trade_type,
-                "side":trade_type,
-            })
-        except (TypeError,ValueError): continue
+    t=ticker["ticker"]
+    points=_normalize_public_trades(trades)[-1440:]
     return {
         "available":True,"pair":pair,"base_currency":pair.split("_")[0].upper(),"quote_currency":pair.split("_")[1].upper(),
         "currency":"IDR" if pair.endswith("_idr") else pair.split("_")[1].upper(),"currency_symbol":"Rp" if pair.endswith("_idr") else pair.split("_")[1].upper(),
         "last":float(t.get("last") or 0),"buy":float(t.get("buy") or 0),"sell":float(t.get("sell") or 0),
         "high":float(t.get("high") or 0),"low":float(t.get("low") or 0),"volume":float(t.get("vol_idr") or t.get("vol") or 0),
-        "recent_move":_recent_trade_move(points),"recent_move_label":"last 30 public trades","points":points,"source":"INDODAX public market data",
+        "recent_move":_recent_trade_move(points),"recent_move_label":"INDODAX public trades","points":points,"source":"INDODAX public market data",
+        "market_data_quality":"TRADE_STREAM_OK" if points else "TICKER_ONLY",
     }
 
 async def _market_insights(scope):
