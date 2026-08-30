@@ -10,7 +10,8 @@ from paper_cycle import run_paper_cycle
 CYCLE_INTERVAL_MS = 60_000
 MAX_POSITIONS = 3
 DEFAULT_POSITION_ALLOCATION = 0.10
-STATE_VERSION = 2
+STATE_VERSION = 3
+MARKET_HISTORY_LIMIT = 1440
 
 DEFAULT_STATE = {
     "state_version": STATE_VERSION,
@@ -133,7 +134,7 @@ class PaperTradingState(DurableObject):
 
     async def set_paper_market_history(self, history):
         value = history if isinstance(history, list) else []
-        value = value[-120:]
+        value = value[-MARKET_HISTORY_LIMIT:]
         await self.ctx.storage.put("paper_market_history", value)
         return value
 
