@@ -87,7 +87,6 @@ class PaperTradingState(DurableObject):
         state = await self.ctx.storage.get("state")
         if not isinstance(state, dict):
             state = _copy_default_state()
-
         state.setdefault("state_version", STATE_VERSION)
         state.setdefault("decision_counts", {"BUY": 0, "SELL": 0, "HOLD": 0})
         state.setdefault("positions", [])
@@ -255,7 +254,6 @@ class PaperTradingState(DurableObject):
         state = await self._get()
         if not state.get("enabled"):
             return state
-
         now = _now()
         action = str(decision or "HOLD").upper()
         action = action if action in {"BUY", "SELL", "HOLD"} else "HOLD"
@@ -363,6 +361,20 @@ class PaperTradingState(DurableObject):
         state["updated_at"] = now
         await self.ctx.storage.put("state", state)
         return state
+
+    async def apply_cycle(self, action="HOLD", price=0.0, confidence=0.0, cycle_id=None, metadata=None):
+        """Backward-compatible RPC retained for older deployed paper-cycle callers."""
+        analysis = dict(metadata) if isinstance(metadata, dict) else {}
+        if cycle_id is not None:
+            analysis.setdefault("cycle_id", str(cycle_id))
+        return await self.record_cycle(
+            decision=action,
+            confidence=confidence,
+            symbol=str(analysis.get("symbol") or "BTC/IDR"),
+            price=price,
+            reasoning=str(analysis.get("summary") or analysis.get("reasoning") or ""),
+            analysis=analysis,
+        )
 
     async def record_cycle_payload(self, payload):
         payload = payload if isinstance(payload, dict) else {}
