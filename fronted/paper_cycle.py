@@ -1,5 +1,4 @@
-"""Canonical guarded paper-trading cycle for the Cloudflare runtime."""
-from __future__ import annotations
+from __future__
 
 import json
 import uuid
@@ -14,8 +13,6 @@ EXECUTION_CONFIDENCE_THRESHOLD = 0.75
 MAX_POSITION_SIZE = 0.10
 LIBRARY_ALERT_MARKER = "LIBRARY_ALERTS_JSON="
 PULSE_MINUTES = 30
-# Indodax's public trades endpoint is polled every cycle. Keep enough durable
-# points to reconstruct multi-minute candles across scheduler invocations.
 PULSE_FETCH_LIMIT = 1440
 MARKET_HISTORY_LIMIT = 1440
 
@@ -81,8 +78,46 @@ def _latest_trade_timestamp(points):
     return max(values) if values else None
 
 
+def _normalize_trade_rows(payload):
+    """Normalize the official INDODAX public-trades response.
+
+    INDODAX documents /api/trades/$pair_id as a JSON ARRAY of trades, not
+    {"trades": [...]}. The previous adapter only accepted the latter shape,
+    silently converting valid market data into an empty point list.
+    """
+    if isinstance(payload, list):
+        raw_rows = payload
+    elif isinstance(payload, dict):
+        raw_rows = payload.get("trades") or payload.get("data") or []
+    else:
+        raw_rows = []
+    normalized = []
+    for item in raw_rows:
+        if not isinstance(item, dict):
+            continue
+        try:
+            price = _json_number(item.get("price"))
+            amount = _json_number(item.get("amount"))
+            timestamp = item.get("date") or item.get("trade_time") or item.get("timestamp")
+            timestamp_value = _json_number(timestamp)
+            if price <= 0 or timestamp_value <= 0:
+                continue
+            trade_type = str(item.get("type") or item.get("side") or "").lower()
+            normalized.append({
+                "tid": str(item.get("tid") or item.get("trade_id") or ""),
+                "price": price,
+                "timestamp": timestamp_value,
+                "amount": amount,
+                "type": trade_type,
+                "side": trade_type,
+                "source": "INDODAX public market data",
+            })
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
 def _build_pulse_segments(points, anchor_ts=None):
-    """Build 30 one-minute buckets anchored to the newest exchange trade."""
     anchor = float(anchor_ts or _latest_trade_timestamp(points) or datetime.now(timezone.utc).timestamp())
     current_bucket = int(anchor // 60) * 60
     buckets = {}
@@ -113,7 +148,6 @@ def _build_pulse_segments(points, anchor_ts=None):
 
 
 def _pulse_summary(segments):
-    """Return a stable 30m status plus the exact current-minute status."""
     populated = [s for s in segments or [] if s.get("trades", 0) > 0 and s.get("move_pct") is not None]
     if not populated:
         return "GRAY", "GRAY", None
@@ -139,7 +173,6 @@ def _window_move(points, minutes, anchor_ts=None):
 
 
 def _build_ohlcv_from_trades(points, anchor_ts=None, lookback_minutes=180):
-    """Derive valid 1m candles from the same Indodax trades used by Pulse."""
     valid = [p for p in points or [] if _trade_timestamp(p) > 0 and _json_number(p.get("price")) > 0]
     if not valid:
         return []
@@ -165,7 +198,7 @@ def _build_ohlcv_from_trades(points, anchor_ts=None, lookback_minutes=180):
 def _merge_market_history(previous, current, limit=MARKET_HISTORY_LIMIT):
     merged, seen = [], set()
     for point in list(previous or []) + list(current or []):
-        key = (str(point.get("timestamp") or point.get("date") or ""), str(point.get("price") or ""), str(point.get("amount") or ""), str(point.get("type") or point.get("side") or ""))
+        key = (str(point.get("tid") or ""), str(point.get("timestamp") or point.get("date") or ""), str(point.get("price") or ""), str(point.get("amount") or ""), str(point.get("type") or point.get("side") or ""))
         if key in seen:
             continue
         seen.add(key)
@@ -185,8 +218,7 @@ def _reasoning_with_alert_bridge(reasoning, alerts):
 async def _fetch_public_trades(pair):
     try:
         payload = await cf_worker._public_indodax(f"/{pair}/trades")
-        rows = payload.get("trades", []) if isinstance(payload, dict) else []
-        return rows[-PULSE_FETCH_LIMIT:] if isinstance(rows, list) else []
+        return _normalize_trade_rows(payload)[-PULSE_FETCH_LIMIT:]
     except Exception:
         return []
 
@@ -211,6 +243,10 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         extra_trades = await _fetch_public_trades(pair)
         if extra_trades:
             market["points"] = extra_trades
+            prices = [p["price"] for p in extra_trades if p.get("price", 0) > 0]
+            if len(prices) >= 2:
+                market["recent_move"] = ((prices[-1] - prices[0]) / prices[0]) * 100.0
+                market["recent_move_label"] = "INDODAX public trades"
         if not market.get("available") or _json_number(market.get("last")) <= 0:
             state = await state_api.finish_cycle("market_data_unavailable")
             return {"ok": False, "reason": "market_data_unavailable", "state": state_response(state) if state_response else state}
