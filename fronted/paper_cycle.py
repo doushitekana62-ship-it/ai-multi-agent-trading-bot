@@ -14,7 +14,10 @@ EXECUTION_CONFIDENCE_THRESHOLD = 0.75
 MAX_POSITION_SIZE = 0.10
 LIBRARY_ALERT_MARKER = "LIBRARY_ALERTS_JSON="
 PULSE_MINUTES = 30
-PULSE_FETCH_LIMIT = 240
+# Indodax's public trades endpoint is polled every cycle. Keep enough durable
+# points to reconstruct multi-minute candles across scheduler invocations.
+PULSE_FETCH_LIMIT = 1440
+MARKET_HISTORY_LIMIT = 1440
 
 
 def _json_number(value, default=0.0):
@@ -109,6 +112,19 @@ def _build_pulse_segments(points, anchor_ts=None):
     return result
 
 
+def _pulse_summary(segments):
+    """Return a stable 30m status plus the exact current-minute status."""
+    populated = [s for s in segments or [] if s.get("trades", 0) > 0 and s.get("move_pct") is not None]
+    if not populated:
+        return "GRAY", "GRAY", None
+    first = next((s for s in segments if s.get("open") and s.get("trades", 0) > 0), None)
+    last = next((s for s in reversed(segments) if s.get("close") and s.get("trades", 0) > 0), None)
+    net_move = ((last["close"] - first["open"]) / first["open"] * 100.0) if first and last and first["open"] > 0 else None
+    status = "GREEN" if net_move is not None and net_move > 0 else "RED" if net_move is not None and net_move < 0 else "GRAY"
+    current = str((segments[-1] if segments else {}).get("status") or "GRAY")
+    return status, current, net_move
+
+
 def _window_move(points, minutes, anchor_ts=None):
     valid = [p for p in points or [] if _trade_timestamp(p) > 0 and _json_number(p.get("price")) > 0]
     if len(valid) < 2:
@@ -146,7 +162,7 @@ def _build_ohlcv_from_trades(points, anchor_ts=None, lookback_minutes=180):
     return [buckets[k] for k in sorted(buckets)]
 
 
-def _merge_market_history(previous, current, limit=240):
+def _merge_market_history(previous, current, limit=MARKET_HISTORY_LIMIT):
     merged, seen = [], set()
     for point in list(previous or []) + list(current or []):
         key = (str(point.get("timestamp") or point.get("date") or ""), str(point.get("price") or ""), str(point.get("amount") or ""), str(point.get("type") or point.get("side") or ""))
@@ -194,7 +210,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         market = await cf_worker._market_overview({"env": env, "query_string": f"pair={pair}".encode("latin-1")})
         extra_trades = await _fetch_public_trades(pair)
         if extra_trades:
-            market["points"] = extra_trades[-PULSE_FETCH_LIMIT:]
+            market["points"] = extra_trades
         if not market.get("available") or _json_number(market.get("last")) <= 0:
             state = await state_api.finish_cycle("market_data_unavailable")
             return {"ok": False, "reason": "market_data_unavailable", "state": state_response(state) if state_response else state}
@@ -204,14 +220,13 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         last = _json_number(market.get("last"))
         anchor_ts = _latest_trade_timestamp(history) or datetime.now(timezone.utc).timestamp()
         pulse_segments = _build_pulse_segments(history, anchor_ts)
+        pulse_status, current_pulse_status, pulse_net_move = _pulse_summary(pulse_segments)
         move_1m = _window_move(history, 1, anchor_ts)
         move_5m = _window_move(history, 5, anchor_ts)
         move_15m = _window_move(history, 15, anchor_ts)
         move_30m = _window_move(history, 30, anchor_ts)
         derived_ohlcv = _build_ohlcv_from_trades(history, anchor_ts)
-        current_segment = pulse_segments[-1] if pulse_segments else {"status": "GRAY"}
-        pulse_status = str(current_segment.get("status") or "GRAY")
-        public_move = _json_number(market.get("recent_move"))
+        public_move = _json_number(market.get("recent_move")) if market.get("recent_move") is not None else None
         effective_move = move_30m if move_30m is not None else public_move
         market_data = {
             "current_price": last, "unified_price": last, "price": last,
@@ -219,8 +234,9 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "change_percent_24h": effective_move, "short_term_move_percent": move_1m if move_1m is not None else effective_move,
             "public_trade_move_percent": public_move, "window_move_percent": effective_move,
             "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m,
-            "timeframe": "1m", "ohlcv": derived_ohlcv, "recent_trades": history[-PULSE_FETCH_LIMIT:], "pulse_segments": pulse_segments,
-            "pulse_status": pulse_status, "volatility": None, "data_quality_score": 0.90 if len(derived_ohlcv) >= 30 else max(0.55, min(0.85, len(derived_ohlcv) / 100.0)), "market_data_timestamp": _iso(anchor_ts),
+            "timeframe": "1m", "ohlcv": derived_ohlcv, "recent_trades": history, "pulse_segments": pulse_segments,
+            "pulse_status": pulse_status, "current_pulse_status": current_pulse_status, "pulse_net_move_30m_pct": pulse_net_move,
+            "volatility": None, "data_quality_score": 0.90 if len(derived_ohlcv) >= 30 else max(0.55, min(0.85, len(derived_ohlcv) / 100.0)), "market_data_timestamp": _iso(anchor_ts),
             "trading_knowledge_context": "Momentum requires price/structure confirmation; volume confirms rather than predicts; candlestick patterns require context; risk controls remain hard boundaries.",
         }
         orchestrator = CloudflareOrchestrator({"min_confidence": EXECUTION_CONFIDENCE_THRESHOLD, "max_position_size": MAX_POSITION_SIZE, "debug_enabled": True}, env=env)
@@ -242,11 +258,11 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "source": getattr(result, "engine_source", "fastapi_cloud"), "warning": getattr(result, "engine_warning", None), "cycle_status": getattr(result, "cycle_status", "ANALYZED"), "symbol": result.symbol, "action": action, "raw_action": raw_action, "confidence": confidence,
             "execution_gate": {"threshold": EXECUTION_CONFIDENCE_THRESHOLD, "passed": gate_passed, "executed_action": action}, "consensus_action": result.consensus_action, "consensus_score": _json_number(result.consensus_score), "votes": dict(result.agent_votes or {}), "market_scores": scores, "confidence_components": {k: _json_number(v) for k, v in dict(result.confidence_components or {}).items()},
             "position_size": min(MAX_POSITION_SIZE, _json_number(result.position_size)), "stop_loss": _optional_json_number(result.stop_loss), "take_profit": _optional_json_number(result.take_profit), "execution_reason": result.execution_reason, "hold_reason": result.hold_reason, "summary": result.summary, "agents_invoked": list(dict(result.agent_votes or {}).keys()), "hold_agents": list(hold_analysis.get("hold_agents") or getattr(result, "hold_agents", []) or []), "opposing_agents": list(hold_analysis.get("opposing_agents") or getattr(result, "opposing_agents", []) or []), "hold_analysis": hold_analysis, "agent_details": agent_details,
-            "market_history_points": len(history), "public_trade_move_percent": public_move, "window_move_percent": effective_move, "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status, "pulse_segments": pulse_segments, "effective_move_percent": effective_move, "range_position": range_pos,
+            "market_history_points": len(history), "public_trade_move_percent": public_move, "window_move_percent": effective_move, "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status, "current_pulse_status": current_pulse_status, "pulse_net_move_30m_pct": pulse_net_move, "pulse_segments": pulse_segments, "effective_move_percent": effective_move, "range_position": range_pos,
             "market_timestamp": _iso(anchor_ts), "market_source": "INDODAX public market data", "library_version": getattr(result, "library_version", "unknown"), "library_alerts": library_alerts, "candle_analysis": candle_analysis, "knowledge_topics": list(getattr(result, "knowledge_topics", []) or []),
         }
         decision_payload = {
-            "symbol": symbol, "action": action, "confidence": max(0, min(100, confidence * 100)), "reasoning": _reasoning_with_alert_bridge(reasoning, library_alerts), "agent_votes": metadata["votes"], "market_scores": scores, "confidence_components": metadata["confidence_components"], "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"], "position_size": metadata["position_size"], "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"], "engine_source": metadata["source"], "engine_warning": metadata["warning"], "cycle_status": metadata["cycle_status"], "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status, "agent_details": agent_details, "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"], "market_snapshot": {**market, "points": history[-PULSE_FETCH_LIMIT:], "ohlcv": derived_ohlcv, "pulse_segments": pulse_segments}, "persistence_status": "pending", "library_version": metadata["library_version"], "library_alerts": library_alerts, "candle_analysis": candle_analysis, "knowledge_topics": metadata["knowledge_topics"],
+            "symbol": symbol, "action": action, "confidence": max(0, min(100, confidence * 100)), "reasoning": _reasoning_with_alert_bridge(reasoning, library_alerts), "agent_votes": metadata["votes"], "market_scores": scores, "confidence_components": metadata["confidence_components"], "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"], "position_size": metadata["position_size"], "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"], "engine_source": metadata["source"], "engine_warning": metadata["warning"], "cycle_status": metadata["cycle_status"], "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status, "agent_details": agent_details, "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"], "market_snapshot": {**market, "points": history, "ohlcv": derived_ohlcv, "pulse_segments": pulse_segments, "pulse_status": pulse_status, "current_pulse_status": current_pulse_status, "pulse_net_move_30m_pct": pulse_net_move}, "persistence_status": "pending", "library_version": metadata["library_version"], "library_alerts": library_alerts, "candle_analysis": candle_analysis, "knowledge_topics": metadata["knowledge_topics"],
         }
         decision_persistence = await _supabase_request(env, "decisions", "POST", payload=decision_payload)
         if not decision_persistence.get("saved"):
@@ -259,21 +275,15 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         }
         history_persistence = await _supabase_request(env, "paper_history", "POST", payload=history_payload)
         if not history_persistence.get("saved"):
-            await _supabase_request(env, "decisions", "PATCH", f"?id=eq.{decision_id}", {"persistence_status": "failed", "engine_warning": "paper_history_insert_failed"})
-            state = await state_api.finish_cycle("paper_history_persistence_failed")
-            return {"ok": False, "reason": "paper_history_persistence_failed", "persistence": {"decision": decision_persistence, "history": history_persistence}, "state": state_response(state) if state_response else state}
+            state = await state_api.finish_cycle("history_persistence_failed")
+            return {"ok": False, "reason": "history_persistence_failed", "decision_id": decision_id, "persistence": history_persistence, "state": state_response(state) if state_response else state}
+        if decision_id:
+            await _supabase_request(env, "decisions", "PATCH", query=f"?id=eq.{decision_id}", payload={"persistence_status": "persisted"})
         history_id = history_persistence.get("id")
-        state = await state_api.record_cycle_payload({"decision": action, "confidence": confidence, "symbol": symbol, "price": last, "reasoning": decision_payload["reasoning"], "analysis": metadata})
-        trade = (state.get("last_decision") or {}).get("trade") if isinstance(state, dict) else None
-        trade_persistence = {"saved": False, "reason": "no_trade"}; trade_id = None
-        if trade:
-            trade_payload = {"decision_id": decision_id, "symbol": trade.get("symbol"), "action": str(trade.get("action") or "").upper(), "price": _json_number(trade.get("price")), "quantity": _json_number(trade.get("quantity")), "pnl": _json_number(trade.get("pnl")), "confidence": _json_number(trade.get("confidence", 0)) * 100, "status": "OPEN" if str(trade.get("action") or "").upper() == "BUY" else "CLOSED", "cycle_id": cycle_id, "session_id": session_id}
-            trade_payload["entry_price" if trade_payload["action"] == "BUY" else "exit_price"] = trade_payload["price"]
-            trade_persistence = await _supabase_request(env, "trades", "POST", payload=trade_payload); trade_id = trade_persistence.get("id")
-        final_history = {"balance": _json_number(state.get("balance")), "portfolio_value": _json_number(state.get("portfolio_value")), "daily_pnl": _json_number(state.get("daily_pnl")), "total_pnl": _json_number(state.get("total_pnl")), "active_positions": int(state.get("active_positions", 0)), "positions": list(state.get("positions") or []), "trade_id": trade_id, "persistence_status": "saved" if trade_persistence.get("saved") or not trade else "saved_with_trade_persistence_error"}
-        await _supabase_request(env, "paper_history", "PATCH", f"?id=eq.{history_id}", final_history)
-        await _supabase_request(env, "decisions", "PATCH", f"?id=eq.{decision_id}", {"persistence_status": "saved"})
-        return {"ok": True, "action": action, "raw_action": raw_action, "confidence": confidence, "market": {**market, "pulse_segments": pulse_segments, "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "pulse_status": pulse_status}, "orchestrator": metadata, "persistence": {"decision": {**decision_persistence, "id": decision_id}, "history": {**history_persistence, "id": history_id}, "trade": trade_persistence}, "state": state_response(state) if state_response else state}
+        if history_id:
+            await _supabase_request(env, "paper_history", "PATCH", query=f"?id=eq.{history_id}", payload={"persistence_status": "persisted"})
+        state = await state_api.apply_cycle(action, last, confidence, cycle_id, metadata)
+        return {"ok": True, "cycle_id": cycle_id, "cycle_number": cycle_number, "decision_id": decision_id, "history_id": history_id, "action": action, "confidence": confidence, "pulse_status": pulse_status, "current_pulse_status": current_pulse_status, "move_1m_pct": move_1m, "move_5m_pct": move_5m, "move_15m_pct": move_15m, "move_30m_pct": move_30m, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "persistence": {"decision": decision_persistence, "history": history_persistence}, "state": state_response(state) if state_response else state}
     except Exception as exc:
-        state = await state_api.finish_cycle(f"cycle_error: {exc}")
-        return {"ok": False, "reason": "cycle_error", "error": str(exc), "state": state_response(state) if state_response else state}
+        state = await state_api.finish_cycle(f"cycle_exception:{type(exc).__name__}")
+        return {"ok": False, "reason": type(exc).__name__, "state": state_response(state) if state_response else state}
