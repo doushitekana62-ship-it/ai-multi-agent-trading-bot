@@ -12,106 +12,67 @@ CLOUDFLARE BUILD ENVIRONMENT — 2026-08-31
 - Frontend root: fronted
 - Cloudflare build command: bun run build
 - Cloudflare automatically runs bun install first.
-- Latest successful environment detection: Node.js 20.20.2 and Bun 1.2.15.
-- Python package installation also runs and has consistently succeeded.
+- Current environment: Node.js 20.20.2 and Bun 1.2.15.
+- Python package installation succeeds.
 
-HISTORICAL BASELINE
--------------------
-The earlier deployment path used CRA directly and did not rewrite installed MUI files:
-- React 18.x
-- React Router 6.x
-- react-scripts 5.0.1
-- MUI 5.x
-- Emotion 11.x
-- CRA production build
-- Cloudflare Worker/static asset deployment
-
-The important characteristic is that no deployment script modified node_modules/@mui.
-
-INCIDENTS RECORDED
-------------------
+HISTORICAL MUI INCIDENTS
+------------------------
 1. Bun dependency resolution failed on @mui/icons-material 5.14.20.
 2. Bun dependency resolution failed on @mui/utils and @mui/private-theming 5.18.0.
-3. CRA/Webpack failed on elementAcceptingRef with tested MUI versions.
+3. CRA/Webpack failed on elementAcceptingRef with tested later MUI 5.x versions.
 4. CRA/Webpack failed on chainPropTypes default export.
 5. A compatibility patch was introduced and expanded from a few files to 66 and then 912 MUI JS files.
 6. The patch merely moved the failure to refType and then HTMLElementType. This proved that patching MUI node_modules files is not a valid solution.
-7. MUI 5.17.1 then installed successfully, but the repository verifier still expected 5.14.0.
+7. MUI 5.17.1 installed successfully, but CRA still failed on MUI utility default exports.
 
-LATEST CLOUDLFARE ERROR — 2026-08-31 04:55–04:59 UTC
------------------------------------------------------
-Cloudflare first reached the correct environment and successfully installed:
+LATEST CLOUDLFARE ERROR — 2026-08-31 05:01 UTC
+-----------------------------------------------
+Cloudflare successfully reached the frozen environment and installed:
 - Node 20.20.2
 - Bun 1.2.15
 - @mui/material 5.17.1
 - @mui/icons-material 5.17.1
-- 1295 packages
+- 1296 packages
 - Python worker package
 
-The first 04:56 build stopped before CRA compilation with:
-[CLOUDFLARE-BUILD-CONTRACT] @mui/material must be exactly 5.14.0; detected 5.17.1.
+Build contract passed and correctly confirmed no MUI node_modules patching. CRA then failed again with:
+Attempted import error: '@mui/utils/chainPropTypes' does not contain a default export (imported as 'chainPropTypes').
 
-This was an INTERNAL REPOSITORY CONTRACT MISMATCH, not a Cloudflare dependency failure. package.json had already been moved to 5.17.1 while verify-build-contract.js still enforced the obsolete 5.14.0 expectation.
+This proves the remaining problem is not the build contract or Cloudflare environment. The MUI 5.17.1 graph itself is incompatible with the frozen CRA 5/Webpack compilation path used by this repository.
 
-That contract mismatch was corrected in commit b08639ad6eadce74fe4f594a9d72c8057cf242e3.
+REFERENCE RESEARCH — 2026-08-31
+-------------------------------
+Web research found MUI's own changelog documenting a @mui/utils module/export change around 5.15.7. The MUI 5.14.0 package dependency graph is therefore the safer compatibility baseline for this legacy CRA/Webpack application.
 
-The subsequent 04:59 build proved the contract fix worked:
-[CLOUDFLARE-BUILD-CONTRACT] Node 20 verified.
-[CLOUDFLARE-BUILD-CONTRACT] MUI public baseline 5.17.1 verified.
-[CLOUDFLARE-BUILD-CONTRACT] No MUI node_modules patching is configured.
-
-The next failure is a separate CRA/Browserslist configuration error:
-Error [BrowserslistError]: /opt/buildhome/repo/fronted contains both .browserslistrc and package.json with browsers
-
-ROOT CAUSE OF CURRENT ERROR
----------------------------
-fronted/package.json already contains a browserslist configuration with production and development targets. A second fronted/.browserslistrc file contained the same configuration. The installed Browserslist package explicitly rejects having both configuration locations in the same project.
+The documented 5.14.0 graph is:
+- @mui/material 5.14.0
+- @mui/icons-material 5.14.0
+- @mui/system 5.14.0
+- @mui/utils 5.13.7
+- @mui/private-theming 5.13.7
+- @mui/styled-engine 5.13.2
+- @mui/core-downloads-tracker 5.14.0
+- @mui/types 7.2.4
+- @mui/base 5.0.0-beta.7
 
 FIX APPLIED — 2026-08-31
--------------------------
-Deleted fronted/.browserslistrc from main because package.json is already the canonical Browserslist configuration for this CRA project.
+------------------------
+Commit 91ea90ebb51acc563a3dc1bf69f4fd44bf14cca1 freezes fronted/package.json to the complete MUI 5.14-compatible dependency graph instead of allowing transitive MUI packages to float to 5.17.x.
 
-Commit: e72641ad1e9863d30b52f22c137989e9d50507cb
+Commit 7c35c96dd6da1cbd9fdb08a6333f52e679d4ea2a updates verify-build-contract.js to validate the complete graph. The verifier now fails early if any MUI package drifts.
 
-Do not solve this by changing MUI, React, Node, Webpack, or trading architecture. The error is deterministic and isolated to duplicate Browserslist configuration.
-
-REFERENCE RESEARCH
-------------------
-Material UI's official installation documentation confirms React 18 is supported and that MUI Material is installed with Emotion peer dependencies. The published @mui/utils package exposes the relevant utility modules; therefore repeatedly patching individual missing exports is not an appropriate fix. MUI also documents legacy bundle aliases as a deliberate bundler option, not as a reason to rewrite package files during deployment.
-
-References checked 2026-08-31:
-- MUI installation: https://mui.com/material-ui/getting-started/installation/
-- MUI troubleshooting: https://mui.com/material-ui/migration/troubleshooting/
-- Published @mui/utils 5.17.1: https://www.npmjs.com/package/@mui/utils/v/5.17.1
-- Published @mui/utils exports evidence: https://app.unpkg.com/@mui/utils@5.16.6/files/index.d.ts
-- MUI bundle guidance: https://v5.mui.com/material-ui/guides/minimizing-bundle-size/
-
-CURRENT DEPLOYMENT CONTRACT
----------------------------
-- Node: 20.x
-- Bun: 1.2.15
-- React: 18.3.1
-- React DOM: 18.3.1
-- @mui/material: exactly 5.17.1
-- @mui/icons-material: exactly 5.17.1
-- react-scripts: 5.0.1
-- Browserslist: package.json only; no .browserslistrc
-- No MUI node_modules patching
-- No obsolete verify-cloudflare-deps prebuild step
-- No patch-mui-webpack-compat prebuild step
-- Do not run npm install after Bun install
+Browserslist duplicate configuration was fixed in commit e72641ad1e9863d30b52f22c137989e9d50507cb by removing fronted/.browserslistrc, leaving package.json as the sole Browserslist configuration.
 
 STRICT PREVENTION RULES
 -----------------------
 - Never patch files under node_modules/@mui.
-- Never add another one-off export patch for chainPropTypes, elementAcceptingRef, refType, HTMLElementType, or another MUI utility.
-- Never change MUI patch versions blindly in response to the next error.
-- Never force internal MUI packages to arbitrary exact versions.
+- Never add one-off export patches for chainPropTypes, elementAcceptingRef, refType, HTMLElementType, or another MUI utility.
+- Never change one MUI package independently while leaving its transitive MUI graph floating.
+- Never use MUI 5.15.7+ for this frozen CRA 5/Webpack baseline unless the frontend is deliberately migrated away from CRA.
 - Never run a second package manager after Bun install.
 - Never run npm audit fix --force during deployment troubleshooting.
 - Never change trading architecture to solve a frontend dependency error.
 - Keep Node 20 for CRA 5 unless the project deliberately migrates away from CRA.
-- Keep exactly one Browserslist configuration source in fronted; currently package.json.
 
 ARCHITECTURE PROTECTION
 -----------------------
@@ -120,7 +81,7 @@ Cloudflare frontend troubleshooting must not alter the trading architecture, IND
 VALIDATION ORDER
 ----------------
 1. bun install succeeds.
-2. MUI public packages resolve to 5.17.1.
+2. Complete MUI 5.14 compatibility graph resolves exactly.
 3. build-contract passes.
 4. No node_modules MUI patch executes.
 5. Browserslist has one configuration source.
