@@ -20,19 +20,17 @@ if (nodeMajor !== 20) {
   );
 }
 
-// CRA 5 + React 18 uses one frozen MUI graph. npm overrides are mandatory because
-// MUI packages declare caret ranges for their internal dependencies; without a
-// root override, a newer nested @mui/utils can change utility exports and break
-// CRA/Webpack during static analysis.
+// CRA 5 + React 18 uses one frozen MUI graph. Keep all MUI runtime packages
+// on the same 5.14.x line so utility exports remain compatible with Webpack.
 const expectedMui = {
   '@mui/material': '5.14.0',
   '@mui/icons-material': '5.14.0',
   '@mui/system': '5.14.0',
-  '@mui/utils': '5.13.7',
-  '@mui/private-theming': '5.13.7',
-  '@mui/styled-engine': '5.13.2',
+  '@mui/utils': '5.14.0',
+  '@mui/private-theming': '5.14.0',
+  '@mui/styled-engine': '5.14.0',
   '@mui/core-downloads-tracker': '5.14.0',
-  '@mui/types': '7.2.4',
+  '@mui/types': '7.2.0',
   '@mui/base': '5.0.0-beta.7',
 };
 
