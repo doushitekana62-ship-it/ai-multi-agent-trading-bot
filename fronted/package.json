@@ -23,6 +23,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
+    "prebuild": "node scripts/verify-build-contract.js",
     "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
     "build:cloudflare": "bun run build",
     "deploy": "wrangler deploy",
