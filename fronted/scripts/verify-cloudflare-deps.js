@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const REQUIRED_MUI_VERSION = '5.16.14';
+const REQUIRED_MUI_VERSION = '5.16.6';
 const MUI_PACKAGES = [
   '@mui/material',
   '@mui/icons-material',
