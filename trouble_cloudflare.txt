@@ -1,0 +1,103 @@
+CLOUDFLARE DEPLOYMENT TROUBLE RECORD
+====================================
+
+Purpose
+-------
+This file records a recurring Cloudflare deployment regression. The same class of problem has happened twice. Do not repeat the same troubleshooting cycle by changing working architecture or dependencies without evidence.
+
+Known-good Cloudflare baseline
+------------------------------
+- Cloudflare Workers Builds root directory: fronted
+- Build command: npm install --legacy-peer-deps && npm run build
+- Deploy command: uvx --from workers-py pywrangler deploy
+- Worker entrypoint: fronted/worker_entry_api.py
+- compatibility_flags: python_workers
+- assets directory: ./build
+- Durable Object binding: PAPER_STATE -> PaperTradingState
+- FastAPI Cloud is the external CPython AI execution layer via HTTPS.
+- Cloudflare Worker is the dashboard/control plane, market-data layer and Durable Object scheduler.
+- GitHub Actions is validation/CI only; it must not become a second production deployment path.
+
+Incident pattern
+----------------
+1. A working Cloudflare configuration existed.
+2. Functional changes were mixed with deployment/dependency troubleshooting.
+3. MUI dependencies were changed repeatedly:
+   5.14.20 -> 5.17.1 -> 5.15.14.
+4. An overrides block was added to force MUI package versions.
+5. Cloudflare build then failed with:
+   Attempted import error: 'elementAcceptingRef' is not exported from '@mui/utils'
+6. Cloudflare build also showed Bun installing dependencies before the npm build command, creating two dependency-resolution mechanisms.
+7. This is the second occurrence of the broader regression pattern: changing a known-good deployment foundation while attempting to solve a separate application problem.
+
+Important lesson
+----------------
+DO NOT treat Cloudflare deployment failures as permission to redesign the application architecture.
+
+Before changing dependencies, entrypoints, Wrangler configuration, Worker bindings, build root, or deployment commands:
+- compare with the last known-good Cloudflare baseline;
+- identify the exact failing layer;
+- change only the failing layer;
+- preserve trading logic and user requirements;
+- validate the smallest possible change before proceeding.
+
+Current corrective action
+-------------------------
+- Restored the frontend MUI dependency family to the known-good 5.14.20 set.
+- Removed the MUI override workaround.
+- Kept Market Pulse functional changes instead of reverting them.
+- Market Pulse remains sourced from real public INDODAX trades.
+- Market Pulse uses one-minute segments across a rolling 30-minute window.
+- A segment must express any actual intra-minute price movement; it must not rely only on browser polling samples.
+
+Market Pulse requirement that must not be lost
+----------------------------------------------
+The original requirement is not merely open-vs-close sampling from the browser.
+If price changes at any point during a one-minute segment, that segment must be represented as movement.
+No trade data for a minute is FLAT/GRAY.
+The same market data used to display Market Pulse must remain suitable as an input to the trading analysis/AI pipeline.
+
+Architecture protection rules
+-----------------------------
+- Do not reintroduce an AI_ENGINE Cloudflare service binding.
+- Do not move the CPython multi-agent Orchestrator into the Cloudflare Python Worker merely to simplify deployment.
+- Do not replace real INDODAX market data with synthetic browser samples.
+- Do not remove Durable Object manual ON/OFF paper-trading control.
+- STOP must remain authoritative and must prevent future paper cycles.
+- Real exchange execution remains locked during this development/reconnect phase.
+- Do not add real exchange credentials during deployment troubleshooting.
+
+Dependency protection rules
+---------------------------
+- Keep the MUI package family aligned and pinned unless a concrete compatibility problem is demonstrated.
+- Do not add package overrides as a first response to a peer-dependency warning.
+- Avoid mixing Bun dependency installation with an npm-based build unless the build is explicitly designed and tested for it.
+- Prefer the known-good lockfile/package-manager path when available.
+
+Validation order
+----------------
+1. Frontend dependency installation.
+2. React build.
+3. Cloudflare Worker bundle/dry-run.
+4. Worker deployment.
+5. Worker health/API routes.
+6. Durable Object PAPER_STATE binding.
+7. FastAPI Cloud /health and /ready.
+8. HTTPS AI engine connection.
+9. Manual START PAPER BOT.
+10. First paper cycle reaches FastAPI AI engine.
+11. Agent/Orchestrator result is persisted.
+12. Manual STOP PAPER BOT prevents further cycles.
+
+Do not skip directly from a frontend build error to trading architecture changes.
+
+History references
+------------------
+Known-good Cloudflare validation/deployment work included:
+- restore stable Cloudflare Worker entrypoint
+- restore known-good Cloudflare validation workflow
+- standardize Cloudflare Python Worker validation
+- refactor CI to keep free Cloudflare control plane without containers
+- separate Cloudflare control plane from FastAPI Cloud CPython AI execution
+
+The repository history is the source of truth for exact commit SHAs and diffs.
