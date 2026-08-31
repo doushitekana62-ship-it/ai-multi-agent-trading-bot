@@ -57,11 +57,15 @@ function scan(dir) {
     if (entry.isDirectory()) scan(full);
     else if (entry.isFile() && full.endsWith('.js') && !full.endsWith('.map')) {
       const source = fs.readFileSync(full, 'utf8');
+
       if (/import\s*\{[^}]*\b(elementAcceptingRef|chainPropTypes)\b[^}]*\}\s*from\s*['"]@mui\/utils['"]/.test(source)) {
         incompatibleImports.push(`${full}: root named import`);
       }
-      if (/import\s+[A-Za-z_$][\w$]*\s+from\s*['"]@mui\/utils\/(elementAcceptingRef|chainPropTypes)['"]/.test(source)) {
-        incompatibleImports.push(`${full}: direct default import`);
+
+      // Any remaining static default import from an @mui/utils subpath can
+      // trigger the same CRA/Webpack export-shape failure as refType.
+      if (/import\s+[A-Za-z_$][\w$]*\s+from\s*['"]@mui\/utils\/[^'"\s]+['"]/.test(source)) {
+        incompatibleImports.push(`${full}: direct default utility import`);
       }
     }
   }
