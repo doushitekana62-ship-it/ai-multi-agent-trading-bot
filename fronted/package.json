@@ -3,21 +3,21 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.0",
-    "axios": "^1.6.0",
-    "chart.js": "^4.4.0",
-    "react-chartjs-2": "^5.2.0",
-    "@mui/material": "^5.14.0",
-    "@mui/icons-material": "^5.14.0",
-    "@emotion/react": "^11.11.0",
-    "@emotion/styled": "^11.11.0",
-    "react-hot-toast": "^2.4.1",
-    "react-hook-form": "^7.47.0",
-    "date-fns": "^2.30.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.30.6",
+    "axios": "1.20.0",
+    "chart.js": "4.5.1",
+    "react-chartjs-2": "5.3.1",
+    "@mui/material": "5.18.0",
+    "@mui/icons-material": "5.18.0",
+    "@emotion/react": "11.14.0",
+    "@emotion/styled": "11.14.1",
+    "react-hot-toast": "2.6.0",
+    "react-hook-form": "7.87.0",
+    "date-fns": "2.30.0",
     "react-scripts": "5.0.1",
-    "ajv": "^8.17.1",
+    "ajv": "8.20.0",
     "ajv-keywords": "5.1.0"
   },
   "scripts": {
@@ -30,10 +30,13 @@
     "eject": "react-scripts eject"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
     "typescript": "4.9.5",
-    "wrangler": "^4.127.0"
+    "wrangler": "4.127.1"
   },
-  "proxy": "http://localhost:8000"
+  "proxy": "http://localhost:8000",
+  "overrides": {
+    "@mui/utils": "5.18.0"
+  }
 }
