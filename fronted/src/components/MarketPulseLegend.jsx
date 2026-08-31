@@ -58,8 +58,18 @@ export default function MarketPulseLegend() {
     for (const sample of normalized) {
       const minute = Math.floor(sample.at / MINUTE_MS) * MINUTE_MS;
       if (minute < currentMinute - 29 * MINUTE_MS || minute > currentMinute) continue;
-      const bucket = buckets.get(minute) || { open: sample.price, close: sample.price, samples: 0 };
+      const bucket = buckets.get(minute) || {
+        open: sample.price,
+        close: sample.price,
+        min: sample.price,
+        max: sample.price,
+        samples: 0,
+        changed: false,
+      };
+      if (sample.price !== bucket.close) bucket.changed = true;
       bucket.close = sample.price;
+      bucket.min = Math.min(bucket.min, sample.price);
+      bucket.max = Math.max(bucket.max, sample.price);
       bucket.samples += 1;
       buckets.set(minute, bucket);
     }
@@ -72,8 +82,23 @@ export default function MarketPulseLegend() {
         segments.push({ minute, status: 'GRAY', move: null, samples: 0 });
         continue;
       }
+
+      // Requirement: any actual price change inside the minute must be expressed.
+      // Direction is taken from the first trade to the last trade. A return to the
+      // opening price is still marked as movement when an intra-minute change occurred.
       const move = bucket.open > 0 ? ((bucket.close - bucket.open) / bucket.open) * 100 : 0;
-      segments.push({ minute, status: move > 0 ? 'GREEN' : move < 0 ? 'RED' : 'GRAY', move, samples: bucket.samples, open: bucket.open, close: bucket.close });
+      const direction = move > 0 ? 'GREEN' : move < 0 ? 'RED' : bucket.changed ? (bucket.close > bucket.open ? 'GREEN' : bucket.close < bucket.open ? 'RED' : 'GREEN') : 'GRAY';
+      segments.push({
+        minute,
+        status: direction,
+        move,
+        samples: bucket.samples,
+        open: bucket.open,
+        close: bucket.close,
+        min: bucket.min,
+        max: bucket.max,
+        changed: bucket.changed,
+      });
     }
 
     const populated = segments.filter((item) => Number.isFinite(item.move));
@@ -93,7 +118,7 @@ export default function MarketPulseLegend() {
       <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={1}>
         <Box>
           <Typography variant="caption" fontWeight={700} sx={{ display: 'block' }}>MARKET PULSE · ROLLING 30 MINUTES</Typography>
-          <Typography variant="caption" color="text.secondary">Satu blok = satu menit. Sumber segment adalah trade publik INDODAX; tanpa trade pada menit tersebut = FLAT.</Typography>
+          <Typography variant="caption" color="text.secondary">Satu blok = satu menit. Sumber segment adalah trade publik INDODAX; perubahan harga sekecil apa pun dalam menit tersebut dinyatakan UP/DOWN. Tanpa trade = FLAT.</Typography>
         </Box>
         <Stack direction="row" spacing={1} alignItems="center">
           <Chip size="small" label={statusLabel(status)} sx={{ bgcolor: statusColor(status), color: 'common.white', fontWeight: 700 }} />
@@ -103,7 +128,7 @@ export default function MarketPulseLegend() {
 
       <Stack direction="row" spacing={0.35} sx={{ mt: 1.5, alignItems: 'stretch' }}>
         {pulse.segments.map((segment) => (
-          <Tooltip key={segment.minute} title={`${new Date(segment.minute).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} · ${statusLabel(segment.status)}${Number.isFinite(segment.move) ? ` ${segment.move >= 0 ? '+' : ''}${segment.move.toFixed(4)}%` : ' · no trade data'}`}>
+          <Tooltip key={segment.minute} title={`${new Date(segment.minute).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} · ${statusLabel(segment.status)}${Number.isFinite(segment.move) ? ` ${segment.move >= 0 ? '+' : ''}${segment.move.toFixed(4)}%` : ' · no trade data'}${segment.changed ? ' · price changed' : ''}`}>
             <Box sx={{ flex: 1, minWidth: 4, height: 30, borderRadius: .7, bgcolor: statusColor(segment.status), opacity: segment.samples ? 1 : .28, border: segment.minute === pulse.current?.minute ? '2px solid' : 'none', borderColor: 'primary.main', cursor: 'help' }} />
           </Tooltip>
         ))}
