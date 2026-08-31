@@ -41,8 +41,8 @@
   },
   "scripts": {
     "start": "react-scripts start",
-    "prebuild": "node scripts/verify-build-contract.js",
-    "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
+    "prebuild": "",
+    "build": "npm install --package-lock=false --legacy-peer-deps --ignore-scripts --no-audit --no-fund && node scripts/verify-build-contract.js && react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
     "build:cloudflare": "npm run build",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev",
