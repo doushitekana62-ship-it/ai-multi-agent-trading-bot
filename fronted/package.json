@@ -23,8 +23,8 @@
   },
   "overrides": {
     "@mui/core-downloads-tracker": "5.17.1",
-    "@mui/private-theming": "5.17.1",
-    "@mui/styled-engine": "5.17.1",
+    "@mui/private-theming": "5.16.14",
+    "@mui/styled-engine": "5.16.14",
     "@mui/system": "5.17.1",
     "@mui/utils": "5.17.1"
   },
