@@ -3,48 +3,67 @@ CLOUDFLARE DEPLOYMENT TROUBLE RECORD
 
 Purpose
 -------
-This file records a recurring Cloudflare deployment regression. The same class of problem has happened twice. Do not repeat the same troubleshooting cycle by changing working architecture or dependencies without evidence.
+This file records a recurring Cloudflare deployment regression. The same class of problem has happened multiple times. Do not repeat the same troubleshooting cycle by changing working architecture or dependencies without evidence.
 
 Observed Cloudflare environment
 -------------------------------
 - Workers Builds detects Bun 1.2.15 and Node.js 24.18.0.
 - Cloudflare automatically runs `bun install` before the configured build command.
-- The configured build command was `npm install --legacy-peer-deps && npm run build`.
-- This created two dependency-resolution phases: Bun first, then npm.
+- The historical configured build command was `npm install --legacy-peer-deps && npm run build`.
+- That created two dependency-resolution phases: Bun first, then npm.
 
 Incident timeline
 -----------------
-1. The frontend initially used MUI 5.18.x with some MUI subpackages resolved independently.
-2. Build failed with:
-   Attempted import error: '@mui/utils/chainPropTypes' does not contain a default export (imported as 'chainPropTypes').
-3. MUI packages were repeatedly changed to 5.17.1, 5.15.14 and 5.14.20 while troubleshooting.
-4. 5.14.20 was an invalid target for `@mui/icons-material` in the Cloudflare/Bun registry resolution used by this build. Cloudflare reported:
-   No version matching "5.14.20" found for specifier "@mui/icons-material".
-5. 5.15.14 installed successfully, but the subsequent npm build failed with:
+1. The frontend previously built successfully under the established Cloudflare architecture.
+2. MUI packages were then changed repeatedly while troubleshooting unrelated deployment/build behavior.
+3. Attempts included 5.18.0, 5.17.1, 5.15.14 and 5.14.20.
+4. 5.18.0 failed before compilation because Cloudflare/Bun reported no matching versions for `@mui/utils@5.18.0` and `@mui/private-theming@5.18.0`.
+5. 5.14.20 also failed dependency resolution for `@mui/icons-material@5.14.20`.
+6. 5.15.14 installed, but the npm production build then failed with:
    Attempted import error: 'elementAcceptingRef' is not exported from '@mui/utils'.
-6. Therefore the real recurring problem is not simply "pick a lower MUI version". The dependency graph was being changed without keeping the package family and package manager behavior coherent.
+7. Earlier 5.17.1/5.18.0 attempts also produced MUI internal export failures.
+
+Root cause pattern
+------------------
+The recurring failure is not solved by selecting an arbitrary older MUI number. The project was directly pinning MUI internal implementation packages (`@mui/utils`, `@mui/system`, `@mui/private-theming`, `@mui/styled-engine`, `@mui/core-downloads-tracker`) and repeatedly forcing their versions. This made the dependency graph fragile and exposed the build to registry/version availability differences in Cloudflare's Bun environment.
 
 Corrective strategy
 -------------------
-- Use the coherent MUI v5.18.0 package family. MUI currently identifies 5.18.0 as the `latest-v5` release line. Do not mix MUI minor versions across material, utils, system, private-theming, styled-engine and icons.
-- Pin all MUI packages in `fronted/package.json` to the same 5.18.0 release family.
-- Declare `packageManager: bun@1.2.15`.
-- Add a `prebuild` hook that runs `bun install --no-save`, so even if Cloudflare invokes `npm run build`, the actual React build is refreshed against the same Bun-resolved dependency graph instead of relying on a second npm resolution.
-- `build:cloudflare` is explicitly `bun run build` for environments where the build command can be controlled.
-- Do not add dependency overrides as a workaround.
+- Do NOT directly pin MUI internal implementation packages unless the application imports them directly.
+- Keep only the public application-level MUI packages directly declared: `@mui/material` and `@mui/icons-material`.
+- Pin those two packages to the same verified MUI v5 release that is available to the Cloudflare/Bun resolver: 5.16.14.
+- Let `@mui/material` resolve its compatible internal dependencies transitively rather than overriding them at the application root.
+- Do not use an `overrides` block to force internal MUI versions.
+- Do not add a `prebuild` dependency reinstallation step; Cloudflare already performs `bun install` before the build and a second resolver only increases risk.
+- Prefer one package manager for dependency resolution and build.
+
+Why 5.18.0 is NOT the baseline
+-------------------------------
+The 2026-08-31 Cloudflare log explicitly reports:
+- No version matching `5.18.0` for `@mui/utils`.
+- No version matching `5.18.0` for `@mui/private-theming`.
+Therefore 5.18.0 must not be forced across the internal MUI family merely because another MUI package has that release.
 
 Why 5.14.20 is NOT the baseline
 --------------------------------
-A previous troubleshooting action incorrectly treated MUI 5.14.20 as a known-good universal baseline. The current Cloudflare log disproved that for `@mui/icons-material`: Bun could not resolve version 5.14.20. Do not restore that version merely because it is numerically older.
+The Cloudflare log explicitly reported no matching `@mui/icons-material@5.14.20`. Do not restore 5.14.20 merely because it was previously considered a baseline.
 
-Cloudflare build configuration requirement
-------------------------------------------
-Preferred Cloudflare Workers Builds configuration:
+Current package policy
+----------------------
+- `@mui/material`: 5.16.14
+- `@mui/icons-material`: 5.16.14
+- No direct root pins for MUI internal packages.
+- No MUI overrides.
+- No npm `--legacy-peer-deps` dependency installation in the repository build script.
+
+Cloudflare build configuration
+------------------------------
+Preferred Workers Builds configuration:
 - Root directory: `fronted`
 - Build command: `bun run build`
 - Deploy command remains the existing Python Workers deployment command.
 
-If the Cloudflare dashboard still has `npm install --legacy-peer-deps && npm run build`, the repository now contains a defensive `prebuild` Bun synchronization step, but the dashboard setting should still be changed to `bun run build` to remove the duplicate package-manager phase entirely.
+If the Cloudflare dashboard still uses `npm install --legacy-peer-deps && npm run build`, change it to `bun run build` so dependency resolution is not performed twice.
 
 Architecture protection rules
 -----------------------------
@@ -61,17 +80,17 @@ Market Pulse requirement that must not be lost
 - Source remains real public INDODAX trades.
 - Rolling window remains 30 minutes.
 - One segment represents one minute.
-- Any actual price change occurring inside a minute must be represented; it must not depend only on the browser's 5-second polling samples.
+- Any actual price change occurring inside a minute must be represented; it must not depend only on browser polling samples.
 - No trade data for a minute is FLAT/GRAY.
 - The market data must remain usable by the trading analysis/AI pipeline.
 
 Dependency protection rules
 ---------------------------
-- Keep the MUI family aligned and pinned.
-- Do not infer that an older version is safer without verifying that every package in the family exists and is mutually compatible.
+- Verify package existence in the actual target resolver before pinning a version.
+- Do not force versions of MUI internal packages that the application does not import directly.
 - Do not mix Bun installation and npm installation in the production build path when avoidable.
-- Prefer one package manager for dependency resolution and build.
 - Do not run `npm audit fix --force` during deployment troubleshooting.
+- Do not change application architecture to solve a frontend dependency-resolution error.
 
 Validation order
 ----------------
