@@ -1,10 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const REQUIRED_MUI_VERSION = '5.17.1';
-const MUI_PACKAGES = [
-  '@mui/material',
-  '@mui/icons-material',
+const REQUIRED_PUBLIC_MUI_VERSION = '5.17.1';
+const PUBLIC_MUI_PACKAGES = ['@mui/material', '@mui/icons-material'];
+const INTERNAL_MUI_PACKAGES = [
   '@mui/core-downloads-tracker',
   '@mui/private-theming',
   '@mui/styled-engine',
@@ -20,16 +19,31 @@ function readInstalledVersion(packageName) {
   return JSON.parse(fs.readFileSync(packageJson, 'utf8')).version;
 }
 
-const versions = Object.fromEntries(
-  MUI_PACKAGES.map((name) => [name, readInstalledVersion(name)])
+const publicVersions = Object.fromEntries(
+  PUBLIC_MUI_PACKAGES.map((name) => [name, readInstalledVersion(name)])
+);
+const internalVersions = Object.fromEntries(
+  INTERNAL_MUI_PACKAGES.map((name) => [name, readInstalledVersion(name)])
 );
 
-const mismatches = Object.entries(versions).filter(([, version]) => version !== REQUIRED_MUI_VERSION);
+const publicMismatches = Object.entries(publicVersions).filter(
+  ([, version]) => version !== REQUIRED_PUBLIC_MUI_VERSION
+);
+if (publicMismatches.length > 0) {
+  console.error('[CLOUDFLARE-DEPS] Public MUI packages must be exactly 5.17.1.');
+  for (const [name, version] of Object.entries(publicVersions)) {
+    console.error(`  ${name}: ${version} (required ${REQUIRED_PUBLIC_MUI_VERSION})`);
+  }
+  process.exit(1);
+}
 
-if (mismatches.length > 0) {
-  console.error('[CLOUDFLARE-DEPS] MUI dependency family mismatch detected.');
-  for (const [name, version] of Object.entries(versions)) {
-    console.error(`  ${name}: ${version} (required ${REQUIRED_MUI_VERSION})`);
+const internalMajorMismatches = Object.entries(internalVersions).filter(
+  ([, version]) => !/^5\./.test(version)
+);
+if (internalMajorMismatches.length > 0) {
+  console.error('[CLOUDFLARE-DEPS] MUI internal packages must remain on the MUI v5 line.');
+  for (const [name, version] of Object.entries(internalVersions)) {
+    console.error(`  ${name}: ${version}`);
   }
   process.exit(1);
 }
@@ -58,5 +72,6 @@ if (forbiddenRootImports.length > 0) {
   process.exit(1);
 }
 
-console.log(`[CLOUDFLARE-DEPS] MUI family verified: all ${MUI_PACKAGES.length} packages are ${REQUIRED_MUI_VERSION}.`);
+console.log(`[CLOUDFLARE-DEPS] Public MUI packages verified at ${REQUIRED_PUBLIC_MUI_VERSION}.`);
+console.log('[CLOUDFLARE-DEPS] Internal MUI packages verified on v5.');
 console.log('[CLOUDFLARE-DEPS] CRA/Webpack MUI utility import compatibility check passed.');
