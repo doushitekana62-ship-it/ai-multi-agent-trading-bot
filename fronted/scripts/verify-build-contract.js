@@ -20,17 +20,17 @@ if (nodeMajor !== 20) {
   );
 }
 
-// CRA 5 + React 18 uses one frozen MUI graph. Keep all MUI runtime packages
-// on the same 5.14.x line so utility exports remain compatible with Webpack.
+// These are real published versions from the MUI 5.14-era dependency graph.
+// @mui/utils 5.14.0 does not exist; 5.14.1 is the first 5.14 utility release.
 const expectedMui = {
   '@mui/material': '5.14.0',
   '@mui/icons-material': '5.14.0',
   '@mui/system': '5.14.0',
-  '@mui/utils': '5.14.0',
-  '@mui/private-theming': '5.14.0',
-  '@mui/styled-engine': '5.14.0',
+  '@mui/utils': '5.14.1',
+  '@mui/private-theming': '5.13.7',
+  '@mui/styled-engine': '5.13.2',
   '@mui/core-downloads-tracker': '5.14.0',
-  '@mui/types': '7.2.0',
+  '@mui/types': '7.2.4',
   '@mui/base': '5.0.0-beta.7',
 };
 
@@ -63,6 +63,6 @@ if (pkg.scripts && /patch-mui|verify-cloudflare-deps/.test(pkg.scripts.prebuild 
 }
 
 console.log('[CLOUDFLARE-BUILD-CONTRACT] Node 20 verified.');
-console.log('[CLOUDFLARE-BUILD-CONTRACT] Frozen MUI 5.14 CRA compatibility graph verified.');
+console.log('[CLOUDFLARE-BUILD-CONTRACT] Published MUI 5.14 CRA compatibility graph verified.');
 console.log('[CLOUDFLARE-BUILD-CONTRACT] npm dependency overrides verified for direct and transitive dependencies.');
 console.log('[CLOUDFLARE-BUILD-CONTRACT] No MUI node_modules patching is configured.');
