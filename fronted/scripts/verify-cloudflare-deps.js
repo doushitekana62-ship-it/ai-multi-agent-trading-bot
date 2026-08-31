@@ -48,7 +48,7 @@ if (internalMajorMismatches.length > 0) {
   process.exit(1);
 }
 
-const forbiddenRootImports = [];
+const incompatibleImports = [];
 const muiRoot = path.join(__dirname, '..', 'node_modules', '@mui');
 
 function scan(dir) {
@@ -58,7 +58,10 @@ function scan(dir) {
     else if (entry.isFile() && full.endsWith('.js') && !full.endsWith('.map')) {
       const source = fs.readFileSync(full, 'utf8');
       if (/import\s*\{[^}]*\b(elementAcceptingRef|chainPropTypes)\b[^}]*\}\s*from\s*['"]@mui\/utils['"]/.test(source)) {
-        forbiddenRootImports.push(full);
+        incompatibleImports.push(`${full}: root named import`);
+      }
+      if (/import\s+[A-Za-z_$][\w$]*\s+from\s*['"]@mui\/utils\/(elementAcceptingRef|chainPropTypes)['"]/.test(source)) {
+        incompatibleImports.push(`${full}: direct default import`);
       }
     }
   }
@@ -66,12 +69,12 @@ function scan(dir) {
 
 scan(muiRoot);
 
-if (forbiddenRootImports.length > 0) {
-  console.error('[CLOUDFLARE-DEPS] Unpatched MUI root utility imports remain after compatibility patch.');
-  for (const file of forbiddenRootImports) console.error(`  ${file}`);
+if (incompatibleImports.length > 0) {
+  console.error('[CLOUDFLARE-DEPS] Incompatible MUI utility imports remain after compatibility patch.');
+  for (const file of incompatibleImports) console.error(`  ${file}`);
   process.exit(1);
 }
 
 console.log(`[CLOUDFLARE-DEPS] Public MUI packages verified at ${REQUIRED_PUBLIC_MUI_VERSION}.`);
 console.log('[CLOUDFLARE-DEPS] Internal MUI packages verified on v5.');
-console.log('[CLOUDFLARE-DEPS] CRA/Webpack MUI utility import compatibility check passed.');
+console.log('[CLOUDFLARE-DEPS] MUI utility import compatibility check passed.');
