@@ -20,10 +20,10 @@ if (nodeMajor !== 20) {
   );
 }
 
-// CRA 5 + React 18 uses one frozen MUI graph. Bun overrides are mandatory because
+// CRA 5 + React 18 uses one frozen MUI graph. npm overrides are mandatory because
 // MUI packages declare caret ranges for their internal dependencies; without a
-// root override, Bun can legally install a newer nested @mui/utils which changes
-// utility exports and breaks CRA/Webpack during static analysis.
+// root override, a newer nested @mui/utils can change utility exports and break
+// CRA/Webpack during static analysis.
 const expectedMui = {
   '@mui/material': '5.14.0',
   '@mui/icons-material': '5.14.0',
@@ -46,7 +46,7 @@ for (const [name, expected] of Object.entries(expectedMui)) {
 const overrides = pkg.overrides || {};
 for (const [name, expected] of Object.entries(expectedMui)) {
   if (overrides[name] !== expected) {
-    throw new Error(`[CLOUDFLARE-BUILD-CONTRACT] Missing exact Bun override for ${name}: expected ${expected}.`);
+    throw new Error(`[CLOUDFLARE-BUILD-CONTRACT] Missing exact dependency override for ${name}: expected ${expected}.`);
   }
 }
 
@@ -66,5 +66,5 @@ if (pkg.scripts && /patch-mui|verify-cloudflare-deps/.test(pkg.scripts.prebuild 
 
 console.log('[CLOUDFLARE-BUILD-CONTRACT] Node 20 verified.');
 console.log('[CLOUDFLARE-BUILD-CONTRACT] Frozen MUI 5.14 CRA compatibility graph verified.');
-console.log('[CLOUDFLARE-BUILD-CONTRACT] Bun MUI overrides verified for direct and transitive dependencies.');
+console.log('[CLOUDFLARE-BUILD-CONTRACT] npm dependency overrides verified for direct and transitive dependencies.');
 console.log('[CLOUDFLARE-BUILD-CONTRACT] No MUI node_modules patching is configured.');
