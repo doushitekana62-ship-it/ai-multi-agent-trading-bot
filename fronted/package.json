@@ -10,13 +10,8 @@
     "axios": "1.20.0",
     "chart.js": "4.5.1",
     "react-chartjs-2": "5.3.1",
-    "@mui/material": "5.16.14",
-    "@mui/icons-material": "5.16.14",
-    "@mui/core-downloads-tracker": "5.16.14",
-    "@mui/private-theming": "5.16.14",
-    "@mui/styled-engine": "5.16.14",
-    "@mui/system": "5.16.14",
-    "@mui/utils": "5.16.14",
+    "@mui/material": "5.16.6",
+    "@mui/icons-material": "5.16.6",
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
     "react-hot-toast": "2.6.0",
@@ -27,11 +22,11 @@
     "ajv-keywords": "5.1.0"
   },
   "overrides": {
-    "@mui/core-downloads-tracker": "5.16.14",
-    "@mui/private-theming": "5.16.14",
-    "@mui/styled-engine": "5.16.14",
-    "@mui/system": "5.16.14",
-    "@mui/utils": "5.16.14"
+    "@mui/core-downloads-tracker": "5.16.6",
+    "@mui/private-theming": "5.16.6",
+    "@mui/styled-engine": "5.16.6",
+    "@mui/system": "5.16.6",
+    "@mui/utils": "5.16.6"
   },
   "scripts": {
     "start": "react-scripts start",
