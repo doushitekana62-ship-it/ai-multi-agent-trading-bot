@@ -10,8 +10,8 @@
     "axios": "1.20.0",
     "chart.js": "4.5.1",
     "react-chartjs-2": "5.3.1",
-    "@mui/material": "5.17.1",
-    "@mui/icons-material": "5.17.1",
+    "@mui/material": "5.14.0",
+    "@mui/icons-material": "5.14.0",
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
     "react-hot-toast": "2.6.0",
@@ -23,7 +23,6 @@
   },
   "scripts": {
     "start": "react-scripts start",
-    "prebuild": "node scripts/patch-mui-webpack-compat.js && node scripts/verify-cloudflare-deps.js",
     "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
     "build:cloudflare": "bun run build",
     "deploy": "wrangler deploy",
@@ -36,6 +35,18 @@
     "@types/react-dom": "18.3.7",
     "typescript": "4.9.5",
     "wrangler": "4.127.1"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   },
   "proxy": "http://localhost:8000"
 }
