@@ -1,0 +1,84 @@
+AI MULTI-AGENT TRADING BOT — TRIAL LOG MEMORY
+Generated: 2026-08-31
+
+PURPOSE
+This file is a durable project-memory record of the previous paper-trading trial and the defects found during post-trial audit. It must be read before changing trading-cycle, Market Pulse, agent-input, persistence, or dashboard-history behavior.
+
+TRIAL OBSERVATIONS
+1. Dashboard/history repeatedly represented the market as FLAT.
+2. The paper bot produced HOLD/flat behavior throughout the previous trial as reported by the project owner.
+3. Agent work was not sufficiently observable: the dashboard did not expose a complete per-cycle timeline, market timestamp, every agent result, candidate BUY/SELL signal, execution-gate result, and the exact market snapshot consumed by the agents.
+4. The dashboard's main decision observation history was stored in browser localStorage, while the dedicated Paper History Library used Supabase. This created two different history sources.
+5. The production deployment log showed that the React build succeeded and the Python package built successfully, but Cloudflare Worker validation failed while importing paper_cycle.py because line 1 contained the invalid statement `from __future__` instead of a complete future import.
+6. The Cloudflare build log confirmed the Worker reached Wrangler deployment and exposed PAPER_STATE Durable Object and ASSETS bindings before validation failed.
+
+IMPORTANT TRADING INTERPRETATION
+HOLD is valid when the market has no executable edge. HOLD must NOT erase or hide an earlier/later directional candidate. If Forecast/Technical/Decision evidence identifies a prospective move after a flat regime, the candidate BUY/SELL signal must remain visible and be passed to the execution/risk gate. Only the gate may prevent execution; the observation must remain recorded.
+
+MARKET DATA CONTRACT
+Authoritative market source for the paper-trading cycle: INDODAX public market data.
+The same market snapshot must be passed to every AI agent in a cycle.
+Required market fields include:
+- current price
+- market timestamp
+- recent public trades
+- 1m/5m/15m/30m movement
+- 1-minute OHLCV derived from public trades
+- 30-minute Pulse status
+- current 1-minute Pulse status
+- 30-minute net movement
+- data quality
+- source identifier
+
+MARKET PULSE CONTRACT
+- A Pulse window covers 30 minutes.
+- Within that 30-minute window, each minute is observable.
+- A price change inside a minute must be represented; the system must not wait for the 30-minute window to close.
+- GREEN = positive movement.
+- RED = negative movement.
+- GRAY = no valid movement/data for that minute or insufficient data for a directional classification.
+- The overall 30-minute Pulse and the current minute Pulse are both persisted.
+
+CYCLE OBSERVABILITY CONTRACT
+Every cycle must persist:
+- cycle_id
+- session_id
+- cycle_number
+- cycle timestamp
+- market timestamp
+- pair
+- market source
+- price/bid/ask
+- 1m/5m/15m/30m movement
+- Pulse status and all 30 minute subsegments
+- candidate action and final action
+- confidence
+- consensus action/score
+- every agent vote
+- every agent detail/result
+- agent data timestamp and age when available
+- market scores
+- confidence components
+- hold/conflict analysis
+- execution gate result and rejection reason
+- library version and alerts
+- market snapshot used by the agents
+- persistence status
+
+SUPABASE RETENTION PLAN
+A server-side archive table named `public.paper_history_trial_archive` was created before history cleanup work. Raw Supabase trial rows have NOT been deleted until a portable GitHub export is available. This is intentional: no historical data is destroyed without a recoverable copy.
+
+SCHEMA CHANGES APPLIED 2026-08-31
+Added observability columns to `public.paper_history` and `public.decisions`:
+market_regime, current_pulse_status, pulse_net_move_30m_pct, data_quality_status, candidate_action, execution_status, risk_rejection_reason, consecutive_hold_count, no_edge_count, agent_run_count.
+
+CODE CHANGES APPLIED 2026-08-31
+`fronted/paper_cycle.py` was rewritten so the cycle consumes the INDODAX public market snapshot, derives 1-minute OHLCV and 1m/5m/15m/30m movement from the same trade stream, persists Pulse subsegments, retains candidate BUY/SELL signals separately from execution, and serializes detailed agent results safely.
+
+DO NOT REPEAT
+- Do not classify the entire market as FLAT solely because a 30-minute regime is flat.
+- Do not use browser localStorage as the authoritative trading history.
+- Do not replace a candidate BUY/SELL with an unexplained HOLD without recording the execution-gate reason.
+- Do not give different agents different market sources or timestamps in one cycle.
+- Do not delete Supabase trial history before a recoverable archive/export exists.
+- Do not declare Cloudflare deployment successful until Worker validation and a production smoke test pass.
