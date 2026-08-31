@@ -28,6 +28,17 @@
     "ajv": "8.20.0",
     "ajv-keywords": "5.1.0"
   },
+  "overrides": {
+    "@mui/material": "5.14.0",
+    "@mui/icons-material": "5.14.0",
+    "@mui/system": "5.14.0",
+    "@mui/utils": "5.13.7",
+    "@mui/private-theming": "5.13.7",
+    "@mui/styled-engine": "5.13.2",
+    "@mui/core-downloads-tracker": "5.14.0",
+    "@mui/types": "7.2.4",
+    "@mui/base": "5.0.0-beta.7"
+  },
   "scripts": {
     "start": "react-scripts start",
     "prebuild": "node scripts/verify-build-contract.js",
