@@ -21,10 +21,17 @@
     "ajv": "8.20.0",
     "ajv-keywords": "5.1.0"
   },
+  "overrides": {
+    "@mui/core-downloads-tracker": "5.16.14",
+    "@mui/private-theming": "5.16.14",
+    "@mui/styled-engine": "5.16.14",
+    "@mui/system": "5.16.14",
+    "@mui/utils": "5.16.14"
+  },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
-    "build:cloudflare": "npm run build",
+    "build:cloudflare": "bun run build",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev",
     "test": "react-scripts test",
