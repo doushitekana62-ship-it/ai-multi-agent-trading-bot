@@ -20,13 +20,20 @@ if (nodeMajor !== 20) {
   );
 }
 
-// MUI 5.17.1 is the frozen public baseline for this CRA 5 / React 18 deployment.
-// Do not patch files under node_modules: MUI's published package exports must be
-// consumed as-is. Patching individual utility exports caused a repeating cycle of
-// chainPropTypes -> elementAcceptingRef -> refType -> HTMLElementType failures.
+// CRA 5 + React 18 must use the pre-module-conversion MUI 5.14 dependency graph.
+// MUI 5.15.7 introduced utility module/export changes; later MUI 5.x versions
+// repeatedly triggered CRA/Webpack default-export failures for chainPropTypes,
+// elementAcceptingRef, refType and HTMLElementType in this deployment.
 const expectedMui = {
-  '@mui/material': '5.17.1',
-  '@mui/icons-material': '5.17.1',
+  '@mui/material': '5.14.0',
+  '@mui/icons-material': '5.14.0',
+  '@mui/system': '5.14.0',
+  '@mui/utils': '5.13.7',
+  '@mui/private-theming': '5.13.7',
+  '@mui/styled-engine': '5.13.2',
+  '@mui/core-downloads-tracker': '5.14.0',
+  '@mui/types': '7.2.4',
+  '@mui/base': '5.0.0-beta.7',
 };
 
 for (const [name, expected] of Object.entries(expectedMui)) {
@@ -51,5 +58,5 @@ if (pkg.scripts && /patch-mui|verify-cloudflare-deps/.test(pkg.scripts.prebuild 
 }
 
 console.log('[CLOUDFLARE-BUILD-CONTRACT] Node 20 verified.');
-console.log('[CLOUDFLARE-BUILD-CONTRACT] MUI public baseline 5.17.1 verified.');
+console.log('[CLOUDFLARE-BUILD-CONTRACT] Frozen MUI 5.14 CRA compatibility graph verified.');
 console.log('[CLOUDFLARE-BUILD-CONTRACT] No MUI node_modules patching is configured.');
