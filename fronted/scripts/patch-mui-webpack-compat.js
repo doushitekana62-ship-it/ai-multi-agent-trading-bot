@@ -3,8 +3,8 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', 'node_modules', '@mui');
 const TARGETS = ['elementAcceptingRef', 'chainPropTypes'];
-const IMPORT_RE = /import\s*\{([^}]*)\}\s*from\s*['"]@mui\/utils['"];?/g;
-const REQUIRE_RE = /const\s*\{([^}]*)\}\s*=\s*require\(['"]@mui\/utils['"]\);?/g;
+const IMPORT_RE = /import\s*\{([\s\S]*?)\}\s*from\s*['"]@mui\/utils['"];?/g;
+const REQUIRE_RE = /const\s*\{([\s\S]*?)\}\s*=\s*require\(['"]@mui\/utils['"]\);?/g;
 
 if (!fs.existsSync(ROOT)) {
   throw new Error('[CLOUDFLARE-MUI-PATCH] @mui is not installed; refusing to continue.');
