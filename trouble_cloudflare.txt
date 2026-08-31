@@ -13,23 +13,16 @@ CURRENT CLOUDFLARE BUILD CONFIGURATION — 2026-08-31
 - Build command: `bun run build`
 - Deploy command: `uvx --from workers-py pywrangler deploy`
 - Version command: `npx wrangler versions upload`
-- Builds for non-production branches: enabled
-- Build watch include: `*`
-- Exclude paths: `node_modules/** .git/`
+- Workers Builds detects Bun 1.2.15 and Node.js 24.18.0.
+- Cloudflare automatically performs `bun install` before the configured build command.
+- Intended path: Cloudflare `bun install` -> `bun run build` -> React production build -> Worker deployment.
+- GitHub Actions/CI is not the immediate deployment authority because the user's GitHub CI quota is exhausted.
 
 IMPORTANT: preserve this Cloudflare configuration. Do NOT restore `npm install --legacy-peer-deps && npm run build`.
 
-OBSERVED CLOUDFLARE ENVIRONMENT
--------------------------------
-- Workers Builds detects Bun 1.2.15.
-- Workers Builds detects Node.js 24.18.0.
-- Cloudflare automatically performs `bun install` before the configured build command.
-- Intended path: Cloudflare `bun install` -> `bun run build` -> React production build -> Worker deployment.
-- GitHub Actions/CI is not the immediate deployment authority because the user's GitHub CI quota is exhausted. Cloudflare Workers Builds is the immediate validation authority.
-
 KNOWN-GOOD HISTORICAL BASELINE
 ------------------------------
-Before the dependency troubleshooting changes, `fronted/package.json` used the following MUI application baseline:
+Before dependency troubleshooting changes, `fronted/package.json` used:
 - React 18.3.1
 - React DOM 18.3.1
 - React Router 6.30.6
@@ -39,93 +32,92 @@ Before the dependency troubleshooting changes, `fronted/package.json` used the f
 - MUI Utils 5.17.1
 - Emotion 11.14.x
 
-Commit `70accf3f9a77942be3d0b172210620ddc6ff7082` shows this exact MUI 5.17.1 application baseline before later dependency-hardening changes. Commit `5eb0dbffa8c4dcb19fd0e002d228fa6115242987` later introduced an additional `@mui/utils` 5.18.0 override, which was subsequently rejected by Cloudflare/Bun dependency resolution.
+Commit `70accf3f9a77942be3d0b172210620ddc6ff7082` shows the historical MUI 5.17.1 application baseline. Later dependency-hardening commits introduced MUI overrides that Cloudflare/Bun could not consistently resolve.
 
 INCIDENTS RECORDED
 ------------------
 1. MUI 5.18.0 dependency-resolution failure.
-   Cloudflare/Bun reported no matching versions for:
-   - `@mui/utils@5.18.0`
-   - `@mui/private-theming@5.18.0`
+   Cloudflare/Bun reported no matching versions for `@mui/utils@5.18.0` and `@mui/private-theming@5.18.0`.
 
 2. MUI 5.14.20 dependency-resolution failure.
-   Cloudflare/Bun reported no matching version for:
-   - `@mui/icons-material@5.14.20`
+   Cloudflare/Bun reported no matching version for `@mui/icons-material@5.14.20`.
 
 3. MUI 5.15.14 production compilation failure.
-   Cloudflare installed the family, then React compilation failed with:
-   `Attempted import error: 'elementAcceptingRef' is not exported from '@mui/utils'.`
+   `elementAcceptingRef` was reported as not exported from `@mui/utils`.
 
 4. MUI 5.16.14 production compilation failure.
-   Bun installed all seven MUI packages at 5.16.14 and the preflight passed.
-   React compilation failed with:
-   `Attempted import error: '@mui/utils/chainPropTypes' does not contain a default export (imported as 'chainPropTypes').`
+   `@mui/utils/chainPropTypes` was reported as not containing a default export.
    This reproduced with the Bun-only build path, so it was not explained only by a second npm installation.
 
 5. MUI 5.16.6 production compilation failure — 2026-08-31 04:24.
-   Cloudflare/Bun installed the complete 5.16.6 family and the preflight passed.
-   React compilation failed with the same `chainPropTypes` default-export error.
+   Dependency preflight passed, then CRA/Webpack reported the same `chainPropTypes` default-export failure.
 
 6. MUI 5.15.6 production compilation failure — 2026-08-31 04:27.
-   Cloudflare/Bun successfully installed:
-   - `@mui/material@5.15.6`
-   - `@mui/icons-material@5.15.6`
-   The preflight passed:
-   `[CLOUDFLARE-DEPS] MUI family verified: all 7 packages are 5.15.6.`
-   React compilation then failed with:
-   `Attempted import error: 'elementAcceptingRef' is not exported from '@mui/utils' (imported as 'elementAcceptingRef').`
-   Therefore changing only the MUI version is NOT sufficient. The failure is at the MUI utility import/export boundary consumed by CRA/Webpack.
+   Dependency preflight passed, then CRA/Webpack reported `elementAcceptingRef` as not exported from `@mui/utils`.
+
+7. MUI 5.17.1 dependency-resolution failure — 2026-08-31 04:35.
+   Cloudflare/Bun reported:
+   `No version matching "5.17.1" found for specifier "@mui/styled-engine" (but package exists)`
+   `@mui/styled-engine@^5.16.14 failed to resolve`
+   Root cause: we incorrectly forced internal MUI packages to the same exact version as the public MUI packages. MUI's dependency graph must be allowed to resolve internal packages according to the public package requirements. Do not force `@mui/styled-engine`, `@mui/system`, `@mui/private-theming`, or `@mui/utils` to an unavailable exact patch version merely because `@mui/material` is 5.17.1.
+
+8. MUI 5.17.1 dependency resolution succeeded but CRA/Webpack compilation still failed — 2026-08-31 04:39.
+   Cloudflare installed successfully and the compatibility preflight reported:
+   `[CLOUDFLARE-MUI-PATCH] Patched 9 installed MUI JS files for CRA/Webpack compatibility.`
+   `[CLOUDFLARE-DEPS] Public MUI packages verified at 5.17.1.`
+   `[CLOUDFLARE-DEPS] Internal MUI packages verified on v5.`
+   `[CLOUDFLARE-DEPS] CRA/Webpack MUI utility import compatibility check passed.`
+   React compilation nevertheless failed with:
+   `Attempted import error: '@mui/utils/chainPropTypes' does not contain a default export (imported as 'chainPropTypes').`
+   This proves the previous patch was incomplete: changing root imports to static default imports from MUI utility subpaths still leaves CRA/Webpack exposed to the problematic export-shape resolution.
 
 ROOT-CAUSE UPDATE
 -----------------
-The evidence now supports two separate failure classes:
+There are two independent failure classes:
 
 A. Resolver availability.
-   Cloudflare/Bun rejected the tested 5.18.0 and 5.14.20 package versions before compilation.
+   Some manually selected MUI patch versions are unavailable to Cloudflare/Bun. Exact internal-package pinning is therefore unsafe.
 
-B. React production-build compatibility.
-   Multiple internally consistent MUI v5 families installed successfully, passed the version preflight, and still failed when CRA/Webpack processed MUI utility exports.
+B. CRA/Webpack module-export compatibility.
+   Multiple valid MUI v5 installations reach production compilation and fail around `elementAcceptingRef` / `chainPropTypes` export resolution. Version rollback alone does not solve this.
 
-Therefore this must no longer be treated as a simple MUI version mismatch. The failing boundary is the way the installed MUI packages import `elementAcceptingRef` and `chainPropTypes` from `@mui/utils` during the CRA/Webpack production build.
+The correct response is NOT another random MUI version change. The build must normalize the two problematic utility imports into CommonJS-compatible runtime resolution before CRA/Webpack analyzes them.
 
-CURRENT CORRECTIVE STRATEGY — 2026-08-31
------------------------------------------
-1. Return to the historically used/resolvable MUI 5.17.1 family:
+CURRENT CORRECTIVE STRATEGY — 2026-08-31 04:40+
+-------------------------------------------------
+1. Keep the public application baseline at:
    - `@mui/material`: 5.17.1
    - `@mui/icons-material`: 5.17.1
-   - `@mui/core-downloads-tracker`: 5.17.1
-   - `@mui/private-theming`: 5.17.1
-   - `@mui/styled-engine`: 5.17.1
-   - `@mui/system`: 5.17.1
-   - `@mui/utils`: 5.17.1
 
-2. Keep the Cloudflare build path single-manager:
+2. Do NOT force internal MUI packages to exact 5.17.1 versions. They must resolve from the official MUI dependency graph on MUI v5.
+
+3. Keep the Cloudflare build path single-manager:
    Cloudflare `bun install` -> `bun run build`.
-   Do not run a second `npm install`.
+   Never run a second `npm install` during deployment.
 
-3. Add a deterministic prebuild compatibility patch.
-   `fronted/scripts/patch-mui-webpack-compat.js` scans installed MUI JavaScript and rewrites root `@mui/utils` imports of `elementAcceptingRef` and `chainPropTypes` to their direct utility subpaths. This targets the exact export boundary implicated by the compiler errors instead of changing application architecture.
+4. `fronted/scripts/patch-mui-webpack-compat.js` now handles BOTH forms of problematic imports:
+   - root named imports from `@mui/utils`
+   - static default imports from `@mui/utils/elementAcceptingRef` and `@mui/utils/chainPropTypes`
+   They are normalized to runtime `require()` resolution with `.default` fallback. This avoids the exact static default-export analysis failure observed at 04:39.
 
-4. The dependency validator runs after the patch and fails closed if:
-   - any of the seven MUI packages is not exactly 5.17.1, or
-   - any forbidden root utility import remains.
+5. `fronted/scripts/verify-cloudflare-deps.js` now fails closed if either problematic static import form remains after patching.
 
-5. No second package manager is allowed during the Cloudflare build.
+6. The trading architecture is frozen while this frontend build problem is resolved.
 
 WHY THIS CHANGE
 ---------------
-The 04:27 build disproved the assumption that another MUI rollback would solve the problem. We therefore return to the historical 5.17.1 application baseline and patch only the build-time compatibility boundary implicated by the actual compiler error.
+The 04:39 build is the decisive evidence: dependency installation succeeded, the patch executed, and the validator passed, but Webpack still rejected a static default import from `@mui/utils/chainPropTypes`. Therefore the previous patch was targeting the wrong module boundary. The new patch removes static default-import semantics from both the root and direct-subpath forms and uses runtime CommonJS interop instead.
 
-This is a targeted frontend build compatibility fix. It does not alter the trading architecture, Market Pulse behavior, paper-trading controls, or AI-agent design.
+This remains a frontend build compatibility fix. It does not alter Market Pulse, paper-trading controls, AI-agent architecture, exchange execution, Durable Objects, or the CPython orchestrator.
 
 DEPENDENCY PROTECTION RULES
 ---------------------------
 - Never change MUI versions based only on numerical age.
-- Confirm Cloudflare/Bun can resolve the exact version before adopting it.
-- Keep all seven MUI packages on one exact version.
-- Do not allow a second package manager to mutate the installed dependency graph during deployment.
-- Prebuild must fail closed on MUI version drift.
-- Prebuild must fail closed if the known incompatible root utility imports remain.
+- Do not force internal MUI package versions to equal `@mui/material`.
+- Confirm Cloudflare/Bun can resolve the public MUI versions before adopting them.
+- Do not allow a second package manager to mutate the installed dependency graph.
+- Prebuild must fail closed on public MUI version drift.
+- Prebuild must fail closed on incompatible MUI utility imports.
 - Do not run `npm audit fix --force` during deployment troubleshooting.
 - Do not change trading architecture to solve a frontend dependency/build error.
 - Do not remove or weaken Market Pulse requirements.
@@ -153,17 +145,18 @@ VALIDATION ORDER
 ----------------
 1. Cloudflare performs `bun install`.
 2. `bun run build` runs the MUI compatibility patch.
-3. MUI version preflight runs and fails closed on drift.
-4. MUI root utility import compatibility check runs and fails closed on unpatched imports.
-5. React production build succeeds.
-6. Worker bundle/deployment succeeds.
-7. Worker health/API routes.
-8. Durable Object PAPER_STATE binding.
-9. FastAPI Cloud `/health` and `/ready`.
-10. HTTPS AI engine connection.
-11. Manual START PAPER BOT.
-12. First paper cycle reaches FastAPI AI engine.
-13. Agent/Orchestrator result is persisted.
-14. Manual STOP PAPER BOT prevents further cycles.
+3. Public MUI version preflight runs and fails closed on drift.
+4. Internal MUI packages are verified as MUI v5 without exact patch-version forcing.
+5. MUI utility import compatibility check runs and fails closed on unpatched imports.
+6. React production build succeeds.
+7. Worker bundle/deployment succeeds.
+8. Worker health/API routes.
+9. Durable Object PAPER_STATE binding.
+10. FastAPI Cloud `/health` and `/ready`.
+11. HTTPS AI engine connection.
+12. Manual START PAPER BOT.
+13. First paper cycle reaches FastAPI AI engine.
+14. Agent/Orchestrator result is persisted.
+15. Manual STOP PAPER BOT prevents further cycles.
 
 Do not skip from a frontend dependency error to trading architecture changes.
