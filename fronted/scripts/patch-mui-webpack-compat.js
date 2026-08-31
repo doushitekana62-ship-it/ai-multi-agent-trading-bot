@@ -4,6 +4,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', 'node_modules', '@mui');
 const TARGETS = ['elementAcceptingRef', 'chainPropTypes'];
 const IMPORT_RE = /import\s*\{([\s\S]*?)\}\s*from\s*['"]@mui\/utils['"];?/g;
+const DIRECT_RE = /import\s+([A-Za-z_$][\w$]*)\s+from\s*['"]@mui\/utils\/(elementAcceptingRef|chainPropTypes)['"];?/g;
 const REQUIRE_RE = /const\s*\{([\s\S]*?)\}\s*=\s*require\(['"]@mui\/utils['"]\);?/g;
 
 if (!fs.existsSync(ROOT)) {
@@ -19,7 +20,7 @@ function walk(dir, files = []) {
   return files;
 }
 
-function patchImport(match, body) {
+function patchRootImport(match, body) {
   const parts = body.split(',').map((x) => x.trim()).filter(Boolean);
   const direct = [];
   const remaining = [];
@@ -38,9 +39,17 @@ function patchImport(match, body) {
   const replacement = [];
   if (remaining.length) replacement.push(`import { ${remaining.join(', ')} } from '@mui/utils';`);
   for (const item of direct) {
-    replacement.push(`import ${item.source} from '@mui/utils/${item.source}';` + (item.local !== item.source ? `\nconst ${item.local} = ${item.source};` : ''));
+    // Use require instead of an ESM default import. CRA/Webpack in this
+    // deployment resolves the MUI utility subpath through an export shape
+    // that can be interpreted as named-only, producing the observed
+    // "does not contain a default export" failure.
+    replacement.push(`const ${item.local} = (() => { const m = require('@mui/utils/${item.source}'); return m && m.default ? m.default : m; })();`);
   }
   return replacement.join('\n');
+}
+
+function patchDirectImport(match, local, source) {
+  return `const ${local} = (() => { const m = require('@mui/utils/${source}'); return m && m.default ? m.default : m; })();`;
 }
 
 function patchRequire(match, body) {
@@ -55,14 +64,19 @@ function patchRequire(match, body) {
   if (!direct.length) return match;
   const lines = [];
   if (remaining.length) lines.push(`const { ${remaining.join(', ')} } = require('@mui/utils');`);
-  for (const name of direct) lines.push(`const ${name} = require('@mui/utils/${name}').default;`);
+  for (const name of direct) {
+    lines.push(`const ${name} = (() => { const m = require('@mui/utils/${name}'); return m && m.default ? m.default : m; })();`);
+  }
   return lines.join('\n');
 }
 
 let changed = 0;
 for (const file of walk(ROOT)) {
   const before = fs.readFileSync(file, 'utf8');
-  const after = before.replace(IMPORT_RE, patchImport).replace(REQUIRE_RE, patchRequire);
+  const after = before
+    .replace(IMPORT_RE, patchRootImport)
+    .replace(DIRECT_RE, patchDirectImport)
+    .replace(REQUIRE_RE, patchRequire);
   if (after !== before) {
     fs.writeFileSync(file, after);
     changed += 1;
