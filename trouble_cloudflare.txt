@@ -5,57 +5,46 @@ Purpose
 -------
 This file records a recurring Cloudflare deployment regression. The same class of problem has happened twice. Do not repeat the same troubleshooting cycle by changing working architecture or dependencies without evidence.
 
-Known-good Cloudflare baseline
-------------------------------
-- Cloudflare Workers Builds root directory: fronted
-- Build command: npm install --legacy-peer-deps && npm run build
-- Deploy command: uvx --from workers-py pywrangler deploy
-- Worker entrypoint: fronted/worker_entry_api.py
-- compatibility_flags: python_workers
-- assets directory: ./build
-- Durable Object binding: PAPER_STATE -> PaperTradingState
-- FastAPI Cloud is the external CPython AI execution layer via HTTPS.
-- Cloudflare Worker is the dashboard/control plane, market-data layer and Durable Object scheduler.
-- GitHub Actions is validation/CI only; it must not become a second production deployment path.
+Observed Cloudflare environment
+-------------------------------
+- Workers Builds detects Bun 1.2.15 and Node.js 24.18.0.
+- Cloudflare automatically runs `bun install` before the configured build command.
+- The configured build command was `npm install --legacy-peer-deps && npm run build`.
+- This created two dependency-resolution phases: Bun first, then npm.
 
-Incident pattern
-----------------
-1. A working Cloudflare configuration existed.
-2. Functional changes were mixed with deployment/dependency troubleshooting.
-3. MUI dependencies were changed repeatedly:
-   5.14.20 -> 5.17.1 -> 5.15.14.
-4. An overrides block was added to force MUI package versions.
-5. Cloudflare build then failed with:
-   Attempted import error: 'elementAcceptingRef' is not exported from '@mui/utils'
-6. Cloudflare build also showed Bun installing dependencies before the npm build command, creating two dependency-resolution mechanisms.
-7. This is the second occurrence of the broader regression pattern: changing a known-good deployment foundation while attempting to solve a separate application problem.
+Incident timeline
+-----------------
+1. The frontend initially used MUI 5.18.x with some MUI subpackages resolved independently.
+2. Build failed with:
+   Attempted import error: '@mui/utils/chainPropTypes' does not contain a default export (imported as 'chainPropTypes').
+3. MUI packages were repeatedly changed to 5.17.1, 5.15.14 and 5.14.20 while troubleshooting.
+4. 5.14.20 was an invalid target for `@mui/icons-material` in the Cloudflare/Bun registry resolution used by this build. Cloudflare reported:
+   No version matching "5.14.20" found for specifier "@mui/icons-material".
+5. 5.15.14 installed successfully, but the subsequent npm build failed with:
+   Attempted import error: 'elementAcceptingRef' is not exported from '@mui/utils'.
+6. Therefore the real recurring problem is not simply "pick a lower MUI version". The dependency graph was being changed without keeping the package family and package manager behavior coherent.
 
-Important lesson
-----------------
-DO NOT treat Cloudflare deployment failures as permission to redesign the application architecture.
+Corrective strategy
+-------------------
+- Use the coherent MUI v5.18.0 package family. MUI currently identifies 5.18.0 as the `latest-v5` release line. Do not mix MUI minor versions across material, utils, system, private-theming, styled-engine and icons.
+- Pin all MUI packages in `fronted/package.json` to the same 5.18.0 release family.
+- Declare `packageManager: bun@1.2.15`.
+- Add a `prebuild` hook that runs `bun install --no-save`, so even if Cloudflare invokes `npm run build`, the actual React build is refreshed against the same Bun-resolved dependency graph instead of relying on a second npm resolution.
+- `build:cloudflare` is explicitly `bun run build` for environments where the build command can be controlled.
+- Do not add dependency overrides as a workaround.
 
-Before changing dependencies, entrypoints, Wrangler configuration, Worker bindings, build root, or deployment commands:
-- compare with the last known-good Cloudflare baseline;
-- identify the exact failing layer;
-- change only the failing layer;
-- preserve trading logic and user requirements;
-- validate the smallest possible change before proceeding.
+Why 5.14.20 is NOT the baseline
+--------------------------------
+A previous troubleshooting action incorrectly treated MUI 5.14.20 as a known-good universal baseline. The current Cloudflare log disproved that for `@mui/icons-material`: Bun could not resolve version 5.14.20. Do not restore that version merely because it is numerically older.
 
-Current corrective action
--------------------------
-- Restored the frontend MUI dependency family to the known-good 5.14.20 set.
-- Removed the MUI override workaround.
-- Kept Market Pulse functional changes instead of reverting them.
-- Market Pulse remains sourced from real public INDODAX trades.
-- Market Pulse uses one-minute segments across a rolling 30-minute window.
-- A segment must express any actual intra-minute price movement; it must not rely only on browser polling samples.
+Cloudflare build configuration requirement
+------------------------------------------
+Preferred Cloudflare Workers Builds configuration:
+- Root directory: `fronted`
+- Build command: `bun run build`
+- Deploy command remains the existing Python Workers deployment command.
 
-Market Pulse requirement that must not be lost
-----------------------------------------------
-The original requirement is not merely open-vs-close sampling from the browser.
-If price changes at any point during a one-minute segment, that segment must be represented as movement.
-No trade data for a minute is FLAT/GRAY.
-The same market data used to display Market Pulse must remain suitable as an input to the trading analysis/AI pipeline.
+If the Cloudflare dashboard still has `npm install --legacy-peer-deps && npm run build`, the repository now contains a defensive `prebuild` Bun synchronization step, but the dashboard setting should still be changed to `bun run build` to remove the duplicate package-manager phase entirely.
 
 Architecture protection rules
 -----------------------------
@@ -67,17 +56,27 @@ Architecture protection rules
 - Real exchange execution remains locked during this development/reconnect phase.
 - Do not add real exchange credentials during deployment troubleshooting.
 
+Market Pulse requirement that must not be lost
+----------------------------------------------
+- Source remains real public INDODAX trades.
+- Rolling window remains 30 minutes.
+- One segment represents one minute.
+- Any actual price change occurring inside a minute must be represented; it must not depend only on the browser's 5-second polling samples.
+- No trade data for a minute is FLAT/GRAY.
+- The market data must remain usable by the trading analysis/AI pipeline.
+
 Dependency protection rules
 ---------------------------
-- Keep the MUI package family aligned and pinned unless a concrete compatibility problem is demonstrated.
-- Do not add package overrides as a first response to a peer-dependency warning.
-- Avoid mixing Bun dependency installation with an npm-based build unless the build is explicitly designed and tested for it.
-- Prefer the known-good lockfile/package-manager path when available.
+- Keep the MUI family aligned and pinned.
+- Do not infer that an older version is safer without verifying that every package in the family exists and is mutually compatible.
+- Do not mix Bun installation and npm installation in the production build path when avoidable.
+- Prefer one package manager for dependency resolution and build.
+- Do not run `npm audit fix --force` during deployment troubleshooting.
 
 Validation order
 ----------------
-1. Frontend dependency installation.
-2. React build.
+1. Bun dependency installation.
+2. React production build.
 3. Cloudflare Worker bundle/dry-run.
 4. Worker deployment.
 5. Worker health/API routes.
@@ -89,15 +88,8 @@ Validation order
 11. Agent/Orchestrator result is persisted.
 12. Manual STOP PAPER BOT prevents further cycles.
 
-Do not skip directly from a frontend build error to trading architecture changes.
+Do not skip from a frontend build error to trading architecture changes.
 
 History references
 ------------------
-Known-good Cloudflare validation/deployment work included:
-- restore stable Cloudflare Worker entrypoint
-- restore known-good Cloudflare validation workflow
-- standardize Cloudflare Python Worker validation
-- refactor CI to keep free Cloudflare control plane without containers
-- separate Cloudflare control plane from FastAPI Cloud CPython AI execution
-
-The repository history is the source of truth for exact commit SHAs and diffs.
+The repository history remains the source of truth for exact previous commits and diffs. This record exists specifically to prevent the same Cloudflare/MUI troubleshooting regression from being repeated.
