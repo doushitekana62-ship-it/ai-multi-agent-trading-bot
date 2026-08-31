@@ -2,7 +2,7 @@
   "name": "ai-trading-dashboard",
   "version": "1.0.0",
   "private": true,
-  "packageManager": "bun@1.2.15",
+  "packageManager": "npm@10.8.2",
   "dependencies": {
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -43,7 +43,7 @@
     "start": "react-scripts start",
     "prebuild": "node scripts/verify-build-contract.js",
     "build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
-    "build:cloudflare": "bun run build",
+    "build:cloudflare": "npm run build",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev",
     "test": "react-scripts test",
