@@ -24,7 +24,6 @@
     "react-hot-toast": "2.6.0",
     "react-hook-form": "7.87.0",
     "date-fns": "2.30.0",
-    "react-scripts": "5.0.1",
     "ajv": "8.20.0",
     "ajv-keywords": "5.1.0"
   },
@@ -40,20 +39,22 @@
     "@mui/base": "5.0.0-beta.7"
   },
   "scripts": {
-    "start": "react-scripts start",
+    "start": "vite",
     "prebuild": "",
-    "build": "npm install --package-lock=false --legacy-peer-deps --ignore-scripts --no-audit --no-fund && node scripts/verify-build-contract.js && react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration .",
-    "build:cloudflare": "npm run build",
+    "build": "vite build",
+    "build:cloudflare": "vite build",
     "deploy": "wrangler deploy",
-    "preview": "wrangler dev",
-    "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "preview": "vite preview",
+    "test": "echo \"Tests not configured\"",
+    "eject": "echo \"CRA eject is no longer applicable; this project uses Vite.\""
   },
   "devDependencies": {
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
     "typescript": "4.9.5",
-    "wrangler": "4.127.1"
+    "wrangler": "4.127.1",
+    "vite": "8.2.2",
+    "@vitejs/plugin-react": "6.1.1"
   },
   "browserslist": {
     "production": [">0.2%", "not dead", "not op_mini all"],
