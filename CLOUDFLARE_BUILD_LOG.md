@@ -5,20 +5,13 @@ Purpose: persistent troubleshooting record for Cloudflare Pages/Workers deployme
 
 ## Current status — 2026-08-31
 
-The latest supplied Cloudflare run has successfully completed dependency installation, the Vite production build, and the initial Wrangler/Pywrangler deployment phase. The supplied log ends while Wrangler is attaching Python modules. No failure is present in the supplied tail after that point.
+The latest supplied Cloudflare run successfully completed dependency installation, the Vite production build, and the Wrangler/Pywrangler deployment startup. Node.js `22.23.2` is active and Wrangler `4.127.1` starts successfully.
 
-Important verified facts from the latest run:
-- Cloudflare build environment: Node.js `22.23.2`, npm `10.8.2`.
-- `npm run build` executes `vite build`.
-- Vite successfully transformed `11,635` modules.
-- Production assets were generated under `build/`.
-- Vite build completed successfully in about `3.34s`.
-- The deployment command is `uvx --from workers-py pywrangler deploy`.
-- Pywrangler successfully created the Workers Python environments and installed requirements from `pylock.toml`.
-- Wrangler `4.127.1` started successfully.
-- The latest log reaches `Attaching additional modules` and is truncated in the supplied message.
+A live dashboard run then exposed two application-level problems after deployment:
+1. `decision_persistence_failed` because the production `public.decisions` schema was missing fields already being sent by the paper-cycle writer.
+2. Market Pulse displayed its container but no green/red/gray blocks because the UI received no trade points and therefore produced an empty segment array.
 
-Do NOT treat the long `Attaching additional modules` output as an error by itself. Wait for the subsequent Wrangler result before changing deployment code.
+The decision persistence schema has now been repaired directly in the production Supabase project and the matching migration has been committed to GitHub. The Market Pulse component has also been updated so it always renders a 30-minute block timeline and falls back to observing the public ticker every 5 seconds when the public trade stream is unavailable.
 
 ## Incident 1 — CRA/MUI build failure
 
@@ -55,7 +48,6 @@ The log showed that the actually resolved published versions included:
 Lesson:
 - Do not force every MUI internal package to `5.14.0`.
 - Keep the published compatibility graph rather than inventing nonexistent package versions.
-- Current direct pins/overrides preserve the known working graph.
 
 ## Incident 3 — Vite parsed JSX as plain JavaScript
 
@@ -67,18 +59,12 @@ Location:
 
 `src/index.js:16:3`
 
-The failing code contained JSX beginning with:
-
-`<React.StrictMode>`
-
-The project had been moved to Vite, but JSX remained in a `.js` entry file that Vite/Rolldown parsed without JSX enabled for that file.
-
 Lesson:
-- Vite must receive JSX through a supported `.jsx`/`.tsx` entry path or an explicitly configured JSX transform.
-- Do not merely change the build command from CRA to Vite while leaving an incompatible source extension/configuration.
+- JSX must use a supported `.jsx`/`.tsx` entry path or an explicit JSX transform.
+- Do not merely change the build command from CRA to Vite while leaving incompatible source extensions.
 
 Result:
-- This was fixed. The subsequent Vite build transformed 11,635 modules and completed successfully.
+- Fixed. The subsequent Vite build transformed 11,635 modules and completed successfully.
 
 ## Incident 4 — Node.js 20 incompatible with current Wrangler
 
@@ -86,34 +72,90 @@ Observed Cloudflare deployment failure:
 
 `Wrangler requires at least Node.js v22.0.0. You are using v20.20.2.`
 
-The build itself had already succeeded, but deployment failed when Pywrangler invoked:
-
-`npx --yes wrangler deploy`
-
-The dependency install also emitted EBADENGINE warnings because the resolved packages required Node `>=22.0.0`, including:
-- `wrangler@4.127.1`
-- `miniflare@5.20260828.0-alpha`
-- `@cloudflare/kv-asset-handler@0.5.0`
+The build had succeeded, but deployment failed when Pywrangler invoked `npx --yes wrangler deploy`.
 
 Lesson:
-- Cloudflare's configured Node version must be at least 22 for the currently pinned Wrangler stack.
-- The earlier build-contract check claiming Node 20 was valid was stale and had to be corrected.
-- Do not downgrade Wrangler merely to preserve Node 20.
+- Current Wrangler stack requires Node `>=22.0.0`.
+- Do not downgrade Wrangler just to preserve Node 20.
 
 Result:
 - Cloudflare was changed to Node.js `22.23.2`.
-- The latest run confirms Node 22 is active and Wrangler starts successfully.
+- Latest deployment logs confirm Node 22 and Wrangler startup succeed.
 
 ## Incident 5 — misleading/stalled-looking deployment log
 
 Observed behavior:
-- Cloudflare UI/log output appeared to stop during the very large `Attaching additional modules` table.
-- The output contained many Python/pyodide/Workers SDK files.
+- Cloudflare UI appeared to stop during the very large `Attaching additional modules` table.
+- Output contained Python/pyodide/Workers SDK files.
 
 Interpretation:
-- This stage is part of Python Worker packaging/deployment, not automatically a failure.
-- The correct diagnostic action is to wait for the final Wrangler output or obtain the lines after the table.
-- Do not modify the architecture solely because the UI appears inactive during this attachment phase.
+- This stage is Python Worker packaging, not automatically an error.
+- Wait for the final Wrangler result before changing deployment architecture.
+
+## Incident 6 — `decision_persistence_failed` / Supabase HTTP 400
+
+Observed dashboard state:
+
+`decision_persistence_failed`
+
+Supabase API logs confirmed repeated:
+
+`POST | 400 | https://opclkckfdlkqzunzmwym.supabase.co/rest/v1/decisions`
+
+The production `public.decisions` schema was inspected directly. It contained the newer observability fields such as `cycle_id`, `session_id`, `pulse_status`, `current_pulse_status`, `pulse_net_move_30m_pct`, `agent_details`, `hold_analysis`, `execution_gate`, `market_snapshot`, `persistence_status`, `market_regime`, `data_quality_status`, and execution diagnostics.
+
+However, two fields expected by the current cycle contract were missing:
+- `raw_action`
+- `pulse_segments`
+
+This was not a generic Supabase connectivity failure: the same project successfully returned `GET /rest/v1/decisions?select=id&limit=1` with HTTP 200 while decision inserts returned HTTP 400.
+
+The repository's Worker read contract also explicitly requested both `raw_action` and `pulse_segments`, confirming schema/code drift.
+
+Fix applied directly to production Supabase:
+
+`ALTER TABLE public.decisions ADD COLUMN IF NOT EXISTS raw_action text;`
+
+`ALTER TABLE public.decisions ADD COLUMN IF NOT EXISTS pulse_segments jsonb NOT NULL DEFAULT '[]'::jsonb;`
+
+The database was rechecked and both columns now exist with the expected types/default.
+
+The same repair is committed to GitHub as:
+
+`supabase/migrations/20260831070000_repair_decision_persistence_and_market_pulse.sql`
+
+Rule:
+- When a cycle reports persistence failure, inspect the actual production `decisions` schema and the cycle writer payload together. Do not assume credentials or RLS are the cause when the API probe is healthy.
+
+## Incident 7 — Market Pulse container rendered but blocks were missing
+
+Observed dashboard:
+- `MARKET PULSE · ROLLING 30 MINUTES` container was visible.
+- The labels `30 menit lalu`, `sekarang`, and price metrics were visible.
+- The expected 30 green/red/gray blocks were absent.
+
+Root cause in the UI path:
+- `MarketPulseLegend` generated blocks only after receiving `market.points`.
+- The deployed `/api/market/overview` response could contain a valid ticker (`last`, high, low, volume) while the public trade stream contained no usable points.
+- With an empty `points` array, the component returned `segments: []`, so the block row had nothing to render.
+
+The public INDODAX API documentation confirms the public trades endpoint provides trade rows with timestamp/date, price, amount, trade id, and type. The live endpoint can nevertheless be unavailable to a browser/Worker at a given moment, so the dashboard must not make the entire visual pulse disappear when trade observations are unavailable.
+
+Fix applied to `fronted/src/components/MarketPulseLegend.jsx`:
+- Always constructs a 30-minute timeline.
+- Uses public trade points when available.
+- Falls back to the public ticker's observed price every 5 seconds when trade points are unavailable.
+- Buckets observations by minute.
+- Any observed price change within a minute is marked as movement.
+- Positive movement is GREEN/UP.
+- Negative movement is RED/DOWN.
+- No observed change is GRAY/FLAT.
+- No observations for a minute remain GRAY with reduced opacity.
+- The current minute is highlighted.
+- The component retains the last valid pulse through transient request failures and never invents direction when the request itself fails.
+
+Important design rule:
+- The pulse is an observation layer for the trading engine, not merely decorative UI. It must remain populated from real public market observations and must not silently turn an unavailable data source into a fabricated market direction.
 
 ## Build/deployment contract that must be preserved
 
@@ -150,7 +192,8 @@ When a new Cloudflare error occurs:
 2. Compare the new log against the incidents above.
 3. Do not repeat a previously disproven fix.
 4. Identify the first actual `error`, not merely warnings or long progress output.
-5. Change the smallest relevant layer: dependency graph, frontend parser/build, Node runtime, or Python Worker deployment.
-6. Record every new failure and the verified fix in this file after resolution.
+5. Inspect both the deployed code contract and the actual production database schema when persistence is involved.
+6. Change the smallest relevant layer: dependency graph, frontend parser/build, Node runtime, data-source adapter, UI observation layer, or database schema.
+7. Record every new failure and the verified fix in this file after resolution.
 
 This file is an operational memory for the repository. It is intentionally separate from `ARCHITECTURE.md`: `ARCHITECTURE.md` defines what the system is supposed to be; this file records what Cloudflare deployment has actually failed on and what has been verified to work.
