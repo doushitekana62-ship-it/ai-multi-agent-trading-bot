@@ -38,9 +38,9 @@ INCIDENTS RECORDED
 6. The patch merely moved the failure to refType and then HTMLElementType. This proved that patching MUI node_modules files is not a valid solution.
 7. MUI 5.17.1 then installed successfully, but the repository verifier still expected 5.14.0.
 
-LATEST CLOUDLFARE ERROR — 2026-08-31 04:55–04:56 UTC
+LATEST CLOUDLFARE ERROR — 2026-08-31 04:55–04:59 UTC
 -----------------------------------------------------
-Cloudflare now reaches the correct environment and successfully installs:
+Cloudflare first reached the correct environment and successfully installed:
 - Node 20.20.2
 - Bun 1.2.15
 - @mui/material 5.17.1
@@ -48,10 +48,32 @@ Cloudflare now reaches the correct environment and successfully installs:
 - 1295 packages
 - Python worker package
 
-It then fails before CRA compilation with:
+The first 04:56 build stopped before CRA compilation with:
 [CLOUDFLARE-BUILD-CONTRACT] @mui/material must be exactly 5.14.0; detected 5.17.1.
 
-This is an INTERNAL REPOSITORY CONTRACT MISMATCH, not a Cloudflare dependency failure. package.json had already been moved to 5.17.1 while verify-build-contract.js still enforced the obsolete 5.14.0 expectation.
+This was an INTERNAL REPOSITORY CONTRACT MISMATCH, not a Cloudflare dependency failure. package.json had already been moved to 5.17.1 while verify-build-contract.js still enforced the obsolete 5.14.0 expectation.
+
+That contract mismatch was corrected in commit b08639ad6eadce74fe4f594a9d72c8057cf242e3.
+
+The subsequent 04:59 build proved the contract fix worked:
+[CLOUDFLARE-BUILD-CONTRACT] Node 20 verified.
+[CLOUDFLARE-BUILD-CONTRACT] MUI public baseline 5.17.1 verified.
+[CLOUDFLARE-BUILD-CONTRACT] No MUI node_modules patching is configured.
+
+The next failure is a separate CRA/Browserslist configuration error:
+Error [BrowserslistError]: /opt/buildhome/repo/fronted contains both .browserslistrc and package.json with browsers
+
+ROOT CAUSE OF CURRENT ERROR
+---------------------------
+fronted/package.json already contains a browserslist configuration with production and development targets. A second fronted/.browserslistrc file contained the same configuration. The installed Browserslist package explicitly rejects having both configuration locations in the same project.
+
+FIX APPLIED — 2026-08-31
+-------------------------
+Deleted fronted/.browserslistrc from main because package.json is already the canonical Browserslist configuration for this CRA project.
+
+Commit: e72641ad1e9863d30b52f22c137989e9d50507cb
+
+Do not solve this by changing MUI, React, Node, Webpack, or trading architecture. The error is deterministic and isolated to duplicate Browserslist configuration.
 
 REFERENCE RESEARCH
 ------------------
@@ -73,18 +95,11 @@ CURRENT DEPLOYMENT CONTRACT
 - @mui/material: exactly 5.17.1
 - @mui/icons-material: exactly 5.17.1
 - react-scripts: 5.0.1
+- Browserslist: package.json only; no .browserslistrc
 - No MUI node_modules patching
 - No obsolete verify-cloudflare-deps prebuild step
 - No patch-mui-webpack-compat prebuild step
 - Do not run npm install after Bun install
-
-FIX APPLIED
------------
-Commit 24bc552880b9ad8c0f2c0a1efec4ff39f5fb17a1 restored fronted/package.json to the MUI 5.17.1 baseline and removed obsolete patch/preflight invocation from the build script.
-
-Commit b08639ad6eadce74fe4f594a9d72c8057cf242e3 corrected fronted/scripts/verify-build-contract.js from the obsolete 5.14.0 expectation to the actual 5.17.1 baseline. It also documents why individual MUI node_modules patches must not return.
-
-The next Cloudflare deployment should therefore get past the exact error shown at 04:56 and proceed to the real CRA compilation stage.
 
 STRICT PREVENTION RULES
 -----------------------
@@ -96,6 +111,7 @@ STRICT PREVENTION RULES
 - Never run npm audit fix --force during deployment troubleshooting.
 - Never change trading architecture to solve a frontend dependency error.
 - Keep Node 20 for CRA 5 unless the project deliberately migrates away from CRA.
+- Keep exactly one Browserslist configuration source in fronted; currently package.json.
 
 ARCHITECTURE PROTECTION
 -----------------------
@@ -107,6 +123,7 @@ VALIDATION ORDER
 2. MUI public packages resolve to 5.17.1.
 3. build-contract passes.
 4. No node_modules MUI patch executes.
-5. react-scripts build succeeds.
-6. Worker/static asset deployment succeeds.
-7. Verify application health/API and existing trading architecture.
+5. Browserslist has one configuration source.
+6. react-scripts build succeeds.
+7. Worker/static asset deployment succeeds.
+8. Verify application health/API and existing trading architecture.
