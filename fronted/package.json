@@ -21,13 +21,6 @@
     "ajv": "8.20.0",
     "ajv-keywords": "5.1.0"
   },
-  "overrides": {
-    "@mui/core-downloads-tracker": "5.17.1",
-    "@mui/private-theming": "5.16.14",
-    "@mui/styled-engine": "5.16.14",
-    "@mui/system": "5.17.1",
-    "@mui/utils": "5.17.1"
-  },
   "scripts": {
     "start": "react-scripts start",
     "prebuild": "node scripts/patch-mui-webpack-compat.js && node scripts/verify-cloudflare-deps.js",
