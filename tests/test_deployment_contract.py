@@ -89,8 +89,11 @@ def test_legacy_worker_entrypoint_is_only_a_compatibility_shim():
     assert "class Default" not in source
 
 
-def test_cloudflare_asgi_compatibility_shim_uses_workers_runtime_api():
+def test_cloudflare_asgi_compatibility_shim_is_runtime_safe():
     shim = (FRONTED / "asgi.py").read_text(encoding="utf-8")
-    assert "from workers import asgi as _asgi" in shim
-    assert "fetch = _asgi.fetch" in shim
-    assert "entrypoint = _asgi.entrypoint" in shim
+    assert "from workers import asgi as _asgi" not in shim
+    assert "workers.asgi" not in shim
+    assert "async def fetch(app, request, env)" in shim
+    assert "/api/market/overview" in shim
+    assert "/api/market/data" in shim
+    assert "/api/market/insights" in shim
