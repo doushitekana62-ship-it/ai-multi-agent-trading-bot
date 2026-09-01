@@ -38,22 +38,22 @@ jobs:
           from pathlib import Path
           p = Path('fronted/paper_cycle.py')
           s = p.read_text()
-          old = '''row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False})
+          old = '''        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False})
           if row["observations"] > 0 and price != row["close"]:
               row["changed"] = True'''
-          new = '''row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False, "last_direction": "GRAY"})
+          new = '''        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False, "last_direction": "GRAY"})
           if row["observations"] > 0 and price != row["close"]:
               row["changed"] = True
               row["last_direction"] = "GREEN" if price > row["close"] else "RED"'''
           if old not in s: raise SystemExit('pulse anchor missing')
           s = s.replace(old, new, 1)
-          old = '''elif row["changed"] and row["high"] > row["open"]:
+          old = '''        elif row["changed"] and row["high"] > row["open"]:
               status = "GREEN"
           elif row["changed"] and row["low"] < row["open"]:
               status = "RED"
           else:
               status = "GRAY"'''
-          new = '''elif row["changed"]:
+          new = '''        elif row["changed"]:
               status = row.get("last_direction", "GREEN")
           else:
               status = "GRAY"'''
@@ -68,8 +68,20 @@ jobs:
           if 'const changedDirection = (samples) =>' not in s:
               if marker not in s: raise SystemExit('pulse UI helper anchor missing')
               s = s.replace(marker, helper, 1)
-          old = """const status = move > 0\n      ? 'GREEN'\n      : move < 0\n        ? 'RED'\n        : bucket.changed\n          ? (bucket.max > bucket.open ? 'GREEN' : 'RED')\n          : 'GRAY';"""
-          new = """const status = move > 0\n      ? 'GREEN'\n      : move < 0\n        ? 'RED'\n        : bucket.changed\n          ? changedDirection(bucket.samples)\n          : 'GRAY';"""
+          old = """const status = move > 0
+      ? 'GREEN'
+      : move < 0
+        ? 'RED'
+        : bucket.changed
+          ? (bucket.max > bucket.open ? 'GREEN' : 'RED')
+          : 'GRAY';"""
+          new = """const status = move > 0
+      ? 'GREEN'
+      : move < 0
+        ? 'RED'
+        : bucket.changed
+          ? changedDirection(bucket.samples)
+          : 'GRAY';"""
           if old in s: s = s.replace(old, new, 1)
           old = "const [market, setMarket] = useState(null);"
           new = "const [market, setMarket] = useState(null);\n  const [serverPulse, setServerPulse] = useState(null);"
@@ -84,7 +96,7 @@ jobs:
           if old not in s: raise SystemExit('market request close anchor missing')
           s = s.replace(old, new, 1)
           old = "const pulse = useMemo(() => buildSegments(samples), [samples]);"
-          new = "const pulse = useMemo(() => {\n    const local = buildSegments(samples);\n    if (!Array.isArray(serverPulse) || serverPulse.length === 0) return local;\n    const segments = serverPulse.slice(-WINDOW_MINUTES).map((item) => ({\n      ...item,\n      minute: normalizeTimestamp(item) || Date.now(),\n      status: ['GREEN', 'RED', 'GRAY'].includes(String(item?.status).toUpperCase()) ? String(item.status).toUpperCase() : 'GRAY',\n      move: Number.isFinite(Number(item?.move_pct)) ? Number(item.move_pct) : null,\n      samples: Number(item?.observations || 0),\n    }));\n    while (segments.length < WINDOW_MINUTES) segments.unshift({ minute: Date.now() - (WINDOW_MINUTES - segments.length) * MINUTE_MS, status: 'GRAY', move: null, samples: 0, changed: false });\n    const populated = segments.filter((item) => Number.isFinite(item.move) && Number(item.open) > 0);\n    const first = populated[0]?.open;\n    const last = populated[populated.length - 1]?.close;\n    const move30 = first > 0 && last > 0 ? ((last - first) / first) * 100 : local.move30;\n    return { segments: segments.slice(-WINDOW_MINUTES), move30, current: segments[segments.length - 1] || null };\n  }, [samples, serverPulse]);"
+          new = "const pulse = useMemo(() => {\n    const local = buildSegments(samples);\n    if (!Array.isArray(serverPulse) || serverPulse.length === 0) return local;\n    const segments = serverPulse.slice(-WINDOW_MINUTES).map((item) => ({ ...item, minute: normalizeTimestamp(item) || Date.now(), status: ['GREEN', 'RED', 'GRAY'].includes(String(item?.status).toUpperCase()) ? String(item.status).toUpperCase() : 'GRAY', move: Number.isFinite(Number(item?.move_pct)) ? Number(item.move_pct) : null, samples: Number(item?.observations || 0) }));\n    while (segments.length < WINDOW_MINUTES) segments.unshift({ minute: Date.now() - (WINDOW_MINUTES - segments.length) * MINUTE_MS, status: 'GRAY', move: null, samples: 0, changed: false });\n    const populated = segments.filter((item) => Number.isFinite(item.move) && Number(item.open) > 0);\n    const first = populated[0]?.open;\n    const last = populated[populated.length - 1]?.close;\n    const move30 = first > 0 && last > 0 ? ((last - first) / first) * 100 : local.move30;\n    return { segments: segments.slice(-WINDOW_MINUTES), move30, current: segments[segments.length - 1] || null };\n  }, [samples, serverPulse]);"
           if old not in s: raise SystemExit('pulse useMemo anchor missing')
           s = s.replace(old, new, 1)
           p.write_text(s)
