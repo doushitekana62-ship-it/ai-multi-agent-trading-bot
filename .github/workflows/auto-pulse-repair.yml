@@ -1,0 +1,93 @@
+name: Auto repair market pulse semantics
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[auto-pulse-repair]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch canonical pulse semantics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('fronted/paper_cycle.py')
+          s = p.read_text()
+          old = '''row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False})
+          if row["observations"] > 0 and price != row["close"]:
+              row["changed"] = True'''
+          new = '''row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False, "last_direction": "GRAY"})
+          if row["observations"] > 0 and price != row["close"]:
+              row["changed"] = True
+              row["last_direction"] = "GREEN" if price > row["close"] else "RED"'''
+          if old not in s: raise SystemExit('paper_cycle anchor not found')
+          s = s.replace(old, new, 1)
+          old = '''elif row["changed"] and row["high"] > row["open"]:
+              status = "GREEN"
+          elif row["changed"] and row["low"] < row["open"]:
+              status = "RED"
+          else:
+              status = "GRAY"'''
+          new = '''elif row["changed"]:
+              status = row.get("last_direction", "GREEN")
+          else:
+              status = "GRAY"'''
+          if old not in s: raise SystemExit('paper_cycle status block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('fronted/src/components/MarketPulseLegend.jsx')
+          s = p.read_text()
+          old = '''const status = move > 0
+      ? 'GREEN'
+      : move < 0
+        ? 'RED'
+        : bucket.changed
+          ? (bucket.max > bucket.open ? 'GREEN' : 'RED')
+          : 'GRAY';'''
+          new = '''const status = move > 0
+      ? 'GREEN'
+      : move < 0
+        ? 'RED'
+        : bucket.changed
+          ? changedDirection(bucket.samples)
+          : 'GRAY';'''
+          if old not in s: raise SystemExit('frontend status block not found')
+          s = s.replace(old, new, 1)
+          marker = '''const statusLabel = (status) => status === 'GREEN' ? 'UP' : status === 'RED' ? 'DOWN' : 'FLAT';'''
+          helper = marker + '''\n\nconst changedDirection = (samples) => {\n  let previous = null;\n  let direction = 'GRAY';\n  for (const sample of samples) {\n    const price = Number(sample?.price || 0);\n    if (!(price > 0)) continue;\n    if (previous !== null && price !== previous) direction = price > previous ? 'GREEN' : 'RED';\n    previous = price;\n  }\n  return direction;\n};'''
+          if 'const changedDirection = (samples) =>' not in s:
+              if marker not in s: raise SystemExit('frontend helper anchor not found')
+              s = s.replace(marker, helper, 1)
+          p.write_text(s)
+
+          p = Path('fronted/src/pages/Dashboard.jsx')
+          s = p.read_text()
+          old = 'const move = Number(market?.recent_move);'
+          new = 'const move = Number(decision?.pulse_net_move_30m_pct ?? market?.recent_move);'
+          if old not in s: raise SystemExit('dashboard move anchor not found')
+          s = s.replace(old, new, 1)
+          old = "const pulseStatus = !Number.isFinite(move) ? 'UNAVAILABLE' : Math.abs(move) < 0.05 ? 'FLAT' : move > 0 ? 'UP' : 'DOWN';"
+          new = "const pulseStatus = String(decision?.current_pulse_status || decision?.pulse_status || '').toUpperCase() || (!Number.isFinite(move) ? 'UNAVAILABLE' : Math.abs(move) < 0.05 ? 'FLAT' : move > 0 ? 'UP' : 'DOWN');"
+          if old not in s: raise SystemExit('dashboard pulse status anchor not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+      - name: Verify changes
+        run: |
+          python -m compileall -q fronted/paper_cycle.py
+          grep -q 'last_direction' fronted/paper_cycle.py
+          grep -q 'changedDirection' fronted/src/components/MarketPulseLegend.jsx
+          grep -q 'pulse_net_move_30m_pct' fronted/src/pages/Dashboard.jsx
+      - name: Commit repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add fronted/paper_cycle.py fronted/src/components/MarketPulseLegend.jsx fronted/src/pages/Dashboard.jsx
+          git diff --cached --quiet || git commit -m 'Fix canonical market pulse direction [auto-pulse-repair]'
+          git push
