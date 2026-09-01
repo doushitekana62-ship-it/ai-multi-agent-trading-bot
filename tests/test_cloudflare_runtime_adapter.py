@@ -12,13 +12,15 @@ def test_cloudflare_adapter_does_not_call_legacy_asgi_fetch_helper():
     assert "async def fetch(app, request, env)" in source
 
 
-def test_market_routes_are_served_without_legacy_asgi_runtime_path():
+def test_market_routes_use_lightweight_ticker_adapter():
     source = (FRONTED / "asgi.py").read_text(encoding="utf-8")
     assert "/api/market/overview" in source
     assert "/api/market/data" in source
     assert "/api/market/insights" in source
-    assert "_cf_worker._market_overview" in source
+    assert "async def _light_market_overview" in source
+    assert "await _light_market_overview(pair)" in source
     assert "_cf_worker._market_insights" in source
+    assert "_cf_worker._market_overview(scope)" not in source
 
 
 def test_indodax_market_fetch_bypasses_cloudflare_edge_cache():
@@ -26,7 +28,6 @@ def test_indodax_market_fetch_bypasses_cloudflare_edge_cache():
     assert '"cache": "no-store"' in source
     assert '"Cache-Control": "no-cache"' in source
     assert "_live=" in source
-    assert "_cf_worker._public_indodax = _fresh_public_indodax" in source
 
 
 def test_market_pulse_is_one_minute_rolling_and_marks_observed_changes():
