@@ -21,6 +21,15 @@ from paper_cycle import run_paper_cycle
 from paper_state import PaperTradingState
 
 
+HISTORY_FIELDS = (
+    "id,cycle_at,trading_date,cycle_id,decision_id,trade_id,cycle_number,pair,symbol,"
+    "action,candidate_action,raw_action,confidence,execution_status,price,"
+    "move_1m_pct,move_30m_pct,realized_pnl,pnl,fees,reasoning,risk_exit_reason,"
+    "stop_loss,take_profit,pulse_status,current_pulse_status,consensus_score,"
+    "market_source,persistence_status,exit_reason,agent_votes,execution_gate,hold_analysis"
+)
+
+
 def _state_response(state: dict) -> dict:
     counts = dict(state.get("decision_counts") or {})
     enabled = bool(state.get("enabled"))
@@ -94,7 +103,7 @@ async def _supabase_health(env):
 
 
 async def _history(env, request):
-    """Read one bounded page of the authoritative Supabase paper ledger."""
+    """Read one small, bounded page of the authoritative Supabase paper ledger."""
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
     key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
     if not url or not key:
@@ -110,7 +119,7 @@ async def _history(env, request):
     except (TypeError, ValueError):
         page, page_size = 1, 10
     offset = (page - 1) * page_size
-    params = [("select", "*"), ("order", "cycle_at.desc"), ("limit", str(page_size + 1)), ("offset", str(offset))]
+    params = [("select", HISTORY_FIELDS), ("order", "cycle_at.desc"), ("limit", str(page_size + 1)), ("offset", str(offset))]
     if date: params.append(("trading_date", f"eq.{date}"))
     if pair: params.append(("pair", f"eq.{pair}"))
     if action != "ALL": params.append(("action", f"eq.{action}"))
@@ -118,8 +127,9 @@ async def _history(env, request):
         response = await fetch(f"{url}/rest/v1/paper_history?{urlencode(params)}", to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}))
         code = int(response.status); text = await response.text()
         if code < 200 or code >= 300:
-            return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": page, "page_size": page_size, "reason": f"http_{code}", "detail": text[:500]}, status=502)
-        rows = json.loads(text) if text else []; rows = rows if isinstance(rows, list) else []
+            return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": page, "page_size": page_size, "reason": f"http_{code}", "detail": text[:300]}, status=502)
+        rows = json.loads(text) if text else []
+        rows = rows if isinstance(rows, list) else []
         has_next = len(rows) > page_size
         return Response.json({"history": rows[:page_size], "count": min(len(rows), page_size), "connected": True, "has_next": has_next, "page": page, "page_size": page_size, "date": date or None, "pair": pair or None, "action": action})
     except Exception as exc:
@@ -189,9 +199,22 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/paper/risk" and request.method == "GET": return Response.json({"risk_settings": await stub.get_risk_settings()})
         if path == "/api/dashboard/history" and request.method == "GET": return await _history(self.env, request)
         if path == "/api/dashboard/status" and request.method == "GET":
-            state = await stub.get_state(); supabase = await _supabase_health(self.env); pair = state.get("paper_pair") or "btc_idr"
-            market = await cf_worker._market_overview({"env": self.env, "query_string": f"pair={pair}".encode("latin-1")}); market_ok = bool(market.get("available")); result = _state_response(state)
-            result.update({"daily_pnl": float(state.get("daily_pnl", 0.0)), "daily_trades": int(state.get("daily_trades", 0)), "total_trades": int(state.get("total_trades", 0)), "active_positions": int(state.get("active_positions", 0)), "database": {"configured": bool(supabase.get("reason") != "credentials_missing"), **supabase}, "market_data": {"source": "INDODAX public market data", "available": market_ok, "fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None}, "system_health": {"database": {"connected": bool(supabase.get("connected"))}, "market_data": {"fresh": market_ok, "stale": not market_ok, "age_seconds": 0 if market_ok else None}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}}})
+            state = await stub.get_state(); query = parse_qs(urlparse(request.url).query); deep = str(query.get("deep", ["0"])[0]).lower() in {"1", "true", "yes"}
+            configured = bool(str(getattr(self.env, "SUPABASE_URL", "") or "").strip() and str(getattr(self.env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip())
+            if deep:
+                supabase = await _supabase_health(self.env)
+            else:
+                supabase = {"connected": None, "reason": "health_probe_deferred"}
+            result = _state_response(state)
+            result.update({
+                "daily_pnl": float(state.get("daily_pnl", 0.0)),
+                "daily_trades": int(state.get("daily_trades", 0)),
+                "total_trades": int(state.get("total_trades", 0)),
+                "active_positions": int(state.get("active_positions", 0)),
+                "database": {"configured": configured, **supabase},
+                "market_data": {"source": "INDODAX public market data", "available": None, "fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"},
+                "system_health": {"database": {"connected": supabase.get("connected")}, "market_data": {"fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}}
+            })
             return Response.json(result)
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state(); return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "max_open_positions": int(state.get("max_open_positions", 3)), "currency": "IDR", "currency_symbol": "Rp"})
