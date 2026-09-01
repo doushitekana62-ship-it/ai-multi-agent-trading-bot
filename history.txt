@@ -1,0 +1,67 @@
+AI TRADING BOT — HISTORY / INCIDENT LOG
+
+Timestamp baseline: 2026-09-01 22:00 (UTC+7)
+Repository: doushitekana62-ship-it/ai-multi-agent-trading-bot
+
+PURPOSE
+This file records the state of the system before the next risk/execution redesign. It is the audit checkpoint requested before implementation work begins.
+
+1. INCIDENT OBSERVED
+- The dashboard previously showed Cloudflare Worker errors such as: "A Worker script configured by the website owner threw an unhandled exception" and resource-limit termination.
+- Paper History could show "No persisted cycles" / Supabase unavailable even though persisted paper-history data existed. The UI failure was therefore not equivalent to an empty database.
+- The login path was also affected by browser-side dashboard polling and Worker pressure.
+
+2. ROOT-CAUSE FINDINGS
+- Durable Object paper scheduling was configured with CYCLE_INTERVAL_MS = 5,000 ms while market observation maintained up to 1,440 market points. Each observation merged, retained and persisted the market history and could call Supabase persistence.
+- The Worker paper-control path imports the paper-cycle engine, making the runtime heavier than necessary for unrelated HTTP requests.
+- The browser contained a dashboard status polling path that could run before authentication. This was changed so CycleUpdateToast only polls while authenticated and uses a 15-second interval.
+- Existing GitHub CI failures recorded in the repository audit were runner/workflow initialization failures: recent jobs failed in roughly 3–9 seconds with steps=[] and BlobNotFound when logs were requested. Those failures did not prove that application compilation/tests had executed.
+
+3. CURRENT CODE BASELINE
+- Supabase remains the canonical source for persisted Paper History.
+- Market data acquisition, Market Pulse construction and Agent data connections are treated as protected interfaces for the redesign.
+- The paper account is backed by a Durable Object.
+- Existing execution uses BUY/SELL/HOLD and a maximum of three open positions with a default 10% allocation.
+- Existing execution does not yet provide a sufficiently realistic, configurable risk engine for stop loss, take profit, trailing protection, fees and slippage.
+- Existing Paper History exposes large raw JSON blocks. This is technically useful but difficult for a human operator to read.
+- The application currently renders PaperHistoryLibrary from App.jsx. The requested UI direction is one human-readable history library, not two competing history tables.
+
+4. PERFORMANCE OBSERVATION
+At the 2026-09-01 screenshot checkpoint:
+- Closed trades: 2
+- Win rate: 0.0%
+- Total PnL: -Rp 6,935
+- Example cycle shown: HOLD, price around Rp 1.382B, 30m +0.219%, 1m -0.059%, consensus -0.230, with an execution gate rejecting a no-directional-edge candidate.
+- The account snapshot showed balance below initial capital and negative total PnL.
+
+This is not enough evidence to conclude that the Agent model itself is intrinsically unprofitable. It does show that the current simulator/risk layer is too simple to evaluate trading quality realistically because exits, fees, slippage and protection behavior are not modeled with sufficient fidelity.
+
+5. REQUIRED REMEDIATION DIRECTION
+The next implementation will:
+- Keep Supabase fetch/persistence contracts unchanged.
+- Keep Market Pulse and its 30-minute segmentation logic unchanged.
+- Keep Agent data connections and Agent inputs unchanged.
+- Add a separate risk/execution layer around the existing Agent decision, rather than replacing the Agent decision engine.
+- Add configurable Stop Loss and Take Profit modes including fixed percentage, ATR-based levels and trailing protection.
+- Add break-even protection and optional partial take-profit behavior where the existing ledger can represent it safely.
+- Make exits deterministic and server-authoritative: a position must be closed when its simulated protective level is triggered even if the AI's next decision is HOLD.
+- Model execution friction: entry/exit fees, spread/slippage and adverse fill on stop execution. Stop trigger is not treated as a guaranteed fill price.
+- Record exit reason explicitly (AI_EXIT, STOP_LOSS, TAKE_PROFIT, TRAILING_STOP, BREAK_EVEN, etc.).
+- Expose risk settings so the operator can tune them without changing the protected market/Agent interfaces.
+- Replace raw JSON-first Paper History presentation with a human-readable trade/cycle summary, while keeping advanced forensic details available behind an expandable section.
+- Make Performance Snapshot more useful by showing closed trades, wins/losses, win rate, realized PnL, fees, average win, average loss, profit factor and current risk state rather than only three headline numbers.
+
+6. RESEARCH BASIS USED FOR THE REDESIGN
+- Fidelity's current ATR reference explains ATR as a volatility measure and notes that ATR-based stops adapt to changing volatility; it gives 1.5x ATR as an example multiplier.
+- Investor.gov's stop-order bulletin, updated August 18, 2026, states that a stop price is a trigger and the resulting market execution price can differ materially because of liquidity/price movement. It also explains trailing stops as dynamically adjusting with favorable price movement.
+- Binance's current order documentation distinguishes STOP_LOSS, STOP_LOSS_LIMIT, TAKE_PROFIT and TAKE_PROFIT_LIMIT and notes that triggered orders can still be affected by execution conditions.
+- QuantConnect's current reality-modeling documentation recommends explicit fee, spread and slippage models for realistic simulation and notes that volatility and execution latency can increase slippage.
+
+7. SAFETY / SCOPE RULE
+No live-trading activation is part of this remediation. The objective is a more realistic paper-trading simulator and clearer forensic history. Real trading remains locked.
+
+8. VERSION CHECKPOINT
+Pre-remediation checkpoint: 2026-09-01 22:00 UTC+7.
+Latest known repository remediation commit immediately before this redesign: 944621d4d1f92b86c19a33de79c09efaeb2930f4 (browser polling/authentication-path correction).
+
+Next entries in this file must describe the actual implemented changes, validation results and any remaining defects. Do not mark deployment successful unless the relevant build/tests/smoke checks actually execute and pass.
