@@ -47,16 +47,16 @@ async def _fresh_public_indodax(path):
         return None
 
 
+# worker_entry_api.py imports this compatibility module before cf_worker.
+# Importing cf_worker here is safe because cf_worker only imports this module
+# for its legacy name; once its definitions finish, replace its market-data
+# adapter before any dashboard or paper-cycle handler can use it.
+import cf_worker as _cf_worker
+_cf_worker._public_indodax = _fresh_public_indodax
+
+
 async def fetch(app, request, env):
     """Handle the small set of legacy API routes without the ASGI package."""
-    # Import lazily so cf_worker can continue importing this module without a
-    # circular import at module initialization.
-    import cf_worker
-
-    # Keep all market consumers on the same uncached INDODAX source after the
-    # first live market request in a Worker isolate.
-    cf_worker._public_indodax = _fresh_public_indodax
-
     parsed = urlparse(request.url)
     path = parsed.path
     query = parse_qs(parsed.query)
@@ -80,7 +80,7 @@ async def fetch(app, request, env):
                 "ADMIN_PASSWORD",
             )
         )
-        supabase = await cf_worker._supabase_probe(scope) if configured else False
+        supabase = await _cf_worker._supabase_probe(scope) if configured else False
         return Response.json(
             {
                 "status": "ready" if configured and supabase else "degraded",
@@ -91,11 +91,11 @@ async def fetch(app, request, env):
         )
 
     if request.method == "GET" and path in {"/api/market/overview", "/api/market/data"}:
-        data = await cf_worker._market_overview(scope)
+        data = await _cf_worker._market_overview(scope)
         return Response.json(data)
 
     if request.method == "GET" and path == "/api/market/insights":
-        data = await cf_worker._market_insights(scope)
+        data = await _cf_worker._market_insights(scope)
         return Response.json(data)
 
     return Response.json({"detail": "API route not found"}, status=404)
