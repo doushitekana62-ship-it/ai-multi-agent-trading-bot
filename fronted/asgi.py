@@ -11,9 +11,39 @@ Cloudflare Assets binding and never require this adapter.
 """
 from __future__ import annotations
 
+import json
+import time
 from urllib.parse import parse_qs, urlparse
 
+from js import fetch as js_fetch
+from pyodide.ffi import to_js
 from workers import Response
+
+
+async def _fresh_public_indodax(path):
+    """Bypass edge cache so every dashboard poll sees the current ticker."""
+    try:
+        separator = "&" if "?" in path else "?"
+        url = f"https://indodax.com/api{path}{separator}_live={int(time.time() * 1000)}"
+        response = await js_fetch(
+            url,
+            to_js(
+                {
+                    "method": "GET",
+                    "cache": "no-store",
+                    "headers": {
+                        "Accept": "application/json",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache",
+                    },
+                }
+            ),
+        )
+        if int(response.status) >= 400:
+            return None
+        return json.loads(await response.text())
+    except Exception:
+        return None
 
 
 async def fetch(app, request, env):
@@ -21,6 +51,11 @@ async def fetch(app, request, env):
     # Import lazily so cf_worker can continue importing this compatibility
     # module without creating a circular import at module initialization.
     import cf_worker
+
+    # Patch the shared market-data adapter once this Worker instance is active.
+    # This keeps dashboard polling, paper cycles and market insights on the same
+    # uncached INDODAX source without modifying the trading/risk pipeline.
+    cf_worker._public_indodax = _fresh_public_indodax
 
     parsed = urlparse(request.url)
     path = parsed.path
