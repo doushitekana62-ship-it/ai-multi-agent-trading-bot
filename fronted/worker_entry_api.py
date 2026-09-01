@@ -94,11 +94,11 @@ async def _supabase_health(env):
 
 
 async def _history(env, request):
-    """Read exactly one bounded page from Supabase paper_history.
+    """Read one bounded page of the authoritative Supabase paper ledger.
 
-    The UI owns page navigation; this endpoint deliberately returns at most
-    eleven rows so it can determine whether a next page exists without loading
-    the entire table into the Worker.
+    Optional filters are server-side so BUY/SELL records older than the latest
+    page remain discoverable. The UI must never reconstruct history from local
+    browser state.
     """
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
     key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
@@ -107,6 +107,9 @@ async def _history(env, request):
     query = parse_qs(urlparse(request.url).query)
     date = str(query.get("date", [""])[0]).strip()
     pair = str(query.get("pair", [""])[0]).strip().upper()
+    action = str(query.get("action", ["ALL"])[0]).strip().upper()
+    if action not in {"ALL", "BUY", "SELL", "HOLD"}:
+        return Response.json({"history": [], "count": 0, "connected": True, "has_next": False, "page": 1, "page_size": 10, "reason": "invalid_action_filter"}, status=400)
     try:
         page = max(1, int(query.get("page", ["1"])[0]))
         page_size = max(1, min(10, int(query.get("page_size", ["10"])[0])))
@@ -116,6 +119,7 @@ async def _history(env, request):
     params = [("select", "*"), ("order", "cycle_at.desc"), ("limit", str(page_size + 1)), ("offset", str(offset))]
     if date: params.append(("trading_date", f"eq.{date}"))
     if pair: params.append(("pair", f"eq.{pair}"))
+    if action != "ALL": params.append(("action", f"eq.{action}"))
     try:
         response = await fetch(f"{url}/rest/v1/paper_history?{urlencode(params)}", to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}))
         code = int(response.status)
@@ -126,7 +130,7 @@ async def _history(env, request):
         rows = rows if isinstance(rows, list) else []
         has_next = len(rows) > page_size
         rows = rows[:page_size]
-        return Response.json({"history": rows, "count": len(rows), "connected": True, "has_next": has_next, "page": page, "page_size": page_size, "date": date or None, "pair": pair or None})
+        return Response.json({"history": rows, "count": len(rows), "connected": True, "has_next": has_next, "page": page, "page_size": page_size, "date": date or None, "pair": pair or None, "action": action})
     except Exception as exc:
         return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": page, "page_size": page_size, "reason": type(exc).__name__}, status=502)
 
