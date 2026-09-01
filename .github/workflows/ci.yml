@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ai-trading-bot-ci-${{ github.ref }}
@@ -27,96 +27,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Apply canonical market pulse repair
-        shell: bash
-        run: |
-          if git log -1 --pretty=%s | grep -Fq '[auto-pulse-repair]'; then
-            echo 'Canonical pulse repair already committed.'
-            exit 0
-          fi
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('fronted/paper_cycle.py')
-          s = p.read_text()
-          old = '''        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False})
-          if row["observations"] > 0 and price != row["close"]:
-              row["changed"] = True'''
-          new = '''        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False, "last_direction": "GRAY"})
-          if row["observations"] > 0 and price != row["close"]:
-              row["changed"] = True
-              row["last_direction"] = "GREEN" if price > row["close"] else "RED"'''
-          if old not in s: raise SystemExit('pulse anchor missing')
-          s = s.replace(old, new, 1)
-          old = '''        elif row["changed"] and row["high"] > row["open"]:
-              status = "GREEN"
-          elif row["changed"] and row["low"] < row["open"]:
-              status = "RED"
-          else:
-              status = "GRAY"'''
-          new = '''        elif row["changed"]:
-              status = row.get("last_direction", "GREEN")
-          else:
-              status = "GRAY"'''
-          if old not in s: raise SystemExit('pulse status block missing')
-          s = s.replace(old, new, 1)
-          p.write_text(s)
-
-          p = Path('fronted/src/components/MarketPulseLegend.jsx')
-          s = p.read_text()
-          marker = "const statusLabel = (status) => status === 'GREEN' ? 'UP' : status === 'RED' ? 'DOWN' : 'FLAT';"
-          helper = marker + "\n\nconst changedDirection = (samples) => {\n  let previous = null;\n  let direction = 'GRAY';\n  for (const sample of samples) {\n    const price = Number(sample?.price || 0);\n    if (!(price > 0)) continue;\n    if (previous !== null && price !== previous) direction = price > previous ? 'GREEN' : 'RED';\n    previous = price;\n  }\n  return direction;\n};"
-          if 'const changedDirection = (samples) =>' not in s:
-              if marker not in s: raise SystemExit('pulse UI helper anchor missing')
-              s = s.replace(marker, helper, 1)
-          old = """const status = move > 0
-      ? 'GREEN'
-      : move < 0
-        ? 'RED'
-        : bucket.changed
-          ? (bucket.max > bucket.open ? 'GREEN' : 'RED')
-          : 'GRAY';"""
-          new = """const status = move > 0
-      ? 'GREEN'
-      : move < 0
-        ? 'RED'
-        : bucket.changed
-          ? changedDirection(bucket.samples)
-          : 'GRAY';"""
-          if old in s: s = s.replace(old, new, 1)
-          old = "const [market, setMarket] = useState(null);"
-          new = "const [market, setMarket] = useState(null);\n  const [serverPulse, setServerPulse] = useState(null);"
-          if old not in s: raise SystemExit('pulse state anchor missing')
-          s = s.replace(old, new, 1)
-          old = "const response = await axios.get('/api/market/overview', {"
-          new = "const [response, decisionResponse] = await Promise.all([axios.get('/api/market/overview', {"
-          if old not in s: raise SystemExit('market request anchor missing')
-          s = s.replace(old, new, 1)
-          old = "        });\n        if (cancelled) return;"
-          new = "        }), axios.get('/api/dashboard/recent-decision', { params: { _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 })]);\n        if (cancelled) return;\n        const decision = decisionResponse.data?.decision || null;\n        setServerPulse(Array.isArray(decision?.pulse_segments) ? decision.pulse_segments : null);"
-          if old not in s: raise SystemExit('market request close anchor missing')
-          s = s.replace(old, new, 1)
-          old = "const pulse = useMemo(() => buildSegments(samples), [samples]);"
-          new = "const pulse = useMemo(() => {\n    const local = buildSegments(samples);\n    if (!Array.isArray(serverPulse) || serverPulse.length === 0) return local;\n    const segments = serverPulse.slice(-WINDOW_MINUTES).map((item) => ({ ...item, minute: normalizeTimestamp(item) || Date.now(), status: ['GREEN', 'RED', 'GRAY'].includes(String(item?.status).toUpperCase()) ? String(item.status).toUpperCase() : 'GRAY', move: Number.isFinite(Number(item?.move_pct)) ? Number(item.move_pct) : null, samples: Number(item?.observations || 0) }));\n    while (segments.length < WINDOW_MINUTES) segments.unshift({ minute: Date.now() - (WINDOW_MINUTES - segments.length) * MINUTE_MS, status: 'GRAY', move: null, samples: 0, changed: false });\n    const populated = segments.filter((item) => Number.isFinite(item.move) && Number(item.open) > 0);\n    const first = populated[0]?.open;\n    const last = populated[populated.length - 1]?.close;\n    const move30 = first > 0 && last > 0 ? ((last - first) / first) * 100 : local.move30;\n    return { segments: segments.slice(-WINDOW_MINUTES), move30, current: segments[segments.length - 1] || null };\n  }, [samples, serverPulse]);"
-          if old not in s: raise SystemExit('pulse useMemo anchor missing')
-          s = s.replace(old, new, 1)
-          p.write_text(s)
-
-          p = Path('fronted/src/pages/Dashboard.jsx')
-          s = p.read_text()
-          old = 'const move = Number(market?.recent_move);'
-          new = 'const move = Number(decision?.pulse_net_move_30m_pct ?? market?.recent_move);'
-          if old in s: s = s.replace(old, new, 1)
-          old = "const pulseStatus = !Number.isFinite(move) ? 'UNAVAILABLE' : Math.abs(move) < 0.05 ? 'FLAT' : move > 0 ? 'UP' : 'DOWN';"
-          new = "const pulseStatus = String(decision?.current_pulse_status || decision?.pulse_status || '').toUpperCase() || (!Number.isFinite(move) ? 'UNAVAILABLE' : Math.abs(move) < 0.05 ? 'FLAT' : move > 0 ? 'UP' : 'DOWN');"
-          if old in s: s = s.replace(old, new, 1)
-          p.write_text(s)
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add fronted/paper_cycle.py fronted/src/components/MarketPulseLegend.jsx fronted/src/pages/Dashboard.jsx
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'Fix canonical market pulse direction [auto-pulse-repair]'
-          git push
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
