@@ -8,6 +8,7 @@ ALTER TABLE public.trades
 UPDATE public.trades t
 SET decision_id = 787,
     exit_decision_id = 830,
+    entry_price = 1395227000,
     exit_price = 1390540000,
     price = 1390540000,
     pnl = -3359.3099904173296,
