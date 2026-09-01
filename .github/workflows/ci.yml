@@ -45,7 +45,7 @@ jobs:
       - name: Compile all Python sources
         run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fronted fastapi_cloud_app.py
       - name: Run canonical architecture and AI liveness tests
-        run: pytest -q tests/test_canonical_architecture_guards.py tests/test_canonical_trading_pipeline.py tests/test_ai_liveness_and_conflict.py
+        run: pytest -q tests/test_canonical_architecture_guards.py tests/test_canonical_trading_pipeline.py tests/test_ai_liveness_and_conflict.py tests/test_v02_ledger_consistency.py
       - name: Run contract tests
         run: pytest -q tests/test_cloudflare_paper_control_contract.py tests/test_paper_scheduler_contract.py tests/test_deployment_contract.py
       - name: Run FastAPI Cloud engine tests
