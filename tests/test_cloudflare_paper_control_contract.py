@@ -15,20 +15,32 @@ def test_paper_state_has_manual_alarm_scheduler():
     assert "deleteAlarm" in source
     assert "scheduler_source" in source
     assert "durable_object_alarm" in source
+    assert "CYCLE_INTERVAL_MS = 60_000" in source
+    assert "risk_settings" in source
 
 
-def test_worker_uses_shared_cycle_runner():
+def test_worker_uses_shared_cycle_runner_and_risk_api():
     source = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
     assert "from paper_cycle import run_paper_cycle" in source
     assert "await run_paper_cycle(" in source
     assert "await stub.enable_paper(pair)" in source
     assert "await stub.stop()" in source
+    assert "/api/dashboard/paper/risk" in source
+    assert "risk_settings" in source
 
 
 def test_browser_entrypoint_does_not_schedule_paper_cycles():
     source = (FRONTED / "src" / "index.jsx").read_text(encoding="utf-8")
     assert "window.setInterval" not in source
     assert "Paper watchdog" not in source
+
+
+def test_human_history_is_single_supabase_ledger_component():
+    app = (FRONTED / "src" / "App.jsx").read_text(encoding="utf-8")
+    history = (FRONTED / "src" / "components" / "PaperHistoryLibrary.jsx").read_text(encoding="utf-8")
+    assert app.count("<PaperHistoryLibrary />") == 1
+    assert "Paper History — Human View" in history
+    assert "JSON.stringify" not in history
 
 
 def test_cloudflare_cron_is_disabled_for_paper_scheduler():
@@ -66,3 +78,13 @@ def test_fastapi_cloud_does_not_start_background_trading():
     assert "asyncio.create_task" not in app
     assert "while True" not in app
     assert "create_order" not in app
+
+
+def test_risk_engine_supports_adaptive_and_fixed_modes():
+    source = (FRONTED / "risk_engine.py").read_text(encoding="utf-8")
+    assert "FIXED_PERCENT" in source
+    assert "ATR" in source
+    assert "RISK_REWARD" in source
+    assert "TRAILING_STOP" in source
+    assert "BREAK_EVEN" in source
+    assert "slippage_bps" in source
