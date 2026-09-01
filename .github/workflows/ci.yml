@@ -52,7 +52,7 @@ jobs:
         run: pytest -q tests/test_fastapi_cloud_engine.py
       - name: Install frontend dependencies
         working-directory: fronted
-        run: npm install --legacy-peer-deps
+        run: npm install --legacy-peer-deps --include=dev
       - name: Build React dashboard
         working-directory: fronted
         run: npm run build
