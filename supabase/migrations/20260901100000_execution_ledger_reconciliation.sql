@@ -25,3 +25,5 @@ CREATE INDEX IF NOT EXISTS idx_trades_open_symbol
 
 CREATE INDEX IF NOT EXISTS idx_decisions_trade_id
   ON public.decisions(trade_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_market_observations_symbol_minute ON public.market_observations(symbol, minute_bucket);

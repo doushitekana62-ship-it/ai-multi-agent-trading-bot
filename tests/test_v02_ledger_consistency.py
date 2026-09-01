@@ -4,9 +4,16 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTED = ROOT / "fronted"
 
 
-def test_paper_scheduler_does_not_poll_every_five_seconds():
+def test_paper_scheduler_keeps_five_second_observation_baseline():
     source = (FRONTED / "paper_state.py").read_text(encoding="utf-8")
-    assert "CYCLE_INTERVAL_MS = 60_000" in source
+    assert "CYCLE_INTERVAL_MS = 5_000" in source
+    assert "DECISION_INTERVAL_MS = 60_000" in source
+
+
+def test_market_observation_is_minute_idempotent():
+    source = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
+    assert "on_conflict=symbol,minute_bucket" in source
+    assert "resolution=merge-duplicates" in source
 
 
 def test_sell_requires_an_open_position_before_approval():
@@ -27,3 +34,4 @@ def test_decision_trade_link_is_schema_supported():
     source = migration.read_text(encoding="utf-8")
     assert "ADD COLUMN IF NOT EXISTS trade_id bigint" in source
     assert "exit_decision_id bigint" in source
+    assert "uq_market_observations_symbol_minute" in source

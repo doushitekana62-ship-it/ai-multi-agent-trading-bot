@@ -53,7 +53,7 @@ async def _supabase(env, table, method="POST", query="", payload=None):
     if not base or not key:
         return {"ok": False, "saved": False, "reason": "supabase_credentials_missing"}
     try:
-        options = {"method": method, "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json", "Prefer": "return=representation"}}
+        options = {"method": method, "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=representation" if "on_conflict=" in query else "return=representation"}}
         if payload is not None:
             options["body"] = json.dumps(_safe(payload), separators=(",", ":"))
         response = await fetch(f"{base}/rest/v1/{table}{query}", to_js(options))
@@ -260,7 +260,7 @@ async def run_market_observation(env, state_api, pair="btc_idr", session_id=None
         "pulse_status": current_pulse,
         "raw_observation": {"price": latest_price, "timestamp": observation_ts, "source": latest.get("source"), "observation_type": latest.get("observation_type"), "pulse_segments": segments[-1:]},
     }
-    saved = await _supabase(env, "market_observations", payload=payload)
+    saved = await _supabase(env, "market_observations", query="?on_conflict=symbol,minute_bucket", payload=payload)
     return {"ok": True, "observation_id": saved.get("id"), "persistence": saved, "price": latest_price, "current_pulse_status": current_pulse}
 
 
