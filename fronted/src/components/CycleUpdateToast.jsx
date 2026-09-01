@@ -1,13 +1,17 @@
 import { useEffect, useRef } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useAuth } from '../context/AuthContext';
 
-const POLL_MS = 5000;
+const POLL_MS = 15000;
 
 export default function CycleUpdateToast() {
+  const { isAuthenticated, loading } = useAuth();
   const lastCycleRef = useRef(null);
 
   useEffect(() => {
+    if (loading || !isAuthenticated) return undefined;
+
     let cancelled = false;
 
     const check = async () => {
@@ -49,7 +53,7 @@ export default function CycleUpdateToast() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [isAuthenticated, loading]);
 
   return null;
 }
