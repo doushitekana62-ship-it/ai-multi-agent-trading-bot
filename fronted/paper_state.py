@@ -7,7 +7,7 @@ from workers import DurableObject
 
 from paper_cycle import run_market_observation, run_paper_cycle
 
-CYCLE_INTERVAL_MS = 5_000
+CYCLE_INTERVAL_MS = 60_000
 DECISION_INTERVAL_MS = 60_000
 MAX_POSITIONS = 3
 DEFAULT_POSITION_ALLOCATION = 0.10

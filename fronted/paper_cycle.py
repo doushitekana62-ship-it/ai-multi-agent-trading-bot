@@ -66,9 +66,55 @@ async def _supabase(env, table, method="POST", query="", payload=None):
         except Exception:
             rows = []
         row = rows[0] if isinstance(rows, list) and rows else rows if isinstance(rows, dict) else {}
-        return {"ok": True, "saved": True, "id": row.get("id") if isinstance(row, dict) else None}
+        return {"ok": True, "saved": True, "id": row.get("id") if isinstance(row, dict) else None, "rows": rows if isinstance(rows, list) else ([rows] if isinstance(rows, dict) else [])}
     except Exception as exc:
         return {"ok": False, "saved": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+async def _persist_execution_trade(env, decision_id, cycle_id, session_id, symbol, action, confidence, price, execution_result):
+    """Reconcile the Durable Object fill with the canonical Supabase trades ledger."""
+    if not isinstance(execution_result, dict) or not execution_result.get("executed"):
+        return {"ok": True, "saved": False, "status": "NOT_EXECUTED", "trade_id": None}
+    trade = execution_result.get("trade")
+    if not isinstance(trade, dict):
+        return {"ok": False, "saved": False, "status": "EXECUTION_LEDGER_ERROR", "reason": "executed_without_trade_payload", "trade_id": None}
+    side = str(action or "").upper()
+    if side == "BUY":
+        payload = {
+            "decision_id": int(decision_id) if decision_id is not None else None,
+            "symbol": symbol,
+            "action": "BUY",
+            "entry_price": _num(trade.get("price") or price),
+            "price": _num(trade.get("price") or price),
+            "quantity": _num(trade.get("quantity")),
+            "pnl": 0.0,
+            "confidence": _num(confidence) * 100.0,
+            "status": "OPEN",
+            "cycle_id": cycle_id,
+            "session_id": session_id,
+        }
+        saved = await _supabase(env, "trades", payload=payload)
+        return {"ok": bool(saved.get("saved")), "saved": bool(saved.get("saved")), "status": "FILLED" if saved.get("saved") else "EXECUTION_LEDGER_ERROR", "trade_id": saved.get("id"), "persistence": saved}
+    if side == "SELL":
+        from urllib.parse import quote
+        encoded_symbol = quote(symbol, safe="")
+        open_rows = await _supabase(env, "trades", method="GET", query=f"?select=*&symbol=eq.{encoded_symbol}&status=eq.OPEN&order=created_at.desc&limit=1")
+        rows = open_rows.get("rows") or []
+        if not rows:
+            return {"ok": False, "saved": False, "status": "EXECUTION_LEDGER_ERROR", "reason": "open_trade_not_found", "trade_id": None, "persistence": open_rows}
+        open_trade = rows[0]
+        trade_id = open_trade.get("id")
+        patch = {
+            "exit_price": _num(trade.get("price") or price),
+            "price": _num(trade.get("price") or price),
+            "pnl": _num(trade.get("pnl")),
+            "status": "CLOSED",
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "exit_decision_id": int(decision_id) if decision_id is not None else None,
+        }
+        updated = await _supabase(env, "trades", method="PATCH", query=f"?id=eq.{trade_id}", payload=patch)
+        return {"ok": bool(updated.get("saved")), "saved": bool(updated.get("saved")), "status": "FILLED" if updated.get("saved") else "EXECUTION_LEDGER_ERROR", "trade_id": trade_id, "persistence": updated}
+    return {"ok": False, "saved": False, "status": "EXECUTION_LEDGER_ERROR", "reason": "invalid_execution_side", "trade_id": None}
 
 
 def _trade_ts(point):
@@ -269,13 +315,28 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         candidate = {"STRONG_BUY": "BUY", "STRONG_SELL": "SELL"}.get(raw_action, raw_action)
         candidate = candidate if candidate in {"BUY", "SELL", "HOLD"} else "HOLD"
         confidence = _num(getattr(result, "final_confidence", 0))
-        execution_pass = candidate in {"BUY", "SELL"} and confidence >= EXECUTION_CONFIDENCE_THRESHOLD
+        positions_before = list(pre.get("positions") or [])
+        symbol_position = next((p for p in positions_before if str(p.get("symbol") or "").upper() == symbol.upper()), None)
+        account_allows_candidate = True
+        account_rejection_reason = None
+        if candidate == "SELL" and symbol_position is None:
+            account_allows_candidate = False
+            account_rejection_reason = "NO_OPEN_POSITION"
+        elif candidate == "BUY":
+            max_positions = int(pre.get("max_open_positions", 3) or 3)
+            if symbol_position is not None:
+                account_allows_candidate = False
+                account_rejection_reason = "POSITION_ALREADY_OPEN"
+            elif len(positions_before) >= max_positions:
+                account_allows_candidate = False
+                account_rejection_reason = "MAX_OPEN_POSITIONS_REACHED"
+        execution_pass = candidate in {"BUY", "SELL"} and confidence >= EXECUTION_CONFIDENCE_THRESHOLD and account_allows_candidate
         action = candidate if execution_pass else "HOLD"
         details = _agent_details(result)
         scores = {k: _num(v) for k, v in dict(getattr(result, "market_scores", {}) or {}).items()}
         components = {k: _num(v) for k, v in dict(getattr(result, "confidence_components", {}) or {}).items()}
         hold_analysis = dict(getattr(result, "hold_analysis", {}) or {})
-        metadata = {"cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "symbol": symbol, "action": action, "candidate_action": candidate, "raw_action": raw_action, "confidence": confidence, "source": getattr(result, "engine_source", "deterministic_market_fallback"), "warning": getattr(result, "engine_warning", None), "cycle_status": getattr(result, "cycle_status", "NO_EDGE" if action == "HOLD" else "ANALYZED"), "votes": dict(getattr(result, "agent_votes", {}) or {}), "market_scores": scores, "confidence_components": components, "execution_gate": {"threshold": EXECUTION_CONFIDENCE_THRESHOLD, "candidate_action": candidate, "passed": execution_pass, "executed_action": action, "reason": "PASS" if execution_pass else "CONFIDENCE_BELOW_EXECUTION_THRESHOLD" if candidate in {"BUY", "SELL"} else "NO_DIRECTIONAL_CANDIDATE"}, "consensus_action": getattr(result, "consensus_action", candidate), "consensus_score": _num(getattr(result, "consensus_score", 0)), "position_size": min(MAX_POSITION_SIZE, _num(getattr(result, "position_size", 0))), "stop_loss": _optional_num(getattr(result, "stop_loss", None)), "take_profit": _optional_num(getattr(result, "take_profit", None)), "execution_reason": getattr(result, "execution_reason", None), "hold_reason": getattr(result, "hold_reason", None), "summary": getattr(result, "summary", ""), "hold_analysis": hold_analysis, "agent_details": details, "market_timestamp": datetime.fromtimestamp(anchor, timezone.utc).isoformat(), "market_source": "INDODAX public market data", "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "pulse_status": pulse_status, "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net, "pulse_segments": segments, "market_history_points": len(history), "library_version": getattr(result, "library_version", "unknown"), "library_alerts": list(getattr(result, "library_alerts", []) or [])[:4], "candle_analysis": dict(getattr(result, "candle_analysis", {}) or {}), "knowledge_topics": list(getattr(result, "knowledge_topics", []) or [])}
+        metadata = {"cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "symbol": symbol, "action": action, "candidate_action": candidate, "raw_action": raw_action, "confidence": confidence, "source": getattr(result, "engine_source", "deterministic_market_fallback"), "warning": getattr(result, "engine_warning", None), "cycle_status": getattr(result, "cycle_status", "NO_EDGE" if action == "HOLD" else "ANALYZED"), "votes": dict(getattr(result, "agent_votes", {}) or {}), "market_scores": scores, "confidence_components": components, "execution_gate": {"threshold": EXECUTION_CONFIDENCE_THRESHOLD, "candidate_action": candidate, "passed": execution_pass, "executed_action": action, "reason": "PASS" if execution_pass else account_rejection_reason if account_rejection_reason else "CONFIDENCE_BELOW_EXECUTION_THRESHOLD" if candidate in {"BUY", "SELL"} else "NO_DIRECTIONAL_CANDIDATE"}, "consensus_action": getattr(result, "consensus_action", candidate), "consensus_score": _num(getattr(result, "consensus_score", 0)), "position_size": min(MAX_POSITION_SIZE, _num(getattr(result, "position_size", 0))), "stop_loss": _optional_num(getattr(result, "stop_loss", None)), "take_profit": _optional_num(getattr(result, "take_profit", None)), "execution_reason": getattr(result, "execution_reason", None), "hold_reason": getattr(result, "hold_reason", None), "summary": getattr(result, "summary", ""), "hold_analysis": hold_analysis, "agent_details": details, "market_timestamp": datetime.fromtimestamp(anchor, timezone.utc).isoformat(), "market_source": "INDODAX public market data", "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "pulse_status": pulse_status, "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net, "pulse_segments": segments, "market_history_points": len(history), "library_version": getattr(result, "library_version", "unknown"), "library_alerts": list(getattr(result, "library_alerts", []) or [])[:4], "candle_analysis": dict(getattr(result, "candle_analysis", {}) or {}), "knowledge_topics": list(getattr(result, "knowledge_topics", []) or [])}
         snapshot = {**market, "points": history, "ohlcv": candles, "pulse_segments": segments, "pulse_status": pulse_status, "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net}
         now_iso = datetime.now(timezone.utc).isoformat()
         common = {"cycle_at": now_iso, "trading_date": now_iso[:10], "pair": symbol, "action": action, "raw_action": raw_action, "confidence": confidence * 100, "price": market_data["current_price"], "balance": _num(pre.get("balance")), "portfolio_value": _num(pre.get("portfolio_value")), "daily_pnl": _num(pre.get("daily_pnl")), "total_pnl": _num(pre.get("total_pnl")), "active_positions": int(pre.get("active_positions", 0)), "positions": list(pre.get("positions") or []), "agent_votes": metadata["votes"], "market_scores": scores, "confidence_components": components, "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"], "position_size": metadata["position_size"], "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"], "reasoning": _reasoning(getattr(result, "execution_reason", None) or getattr(result, "hold_reason", None) or getattr(result, "summary", ""), metadata["library_alerts"]), "engine_source": metadata["source"], "engine_warning": metadata["warning"], "cycle_status": metadata["cycle_status"], "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "bid": _optional_num(market.get("buy")), "ask": _optional_num(market.get("sell")), "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "pulse_status": pulse_status, "pulse_segments": segments, "agent_details": details, "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"], "market_snapshot": snapshot, "persistence_status": "saved", "library_version": metadata["library_version"], "library_alerts": metadata["library_alerts"], "candle_analysis": metadata["candle_analysis"], "knowledge_topics": metadata["knowledge_topics"], "market_regime": metadata["cycle_status"], "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net, "data_quality_status": "OK" if len(candles) >= 10 else "DEGRADED", "candidate_action": candidate, "execution_status": "APPROVED" if execution_pass else "NOT_EXECUTED", "risk_rejection_reason": None if execution_pass else metadata["execution_gate"]["reason"] if candidate in {"BUY", "SELL"} else None, "consecutive_hold_count": 0, "no_edge_count": 1 if metadata["cycle_status"] == "NO_EDGE" else 0, "agent_run_count": len(details)}
@@ -299,6 +360,13 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "reason": "PAPER_FILL" if executed else metadata["execution_gate"]["reason"],
             "trade": trade,
         }
+        trade_persistence = await _persist_execution_trade(env, decision.get("id"), cycle_id, session_id, symbol, action, confidence, market_data["current_price"], execution_result)
+        if executed and not trade_persistence.get("ok"):
+            execution_result["status"] = "EXECUTION_LEDGER_ERROR"
+            execution_result["reason"] = trade_persistence.get("reason") or "trade_persistence_failed"
+            execution_result["persistence"] = trade_persistence
+        else:
+            execution_result["persistence"] = trade_persistence
         post_account = {
             "balance": _num(state.get("balance")),
             "portfolio_value": _num(state.get("portfolio_value")),
@@ -308,7 +376,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             "positions": list(state.get("positions") or []),
             "realized_pnl": _num(last_decision.get("realized_pnl")) if isinstance(last_decision, dict) else 0.0,
             "unrealized_pnl": sum(_num(p.get("unrealized_pnl")) for p in (state.get("positions") or [])),
-            "trade_id": str(trade.get("trade_id") or trade.get("id") or "") if isinstance(trade, dict) else "",
+            "trade_id": trade_persistence.get("trade_id") if isinstance(trade_persistence, dict) else None,
             "execution_result": execution_result,
             "execution_status": execution_result["status"],
         }
