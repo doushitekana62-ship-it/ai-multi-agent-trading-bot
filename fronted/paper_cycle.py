@@ -290,7 +290,34 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
             state = await state_api.finish_cycle("history_persistence_failed")
             return {"ok": False, "reason": "history_persistence_failed", "persistence": history_result, "state": state_response(state) if state_response else state}
         state = await state_api.apply_cycle(action, market_data["current_price"], confidence, cycle_id, metadata)
-        return {"ok": True, "cycle_id": cycle_id, "cycle_number": cycle_number, "decision_id": decision.get("id"), "history_id": history_result.get("id"), "action": action, "candidate_action": candidate, "confidence": confidence, "pulse_status": pulse_status, "current_pulse_status": current_pulse, "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "agent_details": details, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "execution_gate": metadata["execution_gate"], "state": state_response(state) if state_response else state}
+        last_decision = state.get("last_decision") if isinstance(state, dict) else {}
+        executed = bool(last_decision.get("executed")) if isinstance(last_decision, dict) else False
+        trade = last_decision.get("trade") if isinstance(last_decision, dict) else None
+        execution_result = {
+            "status": "FILLED" if executed else "NOT_EXECUTED",
+            "executed": executed,
+            "action": action,
+            "reason": "PAPER_FILL" if executed else metadata["execution_gate"]["reason"],
+            "trade": trade,
+        }
+        post_account = {
+            "balance": _num(state.get("balance")),
+            "portfolio_value": _num(state.get("portfolio_value")),
+            "daily_pnl": _num(state.get("daily_pnl")),
+            "total_pnl": _num(state.get("total_pnl")),
+            "active_positions": int(state.get("active_positions", 0)),
+            "positions": list(state.get("positions") or []),
+            "realized_pnl": _num(last_decision.get("realized_pnl")) if isinstance(last_decision, dict) else 0.0,
+            "unrealized_pnl": sum(_num(p.get("unrealized_pnl")) for p in (state.get("positions") or [])),
+            "trade_id": str(trade.get("trade_id") or trade.get("id") or "") if isinstance(trade, dict) else "",
+            "execution_result": execution_result,
+            "execution_status": execution_result["status"],
+        }
+        if decision.get("id"):
+            await _supabase(env, "decisions", method="PATCH", query=f"?id=eq.{decision.get('id')}", payload=post_account)
+        if history_result.get("id"):
+            await _supabase(env, "paper_history", method="PATCH", query=f"?id=eq.{history_result.get('id')}", payload=post_account)
+        return {"ok": True, "cycle_id": cycle_id, "cycle_number": cycle_number, "decision_id": decision.get("id"), "history_id": history_result.get("id"), "action": action, "candidate_action": candidate, "confidence": confidence, "execution_result": execution_result, "post_account": post_account, "pulse_status": pulse_status, "current_pulse_status": current_pulse, "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "agent_details": details, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "execution_gate": metadata["execution_gate"], "state": state_response(state) if state_response else state}
     except Exception as exc:
         state = await state_api.finish_cycle(f"paper_cycle_error: {type(exc).__name__}: {exc}")
         return {"ok": False, "reason": "paper_cycle_error", "error": f"{type(exc).__name__}: {exc}", "state": state_response(state) if state_response else state}
