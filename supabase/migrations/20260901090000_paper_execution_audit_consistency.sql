@@ -9,7 +9,7 @@ alter table public.paper_history
   add column if not exists fees numeric not null default 0;
 
 alter table public.decisions
-  add column if not exists execution_result jsonb not null default '{}''::jsonb';
+  add column if not exists execution_result jsonb not null default '{}'::jsonb;
 
 create index if not exists paper_history_execution_status_idx
   on public.paper_history(execution_status, cycle_at desc);
