@@ -116,9 +116,10 @@ def _pulse(points, anchor):
         if ts <= 0 or price <= 0 or ts < current - 29 * 60 or ts > anchor:
             continue
         bucket = int(ts // 60) * 60
-        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False})
+        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False, "last_direction": "GRAY"})
         if row["observations"] > 0 and price != row["close"]:
             row["changed"] = True
+            row["last_direction"] = "GREEN" if price > row["close"] else "RED"
         row["high"] = max(row["high"], price)
         row["low"] = min(row["low"], price)
         row["close"] = price
@@ -128,17 +129,15 @@ def _pulse(points, anchor):
     for bucket in range(current - 29 * 60, current + 60, 60):
         row = buckets.get(bucket)
         if not row:
-            segments.append({"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "status": "GRAY", "move_pct": None, "trades": 0, "observations": 0, "changed": False, "open": None, "close": None})
+            segments.append({"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "status": "GRAY", "move_pct": None, "trades": 0, "observations": 0, "changed": False, "open": None, "close": None, "last_direction": "GRAY"})
             continue
         move = ((row["close"] - row["open"]) / row["open"]) * 100.0 if row["open"] > 0 else 0.0
         if move > 0:
             status = "GREEN"
         elif move < 0:
             status = "RED"
-        elif row["changed"] and row["high"] > row["open"]:
-            status = "GREEN"
-        elif row["changed"] and row["low"] < row["open"]:
-            status = "RED"
+        elif row["changed"]:
+            status = row.get("last_direction", "GRAY")
         else:
             status = "GRAY"
         row["move_pct"] = move
