@@ -54,27 +54,25 @@ function normalizeServerPulse(raw) {
 
 export default function MarketPulseLegend() {
   const [market, setMarket] = useState(null);
-  const [decision, setDecision] = useState(null);
   const [points, setPoints] = useState([]);
 
   useEffect(() => {
     let stopped = false;
+    let inFlight = false;
     const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const pair = localStorage.getItem('paperTradingPair') || 'btc_idr';
-        const [marketResult, decisionResult] = await Promise.allSettled([
-          axios.get('/api/market/overview', { params: { pair, _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 }),
-          axios.get('/api/dashboard/recent-decision', { params: { _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 }),
-        ]);
+        const response = await axios.get('/api/market/overview', { params: { pair, _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 });
         if (stopped) return;
-        if (marketResult.status === 'fulfilled') {
-          const data = marketResult.value.data || {};
-          setMarket(data);
-          setPoints(Array.isArray(data.points) ? data.points : Number(data.last) > 0 ? [{ price: data.last, timestamp: Date.now() }] : []);
-        }
-        if (decisionResult.status === 'fulfilled') setDecision(decisionResult.value.data?.decision || null);
+        const data = response.data || {};
+        setMarket(data);
+        setPoints((current) => [...current, ...(Array.isArray(data.points) ? data.points : [])].slice(-360));
       } catch {
         // Preserve the last valid pulse on transient API failures.
+      } finally {
+        inFlight = false;
       }
     };
     load();
@@ -83,7 +81,7 @@ export default function MarketPulseLegend() {
   }, []);
 
   const fallback = useMemo(() => localFallback(points), [points]);
-  const pulse = useMemo(() => normalizeServerPulse(decision?.pulse_segments) || fallback, [decision, fallback]);
+  const pulse = useMemo(() => fallback, [fallback]);
   const current = pulse.segments.at(-1);
   const currentMove = Number.isFinite(Number(current?.move)) ? Number(current.move) : null;
 
@@ -91,7 +89,7 @@ export default function MarketPulseLegend() {
     <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={1}>
       <Box>
         <Typography variant="caption" fontWeight={700} sx={{ display: 'block' }}>MARKET PULSE · ROLLING 30 MINUTES</Typography>
-        <Typography variant="caption" color="text.secondary">Satu blok = satu menit. Sumber utama mengikuti pulse yang dihitung paper cycle/AI. Setiap perubahan harga yang terobservasi dalam menit tersebut harus menghasilkan GREEN/RED; hanya menit tanpa data yang GRAY.</Typography>
+        <Typography variant="caption" color="text.secondary">Satu blok = satu menit. Sumber utama mengikuti observasi market live. Setiap perubahan harga yang terobservasi dalam menit tersebut harus menghasilkan GREEN/RED; hanya menit tanpa data yang GRAY.</Typography>
       </Box>
       <Stack direction="row" spacing={1} alignItems="center">
         <Chip size="small" label={label(current?.status || 'GRAY')} sx={{ bgcolor: color(current?.status || 'GRAY'), color: 'common.white', fontWeight: 700 }} />
