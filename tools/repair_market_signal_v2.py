@@ -15,6 +15,7 @@ paper_cycle = ROOT / "fronted/paper_cycle.py"
 
 # The market observation repair is already present in main. This action is
 # intentionally idempotent and only fixes the syntax error in _reasoning.
+# Keep this repair safe to re-run while CI validates the current main branch.
 bad_reasoning = '    return f"{text} {LIBRARY_ALERT_MARKER}{json.dumps(alerts[:4], separators=(\",\", \":\"))}".strip() if alerts else text\n'
 good_reasoning = '    return f"{text} {LIBRARY_ALERT_MARKER}{json.dumps(alerts[:4], separators=(\',\', \':\'))}".strip() if alerts else text\n'
 
