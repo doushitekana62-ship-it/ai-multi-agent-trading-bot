@@ -71,6 +71,22 @@ jobs:
           old = """const status = move > 0\n      ? 'GREEN'\n      : move < 0\n        ? 'RED'\n        : bucket.changed\n          ? (bucket.max > bucket.open ? 'GREEN' : 'RED')\n          : 'GRAY';"""
           new = """const status = move > 0\n      ? 'GREEN'\n      : move < 0\n        ? 'RED'\n        : bucket.changed\n          ? changedDirection(bucket.samples)\n          : 'GRAY';"""
           if old in s: s = s.replace(old, new, 1)
+          old = "const [market, setMarket] = useState(null);"
+          new = "const [market, setMarket] = useState(null);\n  const [serverPulse, setServerPulse] = useState(null);"
+          if old not in s: raise SystemExit('pulse state anchor missing')
+          s = s.replace(old, new, 1)
+          old = "const response = await axios.get('/api/market/overview', {"
+          new = "const [response, decisionResponse] = await Promise.all([axios.get('/api/market/overview', {"
+          if old not in s: raise SystemExit('market request anchor missing')
+          s = s.replace(old, new, 1)
+          old = "        });\n        if (cancelled) return;"
+          new = "        }), axios.get('/api/dashboard/recent-decision', { params: { _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 })]);\n        if (cancelled) return;\n        const decision = decisionResponse.data?.decision || null;\n        setServerPulse(Array.isArray(decision?.pulse_segments) ? decision.pulse_segments : null);"
+          if old not in s: raise SystemExit('market request close anchor missing')
+          s = s.replace(old, new, 1)
+          old = "const pulse = useMemo(() => buildSegments(samples), [samples]);"
+          new = "const pulse = useMemo(() => {\n    const local = buildSegments(samples);\n    if (!Array.isArray(serverPulse) || serverPulse.length === 0) return local;\n    const segments = serverPulse.slice(-WINDOW_MINUTES).map((item) => ({\n      ...item,\n      minute: normalizeTimestamp(item) || Date.now(),\n      status: ['GREEN', 'RED', 'GRAY'].includes(String(item?.status).toUpperCase()) ? String(item.status).toUpperCase() : 'GRAY',\n      move: Number.isFinite(Number(item?.move_pct)) ? Number(item.move_pct) : null,\n      samples: Number(item?.observations || 0),\n    }));\n    while (segments.length < WINDOW_MINUTES) segments.unshift({ minute: Date.now() - (WINDOW_MINUTES - segments.length) * MINUTE_MS, status: 'GRAY', move: null, samples: 0, changed: false });\n    const populated = segments.filter((item) => Number.isFinite(item.move) && Number(item.open) > 0);\n    const first = populated[0]?.open;\n    const last = populated[populated.length - 1]?.close;\n    const move30 = first > 0 && last > 0 ? ((last - first) / first) * 100 : local.move30;\n    return { segments: segments.slice(-WINDOW_MINUTES), move30, current: segments[segments.length - 1] || null };\n  }, [samples, serverPulse]);"
+          if old not in s: raise SystemExit('pulse useMemo anchor missing')
+          s = s.replace(old, new, 1)
           p.write_text(s)
 
           p = Path('fronted/src/pages/Dashboard.jsx')
