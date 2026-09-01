@@ -1,14 +1,8 @@
-"""Legacy API compatibility adapter for the Cloudflare Python Worker.
+"""Small Cloudflare compatibility router for market/health fall-through routes.
 
-The production Worker handles its authoritative API routes directly. This
-module exists only for the small legacy market/health routes that fall through
-from ``worker_entry_api.py``. It deliberately does not call the runtime ASGI
-``fetch(app, request, env)`` helper; the supported Workers ASGI integration is
-an entrypoint pattern, and the old direct helper was an unnecessary runtime
-failure point for this custom router.
-
-Static assets are served by the Cloudflare Assets binding and do not require
-this adapter.
+The production Worker entrypoint owns authenticated dashboard routes. This
+module only handles the lightweight public market endpoints and static fall-
+throughs, without invoking the legacy ASGI runtime helper.
 """
 from __future__ import annotations
 
@@ -47,16 +41,62 @@ async def _fresh_public_indodax(path):
         return None
 
 
-# worker_entry_api.py imports this compatibility module before cf_worker.
-# Importing cf_worker here is safe because cf_worker only imports this module
-# for its legacy name; once its definitions finish, replace its market-data
-# adapter before any dashboard or paper-cycle handler can use it.
+def _clean_pair(value):
+    allowed = {"btc_idr", "eth_idr", "usdt_idr", "xrp_idr", "doge_idr", "sol_idr", "beat_idr", "hype_idr", "ada_idr", "trx_idr", "shib_idr", "pepe_idr"}
+    pair = (value or "btc_idr").strip().lower().replace("/", "_")
+    return pair if pair in allowed else "btc_idr"
+
+
+async def _light_market_overview(pair):
+    """Return only ticker data; trade history is collected by paper observation.
+
+    The old route downloaded and parsed up to 1,440 trades on every dashboard
+    poll. That is unnecessary for the live UI and is expensive in Python
+    Workers, especially on the 10 ms Free CPU budget.
+    """
+    pair = _clean_pair(pair)
+    ticker = await _fresh_public_indodax(f"/{pair}/ticker")
+    if not ticker or not isinstance(ticker.get("ticker"), dict):
+        return {"available": False, "pair": pair, "currency": "IDR", "currency_symbol": "Rp", "source": "INDODAX public market data"}
+    t = ticker["ticker"]
+    last = float(t.get("last") or 0)
+    now = int(time.time())
+    point = {
+        "tid": f"ticker:{pair}:{now}:{last}",
+        "price": last,
+        "timestamp": now,
+        "amount": 0.0,
+        "type": "ticker",
+        "side": "",
+        "source": "INDODAX public ticker",
+        "observation_type": "TICKER",
+    } if last > 0 else None
+    return {
+        "available": last > 0,
+        "pair": pair,
+        "base_currency": pair.split("_")[0].upper(),
+        "quote_currency": pair.split("_")[1].upper(),
+        "currency": "IDR" if pair.endswith("_idr") else pair.split("_")[1].upper(),
+        "currency_symbol": "Rp" if pair.endswith("_idr") else pair.split("_")[1].upper(),
+        "last": last,
+        "buy": float(t.get("buy") or 0),
+        "sell": float(t.get("sell") or 0),
+        "high": float(t.get("high") or 0),
+        "low": float(t.get("low") or 0),
+        "volume": float(t.get("vol_idr") or t.get("vol") or 0),
+        "recent_move": None,
+        "recent_move_label": "INDODAX public ticker observations",
+        "points": [point] if point else [],
+        "source": "INDODAX public market data",
+        "market_data_quality": "TICKER_POLL",
+    }
+
+
 import cf_worker as _cf_worker
-_cf_worker._public_indodax = _fresh_public_indodax
 
 
 async def fetch(app, request, env):
-    """Handle the small set of legacy API routes without the ASGI package."""
+    """Handle lightweight legacy market/health routes."""
     parsed = urlparse(request.url)
     path = parsed.path
     query = parse_qs(parsed.query)
@@ -72,31 +112,16 @@ async def fetch(app, request, env):
     if request.method == "GET" and path == "/api/ready":
         configured = all(
             str(getattr(env, name, "") or "").strip()
-            for name in (
-                "SUPABASE_URL",
-                "SUPABASE_SERVICE_ROLE_KEY",
-                "JWT_SECRET_KEY",
-                "ADMIN_USERNAME",
-                "ADMIN_PASSWORD",
-            )
+            for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET_KEY", "ADMIN_USERNAME", "ADMIN_PASSWORD")
         )
         supabase = await _cf_worker._supabase_probe(scope) if configured else False
-        return Response.json(
-            {
-                "status": "ready" if configured and supabase else "degraded",
-                "supabase": bool(supabase),
-                "secrets_configured": configured,
-                "runtime": "cloudflare-python-worker",
-            }
-        )
+        return Response.json({"status": "ready" if configured and supabase else "degraded", "supabase": bool(supabase), "secrets_configured": configured, "runtime": "cloudflare-python-worker"})
 
     if request.method == "GET" and path in {"/api/market/overview", "/api/market/data"}:
-        data = await _cf_worker._market_overview(scope)
-        return Response.json(data)
+        return Response.json(await _light_market_overview(pair))
 
     if request.method == "GET" and path == "/api/market/insights":
-        data = await _cf_worker._market_insights(scope)
-        return Response.json(data)
+        return Response.json(await _cf_worker._market_insights(scope))
 
     return Response.json({"detail": "API route not found"}, status=404)
 
