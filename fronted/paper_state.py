@@ -349,7 +349,10 @@ class PaperTradingState(DurableObject):
             for key in (
                 "votes", "market_scores", "confidence_components", "consensus_action", "consensus_score",
                 "position_size", "stop_loss", "take_profit", "source", "warning", "raw_action", "summary",
-                "execution_gate",
+                "execution_gate", "cycle_id", "cycle_number", "market_timestamp", "market_source",
+                "move_1m_pct", "move_5m_pct", "move_15m_pct", "move_30m_pct", "pulse_status",
+                "current_pulse_status", "pulse_net_move_30m_pct", "pulse_segments", "hold_analysis",
+                "candidate_action", "cycle_status",
             ):
                 if key in analysis:
                     last[key] = analysis[key]
