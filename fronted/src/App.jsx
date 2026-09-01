@@ -11,6 +11,7 @@ import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
 import CycleUpdateToast from './components/CycleUpdateToast';
 import TradingLibraryAlertToast from './components/TradingLibraryAlertToast';
+import PaperHistoryLibrary from './components/PaperHistoryLibrary';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const ProtectedRoute = ({ children }) => {
@@ -19,6 +20,17 @@ const ProtectedRoute = ({ children }) => {
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return children;
 };
+
+function DashboardLanding() {
+  return (
+    <>
+      <Dashboard />
+      <Box sx={{ px: { xs: 1.5, md: 3 }, pb: 4, maxWidth: 1800, mx: 'auto' }}>
+        <PaperHistoryLibrary />
+      </Box>
+    </>
+  );
+}
 
 function App() {
   const [mode, setMode] = useState(() => localStorage.getItem('dashboardTheme') || 'dark');
@@ -57,7 +69,7 @@ function App() {
         <Router>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+            <Route path="/" element={<ProtectedRoute><DashboardLanding /></ProtectedRoute>} />
             <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
           </Routes>
           <CycleUpdateToast />
