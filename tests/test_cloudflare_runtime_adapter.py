@@ -21,6 +21,14 @@ def test_market_routes_are_served_without_asgi_runtime_dependency():
     assert "cf_worker._market_insights" in source
 
 
+def test_indodax_market_fetch_bypasses_cloudflare_edge_cache():
+    source = (FRONTED / "asgi.py").read_text(encoding="utf-8")
+    assert '"cache": "no-store"' in source
+    assert '"Cache-Control": "no-cache"' in source
+    assert "_live=" in source
+    assert "cf_worker._public_indodax = _fresh_public_indodax" in source
+
+
 def test_market_pulse_is_one_minute_rolling_and_marks_observed_changes():
     source = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
     assert "PULSE_MINUTES = 30" in source
