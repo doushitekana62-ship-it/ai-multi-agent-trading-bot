@@ -1,0 +1,43 @@
+name: Apply Market Signal Repair
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, 'Apply market signal repair') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Apply deterministic repair
+        run: python tools/repair_market_signal.py
+
+      - name: Validate Python syntax
+        run: python -m py_compile fronted/cf_worker.py fronted/paper_cycle.py
+
+      - name: Commit repaired runtime
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add fronted/cf_worker.py fronted/paper_cycle.py
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'No runtime changes were necessary.'
+            exit 0
+          fi
+          git commit -m 'Apply market signal repair: live observations and persistence contract'
+          git push
