@@ -66,7 +66,9 @@ def test_analyze_runs_existing_multi_agent_orchestrator(monkeypatch):
         assert payload["ok"] is True
         assert payload["symbol"] == "BTC/IDR"
         assert payload["final_action"] in {"BUY", "SELL", "HOLD"}
-        assert set(payload["agent_votes"]).issuperset({"sentiment", "technical", "forecast"})
+        assert set(payload["agent_votes"]).issuperset({"technical", "forecast"})
+        assert "sentiment" not in payload["agent_votes"]
+        assert payload["hold_analysis"]["diagnostic"]
 
 
 def test_real_trading_bypass_is_not_accepted(monkeypatch):
