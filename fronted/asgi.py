@@ -1,13 +1,14 @@
 """Legacy API compatibility adapter for the Cloudflare Python Worker.
 
-The production Worker now handles its authoritative API routes directly.
-This module intentionally does not import ``workers.asgi``: that submodule is
-not part of the current Workers runtime SDK surface and importing it caused the
-production Worker to fail during module initialization.
+The production Worker handles its authoritative API routes directly. This
+module exists only for the small legacy market/health routes that fall through
+from ``worker_entry_api.py``. It deliberately does not call the runtime ASGI
+``fetch(app, request, env)`` helper; the supported Workers ASGI integration is
+an entrypoint pattern, and the old direct helper was an unnecessary runtime
+failure point for this custom router.
 
-Only the legacy market/health routes that still fall through from
-``worker_entry_api.py`` are handled here. Static assets are served by the
-Cloudflare Assets binding and never require this adapter.
+Static assets are served by the Cloudflare Assets binding and do not require
+this adapter.
 """
 from __future__ import annotations
 
@@ -48,13 +49,12 @@ async def _fresh_public_indodax(path):
 
 async def fetch(app, request, env):
     """Handle the small set of legacy API routes without the ASGI package."""
-    # Import lazily so cf_worker can continue importing this compatibility
-    # module without creating a circular import at module initialization.
+    # Import lazily so cf_worker can continue importing this module without a
+    # circular import at module initialization.
     import cf_worker
 
-    # Patch the shared market-data adapter once this Worker instance is active.
-    # This keeps dashboard polling, paper cycles and market insights on the same
-    # uncached INDODAX source without modifying the trading/risk pipeline.
+    # Keep all market consumers on the same uncached INDODAX source after the
+    # first live market request in a Worker isolate.
     cf_worker._public_indodax = _fresh_public_indodax
 
     parsed = urlparse(request.url)
