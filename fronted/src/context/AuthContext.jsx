@@ -44,11 +44,18 @@ export const AuthProvider = ({ children }) => {
     if (!storedRefreshToken) return false;
     try {
       const response = await axios.post(`${API_URL}/api/auth/refresh`, { refresh_token: storedRefreshToken });
+      if (!response.data?.access_token) return null;
       applyAccessToken(response.data.access_token);
       return true;
     } catch (error) {
-      clearSession();
-      return false;
+      // A Worker 1102/1101/5xx is an infrastructure failure, not proof that
+      // the user's session is invalid. Only a definitive 401 revokes it.
+      if (error.response?.status === 401) {
+        clearSession();
+        return false;
+      }
+      console.warn('Refresh token temporarily unavailable:', error.message);
+      return null;
     }
   };
 
@@ -62,12 +69,13 @@ export const AuthProvider = ({ children }) => {
         original._retry = true;
         try {
           const response = await axios.post(`${API_URL}/api/auth/refresh`, { refresh_token: storedRefreshToken });
+          if (!response.data?.access_token) return Promise.reject(error);
           applyAccessToken(response.data.access_token);
           original.headers = original.headers || {};
           original.headers.Authorization = `Bearer ${response.data.access_token}`;
           return axios(original);
         } catch (refreshError) {
-          clearSession();
+          if (refreshError.response?.status === 401) clearSession();
           return Promise.reject(refreshError);
         }
       }
@@ -120,7 +128,7 @@ export const AuthProvider = ({ children }) => {
       }
     } catch (error) {
       const refreshed = await refreshAccessToken();
-      if (refreshed) {
+      if (refreshed === true) {
         try {
           const response = await axios.get(`${API_URL}/api/auth/verify`);
           if (response.data.is_authenticated) {
@@ -130,8 +138,18 @@ export const AuthProvider = ({ children }) => {
             return true;
           }
         } catch (verifyError) {
-          console.error('Token verification after refresh failed:', verifyError);
+          if (verifyError.response?.status === 401) {
+            clearSession();
+            setLoading(false);
+            return false;
+          }
+          console.warn('Token verification temporarily unavailable:', verifyError.message);
         }
+      } else if (refreshed === null) {
+        // Preserve the existing local session across transient Worker failures.
+        setIsAuthenticated(true);
+        setLoading(false);
+        return true;
       }
     }
     clearSession();
