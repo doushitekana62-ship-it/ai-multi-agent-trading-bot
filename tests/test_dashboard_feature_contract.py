@@ -38,11 +38,22 @@ def test_history_api_is_bounded_and_paginated():
 
 def test_dashboard_history_is_supabase_only_and_paginated():
     source = read("fronted/src/components/DashboardTools.jsx")
-    assert "Supabase is the only source of persisted cycle history" in source
+    assert "Supabase" in source
+    assert "Forensic ledger" in source
     assert "page_size: 10" in source
     assert "historyHasNext" in source
-    assert "No persisted cycles" in source
+    assert "No persisted" in source
     assert "decisionHistory.filter" not in source
+
+
+def test_dashboard_v02_control_plane_is_observable():
+    source = read("fronted/src/components/DashboardTools.jsx")
+    assert "Server-authoritative entry limit" in source
+    assert "Market direction comes from the current 1m pulse" in source
+    assert "Deterministic control-plane view" in source
+    assert "risk_rejection_reason" in source
+    assert "candidate_action" in source
+    assert "execution_status" in source
 
 
 def test_dashboard_refresh_and_paper_reset_controls_exist():
