@@ -3,6 +3,8 @@ name: Apply Market Signal Repair
 on:
   push:
     branches: [main]
+    paths:
+      - 'tools/repair_market_signal_v2.py'
 
 permissions:
   contents: write
