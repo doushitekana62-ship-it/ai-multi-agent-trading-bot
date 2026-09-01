@@ -12,7 +12,7 @@ from pyodide.ffi import to_js
 
 JSON_HEADERS = [(b"content-type", b"application/json; charset=utf-8")]
 PAPER_INITIAL_BALANCE = 10_000_000.0
-MAX_OPEN_POSITIONS = 5
+MAX_OPEN_POSITIONS = 3
 INDODAX_PUBLIC_BASE = "https://indodax.com/api"
 SCALPING_PAIRS = {
     "btc_idr", "eth_idr", "usdt_idr", "xrp_idr", "doge_idr", "sol_idr",
