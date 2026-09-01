@@ -6,12 +6,13 @@ from datetime import datetime, timezone
 from workers import DurableObject
 
 from paper_cycle import run_market_observation, run_paper_cycle
+from risk_engine import apply_slippage, settings_with_defaults, update_protection
 
-CYCLE_INTERVAL_MS = 5_000
+CYCLE_INTERVAL_MS = 60_000
 DECISION_INTERVAL_MS = 60_000
 MAX_POSITIONS = 3
 DEFAULT_POSITION_ALLOCATION = 0.10
-STATE_VERSION = 3
+STATE_VERSION = 4
 MARKET_HISTORY_LIMIT = 1440
 
 DEFAULT_STATE = {
@@ -48,6 +49,7 @@ DEFAULT_STATE = {
     "last_scheduler_at": None,
     "scheduler_invocations": 0,
     "next_cycle_at": None,
+    "risk_settings": settings_with_defaults(),
     "updated_at": None,
 }
 
@@ -58,6 +60,13 @@ def _now():
 
 def _iso_from_ms(ms):
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
+
+
+def _num(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _safe_limit(value, default=MAX_POSITIONS):
@@ -73,11 +82,12 @@ def _copy_default_state():
     state["decision_counts"] = dict(DEFAULT_STATE["decision_counts"])
     state["positions"] = []
     state["trade_history"] = []
+    state["risk_settings"] = dict(DEFAULT_STATE["risk_settings"])
     return state
 
 
 class PaperTradingState(DurableObject):
-    """Single authoritative paper account, position limit and scheduler state."""
+    """Single authoritative paper account, position limit, risk and scheduler state."""
 
     def __init__(self, ctx, env):
         super().__init__(ctx, env)
@@ -104,6 +114,7 @@ class PaperTradingState(DurableObject):
         state.setdefault("last_scheduler_at", None)
         state.setdefault("scheduler_invocations", 0)
         state.setdefault("next_cycle_at", None)
+        state["risk_settings"] = settings_with_defaults(state.get("risk_settings"))
         state["max_open_positions"] = _safe_limit(state.get("max_open_positions"))
         try:
             allocation = float(state.get("position_allocation", DEFAULT_POSITION_ALLOCATION))
@@ -127,6 +138,22 @@ class PaperTradingState(DurableObject):
             "hard_max_positions": MAX_POSITIONS,
             "updated_at": state.get("updated_at"),
         }
+
+    async def get_risk_settings(self):
+        state = await self._get()
+        return dict(state["risk_settings"])
+
+    async def set_risk_settings(self, patch):
+        state = await self._get()
+        merged = dict(state.get("risk_settings") or {})
+        if isinstance(patch, dict):
+            for key in merged:
+                if key in patch:
+                    merged[key] = patch[key]
+        state["risk_settings"] = settings_with_defaults(merged)
+        state["updated_at"] = _now()
+        await self.ctx.storage.put("state", state)
+        return state
 
     async def get_paper_market_history(self):
         value = await self.ctx.storage.get("paper_market_history")
@@ -189,15 +216,7 @@ class PaperTradingState(DurableObject):
 
     async def stop(self):
         state = await self._get()
-        state.update({
-            "enabled": False,
-            "cycle_running": False,
-            "scheduler_active": False,
-            "next_cycle_at": None,
-            "last_error": None,
-            "last_cycle_status": "stopped",
-            "updated_at": _now(),
-        })
+        state.update({"enabled": False, "cycle_running": False, "scheduler_active": False, "next_cycle_at": None, "last_error": None, "last_cycle_status": "stopped", "updated_at": _now()})
         self.ctx.storage.deleteAlarm()
         await self.ctx.storage.put("state", state)
         return state
@@ -217,27 +236,14 @@ class PaperTradingState(DurableObject):
         if state.get("cycle_running"):
             return {"ok": False, "state": state, "reason": "cycle_already_running"}
         now = _now()
-        state.update({
-            "cycle_running": True,
-            "last_error": None,
-            "last_cycle_started_at": now,
-            "last_cycle_status": "running",
-            "scheduler_active": True,
-            "updated_at": now,
-        })
+        state.update({"cycle_running": True, "last_error": None, "last_cycle_started_at": now, "last_cycle_status": "running", "scheduler_active": True, "updated_at": now})
         await self.ctx.storage.put("state", state)
         return {"ok": True, "state": state, "reason": None}
 
     async def finish_cycle(self, error=None):
         state = await self._get()
         now = _now()
-        state.update({
-            "cycle_running": False,
-            "last_cycle_finished_at": now,
-            "last_cycle_status": "failed" if error else "completed",
-            "last_error": str(error) if error else None,
-            "updated_at": now,
-        })
+        state.update({"cycle_running": False, "last_cycle_finished_at": now, "last_cycle_status": "failed" if error else "completed", "last_error": str(error) if error else None, "updated_at": now})
         if error:
             state["cycle_failures"] = int(state.get("cycle_failures", 0)) + 1
             state["consecutive_cycle_failures"] = int(state.get("consecutive_cycle_failures", 0)) + 1
@@ -256,8 +262,8 @@ class PaperTradingState(DurableObject):
         if not state.get("enabled"):
             return state
         now = _now()
-        action = str(decision or "HOLD").upper()
-        action = action if action in {"BUY", "SELL", "HOLD"} else "HOLD"
+        requested_action = str(decision or "HOLD").upper()
+        requested_action = requested_action if requested_action in {"BUY", "SELL", "HOLD"} else "HOLD"
         try:
             price = float(price or 0)
         except (TypeError, ValueError):
@@ -267,65 +273,73 @@ class PaperTradingState(DurableObject):
         except (TypeError, ValueError):
             confidence = 0.0
 
+        risk = settings_with_defaults(state.get("risk_settings"))
+        points = await self.get_paper_market_history()
         positions = list(state.get("positions") or [])
-        idx = next((i for i, p in enumerate(positions) if p.get("symbol") == symbol), None)
+        idx = next((i for i, p in enumerate(positions) if str(p.get("symbol") or "").upper() == str(symbol).upper()), None)
+        position = positions[idx] if idx is not None else None
+        risk_snapshot = None
+        risk_exit_reason = None
+        if position is not None and risk.get("enabled") and price > 0:
+            risk_snapshot = update_protection(position, price, points, risk)
+            if risk_snapshot.get("triggered"):
+                requested_action = "SELL"
+                risk_exit_reason = risk_snapshot.get("reason") or "STOP_LOSS"
+
+        action = requested_action
         executed = False
         realized = 0.0
         trade = None
+        fee = 0.0
+        slippage_bps = risk["slippage_bps"]
 
         if action == "BUY" and price > 0 and idx is None and len(positions) < state["max_open_positions"]:
             try:
-                equity = float(state.get("balance", 0)) + sum(
-                    float(p.get("quantity", 0)) * float(p.get("price", p.get("entry_price", 0)))
-                    for p in positions
-                )
-                allocation = min(equity * state["position_allocation"], float(state.get("balance", 0)))
+                equity = float(state.get("balance", 0)) + sum(float(p.get("quantity", 0)) * float(p.get("price", p.get("entry_price", 0))) for p in positions)
+                fee_rate = risk["fee_rate"]
+                allocation = min(equity * state["position_allocation"], float(state.get("balance", 0)) / (1.0 + fee_rate))
             except (TypeError, ValueError):
-                allocation = 0.0
-                equity = 0.0
+                allocation, equity = 0.0, 0.0
             if allocation > 0:
-                qty = allocation / price
-                positions.append({
-                    "symbol": symbol,
-                    "side": "BUY",
-                    "quantity": qty,
-                    "entry_price": price,
-                    "price": price,
-                    "capital": allocation,
-                    "position_size": allocation / equity if equity else 0,
-                    "pnl": 0.0,
-                    "unrealized_pnl": 0.0,
-                    "confidence": confidence,
-                    "created_at": now,
-                })
-                state["balance"] = float(state.get("balance", 0)) - allocation
+                fill_price = apply_slippage(price, "BUY", slippage_bps)
+                qty = allocation / fill_price
+                fee = allocation * risk["fee_rate"]
+                levels = update_protection({"entry_price": fill_price, "created_at": now}, fill_price, points, risk)
+                new_position = {"symbol": symbol, "side": "BUY", "quantity": qty, "entry_price": fill_price, "price": fill_price, "capital": allocation, "position_size": allocation / equity if equity else 0, "pnl": 0.0, "unrealized_pnl": 0.0, "confidence": confidence, "created_at": now, "entry_fee": fee, "fees": fee, "high_water_mark": fill_price, "stop_loss": levels.get("stop_loss"), "take_profit": levels.get("take_profit"), "initial_stop_loss": levels.get("stop_loss"), "initial_take_profit": levels.get("take_profit"), "atr_at_entry": levels.get("atr"), "risk_distance": levels.get("risk_distance"), "break_even_armed": False, "risk_mode": risk["stop_loss_mode"]}
+                positions.append(new_position)
+                state["balance"] = float(state.get("balance", 0)) - allocation - fee
                 executed = True
-                trade = {"action": "BUY", "symbol": symbol, "quantity": qty, "price": price, "pnl": 0.0, "confidence": confidence, "created_at": now}
+                trade = {"action": "BUY", "symbol": symbol, "quantity": qty, "price": fill_price, "requested_price": price, "pnl": -fee, "confidence": confidence, "created_at": now, "fee": fee, "slippage_bps": slippage_bps, "stop_loss": levels.get("stop_loss"), "take_profit": levels.get("take_profit"), "exit_reason": None}
         elif action == "SELL" and price > 0 and idx is not None:
             position = positions[idx]
             qty = float(position.get("quantity", 0))
             entry = float(position.get("entry_price", price))
-            realized = (price - entry) * qty
-            state["balance"] = float(state.get("balance", 0)) + qty * price
+            fill_price = apply_slippage(price, "SELL", slippage_bps)
+            proceeds = qty * fill_price
+            fee = proceeds * risk["fee_rate"]
+            entry_cost = float(position.get("capital", entry * qty)) + float(position.get("entry_fee", 0))
+            realized = proceeds - fee - entry_cost
+            state["balance"] = float(state.get("balance", 0)) + proceeds - fee
             positions.pop(idx)
             state["daily_pnl"] = float(state.get("daily_pnl", 0)) + realized
             state["total_pnl"] = float(state.get("total_pnl", 0)) + realized
             executed = True
-            trade = {"action": "SELL", "symbol": symbol, "quantity": qty, "price": price, "pnl": realized, "confidence": confidence, "created_at": now}
+            trade = {"action": "SELL", "symbol": symbol, "quantity": qty, "price": fill_price, "requested_price": price, "entry_price": entry, "pnl": realized, "confidence": confidence, "created_at": now, "fee": fee, "entry_fee": float(position.get("entry_fee", 0)), "slippage_bps": slippage_bps, "exit_reason": risk_exit_reason or str((analysis or {}).get("exit_reason") or "AI_EXIT")}
 
         for p in positions:
             if p.get("symbol") == symbol and price > 0:
+                protection = update_protection(p, price, points, risk) if risk.get("enabled") else {}
                 p["price"] = price
-                p["unrealized_pnl"] = (price - float(p.get("entry_price", price))) * float(p.get("quantity", 0))
+                p["unrealized_pnl"] = (price - float(p.get("entry_price", price))) * float(p.get("quantity", 0)) - (price * float(p.get("quantity", 0)) * risk["fee_rate"])
                 p["pnl"] = p["unrealized_pnl"]
+                p["risk_trigger"] = protection.get("reason")
+                p["risk_atr"] = protection.get("atr")
 
         if trade:
             state["trade_history"] = [*list(state.get("trade_history") or []), trade][-100:]
         state["positions"] = positions
         state["active_positions"] = len(positions)
-        state["portfolio_value"] = float(state.get("balance", 0)) + sum(
-            float(p.get("quantity", 0)) * float(p.get("price", p.get("entry_price", 0))) for p in positions
-        )
+        state["portfolio_value"] = float(state.get("balance", 0)) + sum(float(p.get("quantity", 0)) * float(p.get("price", p.get("entry_price", 0))) for p in positions)
         state["cycles_today"] = int(state.get("cycles_today", 0)) + 1
         state["last_cycle_at"] = now
         state["last_cycle_finished_at"] = now
@@ -335,25 +349,9 @@ class PaperTradingState(DurableObject):
         if executed:
             state["daily_trades"] = int(state.get("daily_trades", 0)) + 1
             state["total_trades"] = int(state.get("total_trades", 0)) + 1
-        last = {
-            "action": action,
-            "confidence": confidence,
-            "symbol": symbol,
-            "price": price,
-            "executed": executed,
-            "realized_pnl": realized,
-            "reasoning": reasoning,
-            "created_at": now,
-        }
+        last = {"action": action, "candidate_action": requested_action if risk_exit_reason else None, "confidence": confidence, "symbol": symbol, "price": price, "executed": executed, "realized_pnl": realized, "fee": fee, "reasoning": reasoning, "created_at": now, "risk_exit_reason": risk_exit_reason, "risk_settings": risk, "risk_snapshot": risk_snapshot}
         if isinstance(analysis, dict):
-            for key in (
-                "votes", "market_scores", "confidence_components", "consensus_action", "consensus_score",
-                "position_size", "stop_loss", "take_profit", "source", "warning", "raw_action", "summary",
-                "execution_gate", "cycle_id", "cycle_number", "market_timestamp", "market_source",
-                "move_1m_pct", "move_5m_pct", "move_15m_pct", "move_30m_pct", "pulse_status",
-                "current_pulse_status", "pulse_net_move_30m_pct", "pulse_segments", "hold_analysis",
-                "candidate_action", "cycle_status",
-            ):
+            for key in ("votes", "market_scores", "confidence_components", "consensus_action", "consensus_score", "position_size", "stop_loss", "take_profit", "source", "warning", "raw_action", "summary", "execution_gate", "cycle_id", "cycle_number", "market_timestamp", "market_source", "move_1m_pct", "move_5m_pct", "move_15m_pct", "move_30m_pct", "pulse_status", "current_pulse_status", "pulse_net_move_30m_pct", "pulse_segments", "hold_analysis", "candidate_action", "cycle_status"):
                 if key in analysis:
                     last[key] = analysis[key]
         if trade:
@@ -367,30 +365,15 @@ class PaperTradingState(DurableObject):
         return state
 
     async def apply_cycle(self, action="HOLD", price=0.0, confidence=0.0, cycle_id=None, metadata=None):
-        """Backward-compatible RPC retained for older deployed paper-cycle callers."""
         analysis = dict(metadata) if isinstance(metadata, dict) else {}
         if cycle_id is not None:
             analysis.setdefault("cycle_id", str(cycle_id))
-        return await self.record_cycle(
-            decision=action,
-            confidence=confidence,
-            symbol=str(analysis.get("symbol") or "BTC/IDR"),
-            price=price,
-            reasoning=str(analysis.get("summary") or analysis.get("reasoning") or ""),
-            analysis=analysis,
-        )
+        return await self.record_cycle(action, confidence, str(analysis.get("symbol") or "BTC/IDR"), price, str(analysis.get("summary") or analysis.get("reasoning") or ""), analysis)
 
     async def record_cycle_payload(self, payload):
         payload = payload if isinstance(payload, dict) else {}
         analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else None
-        return await self.record_cycle(
-            payload.get("decision", "HOLD"),
-            payload.get("confidence", 0),
-            payload.get("symbol", "BTC/IDR"),
-            payload.get("price", 0),
-            payload.get("reasoning", ""),
-            analysis,
-        )
+        return await self.record_cycle(payload.get("decision", "HOLD"), payload.get("confidence", 0), payload.get("symbol", "BTC/IDR"), payload.get("price", 0), payload.get("reasoning", ""), analysis)
 
     async def alarm(self, alarm_info=None):
         state = await self._get()
@@ -400,11 +383,9 @@ class PaperTradingState(DurableObject):
         state["scheduler_active"] = bool(state.get("enabled"))
         state["next_cycle_at"] = None
         await self.ctx.storage.put("state", state)
-
         if not state.get("enabled"):
             self.ctx.storage.deleteAlarm()
             return
-
         try:
             last_cycle_at = state.get("last_cycle_at")
             decision_due = True
@@ -420,12 +401,10 @@ class PaperTradingState(DurableObject):
             else:
                 await run_market_observation(self.env, self, state.get("paper_pair") or "btc_idr", state.get("started_at"))
         except Exception as exc:
-            # Observation failures must not be misclassified as decision failures.
             state = await self._get()
             state["last_error"] = f"market_observation_error: {type(exc).__name__}: {exc}"
             state["updated_at"] = _now()
             await self.ctx.storage.put("state", state)
-
         state = await self._get()
         if not state.get("enabled"):
             self.ctx.storage.deleteAlarm()
