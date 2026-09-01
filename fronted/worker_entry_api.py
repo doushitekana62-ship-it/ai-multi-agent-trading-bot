@@ -94,12 +94,7 @@ async def _supabase_health(env):
 
 
 async def _history(env, request):
-    """Read one bounded page of the authoritative Supabase paper ledger.
-
-    Optional filters are server-side so BUY/SELL records older than the latest
-    page remain discoverable. The UI must never reconstruct history from local
-    browser state.
-    """
+    """Read one bounded page of the authoritative Supabase paper ledger."""
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
     key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
     if not url or not key:
@@ -111,8 +106,7 @@ async def _history(env, request):
     if action not in {"ALL", "BUY", "SELL", "HOLD"}:
         return Response.json({"history": [], "count": 0, "connected": True, "has_next": False, "page": 1, "page_size": 10, "reason": "invalid_action_filter"}, status=400)
     try:
-        page = max(1, int(query.get("page", ["1"])[0]))
-        page_size = max(1, min(10, int(query.get("page_size", ["10"])[0])))
+        page = max(1, int(query.get("page", ["1"])[0])); page_size = max(1, min(10, int(query.get("page_size", ["10"])[0])))
     except (TypeError, ValueError):
         page, page_size = 1, 10
     offset = (page - 1) * page_size
@@ -122,15 +116,12 @@ async def _history(env, request):
     if action != "ALL": params.append(("action", f"eq.{action}"))
     try:
         response = await fetch(f"{url}/rest/v1/paper_history?{urlencode(params)}", to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}))
-        code = int(response.status)
-        text = await response.text()
+        code = int(response.status); text = await response.text()
         if code < 200 or code >= 300:
             return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": page, "page_size": page_size, "reason": f"http_{code}", "detail": text[:500]}, status=502)
-        rows = json.loads(text) if text else []
-        rows = rows if isinstance(rows, list) else []
+        rows = json.loads(text) if text else []; rows = rows if isinstance(rows, list) else []
         has_next = len(rows) > page_size
-        rows = rows[:page_size]
-        return Response.json({"history": rows, "count": len(rows), "connected": True, "has_next": has_next, "page": page, "page_size": page_size, "date": date or None, "pair": pair or None, "action": action})
+        return Response.json({"history": rows[:page_size], "count": min(len(rows), page_size), "connected": True, "has_next": has_next, "page": page, "page_size": page_size, "date": date or None, "pair": pair or None, "action": action})
     except Exception as exc:
         return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": page, "page_size": page_size, "reason": type(exc).__name__}, status=502)
 
@@ -182,10 +173,20 @@ class Default(WorkerEntrypoint):
         if path in ("/api/bot/reset", "/api/dashboard/paper/reset") and request.method == "POST":
             state = await stub.reset(); return Response.json({**_state_response(state), "message": "Paper trading state reset."})
         if path == "/api/dashboard/paper/settings" and request.method == "POST":
-            try: body = await request.json(); value = int(body.get("max_open_positions"))
-            except Exception: return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
-            if value < 1 or value > 3: return Response.json({"detail": "max_open_positions must be between 1 and 3"}, status=400)
-            state = await stub.set_position_limit(value); return Response.json({**_state_response(state), "message": f"Maximum positions set to {value}."})
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"detail": "Invalid JSON body"}, status=400)
+            if "max_open_positions" in body:
+                try: value = int(body.get("max_open_positions"))
+                except Exception: return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
+                if value < 1 or value > 3: return Response.json({"detail": "max_open_positions must be between 1 and 3"}, status=400)
+                await stub.set_position_limit(value)
+            risk_patch = body.get("risk_settings")
+            if isinstance(risk_patch, dict): await stub.set_risk_settings(risk_patch)
+            state = await stub.get_state()
+            return Response.json({**_state_response(state), "message": "Paper trading risk settings updated."})
+        if path == "/api/dashboard/paper/risk" and request.method == "GET": return Response.json({"risk_settings": await stub.get_risk_settings()})
         if path == "/api/dashboard/history" and request.method == "GET": return await _history(self.env, request)
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state(); supabase = await _supabase_health(self.env); pair = state.get("paper_pair") or "btc_idr"
@@ -195,8 +196,10 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state(); return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "max_open_positions": int(state.get("max_open_positions", 3)), "currency": "IDR", "currency_symbol": "Rp"})
         if path == "/api/dashboard/performance" and request.method == "GET":
-            state = await stub.get_state(); history = list(state.get("trade_history") or []); closed = [x for x in history if x.get("action") == "SELL"]; wins = sum(1 for x in closed if float(x.get("pnl") or 0) > 0)
-            return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0)), "daily_pnl": float(state.get("daily_pnl", 0)), "closed_trades": len(closed), "win_rate": wins / len(closed) if closed else 0.0, "currency": "IDR", "currency_symbol": "Rp"}})
+            state = await stub.get_state(); history = list(state.get("trade_history") or []); closed = [x for x in history if x.get("action") == "SELL"]
+            pnls = [float(x.get("pnl") or 0) for x in closed]; wins = [x for x in pnls if x > 0]; losses = [x for x in pnls if x < 0]
+            gross_profit = sum(wins); gross_loss = abs(sum(losses)); fees = sum(float(x.get("fee") or 0) + float(x.get("entry_fee") or 0) for x in closed)
+            return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0)), "daily_pnl": float(state.get("daily_pnl", 0)), "closed_trades": len(closed), "win_rate": len(wins) / len(closed) if closed else 0.0, "wins": len(wins), "losses": len(losses), "average_win": gross_profit / len(wins) if wins else 0.0, "average_loss": sum(losses) / len(losses) if losses else 0.0, "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None, "gross_profit": gross_profit, "gross_loss": -gross_loss, "fees": fees, "open_positions": len(state.get("positions") or []), "currency": "IDR", "currency_symbol": "Rp"}})
         if path == "/api/dashboard/recent-decision" and request.method == "GET":
             state = await stub.get_state(); return Response.json({"decision": state.get("last_decision")})
         if path == "/api/dashboard/agents" and request.method == "GET":
