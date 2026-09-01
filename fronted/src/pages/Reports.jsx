@@ -34,13 +34,13 @@ export default function Reports() {
   };
 
   useEffect(() => { load(); }, [period]);
-  const completed = useMemo(() => trades.filter((x) => String(x.action || x.side).toUpperCase() === 'SELL'), [trades]);
+  const completed = useMemo(() => trades.filter((x) => String(x.action || x.side).toUpperCase() === 'SELL' && String(x.status || 'CLOSED').toUpperCase() === 'CLOSED'), [trades]);
   const shownTrades = useMemo(() => {
     if (period === 'all-time') return completed;
     const days = period === 'daily' ? 1 : period === 'weekly' ? 7 : 30;
     const cutoff = Date.now() - days * 86400000;
     return completed.filter((x) => {
-      const stamp = Date.parse(x.created_at || x.exit_time || '');
+      const stamp = Date.parse(x.closed_at || x.created_at || x.exit_time || '');
       return Number.isFinite(stamp) && stamp >= cutoff;
     });
   }, [completed, period]);
@@ -58,7 +58,7 @@ export default function Reports() {
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
-      <AppBar position="static"><Toolbar><IconButton color="inherit" onClick={() => navigate('/')}><ArrowBack /></IconButton><Assessment sx={{ mx: 1.5 }} /><Typography variant="h6" sx={{ flexGrow: 1 }}>Performance Reports</Typography><AccountCircle sx={{ mr: 1 }} /><Typography variant="body2" sx={{ mr: 2 }}>{user?.username || 'Admin'}</Typography><IconButton color="inherit" onClick={async () => { await logout(); navigate('/login'); }}><Logout /></IconButton></Toolbar></AppBar>
+      <AppBar position="static"><Toolbar><IconButton color="inherit" onClick={() => navigate('/')}><ArrowBack /></IconButton><Assessment sx={{ mx: 1.5 }} /><Typography variant="h6" sx={{ flexGrow: 1 }}>Performance & Paper Audit</Typography><AccountCircle sx={{ mr: 1 }} /><Typography variant="body2" sx={{ mr: 2 }}>{user?.username || 'Admin'}</Typography><IconButton color="inherit" onClick={async () => { await logout(); navigate('/login'); }}><Logout /></IconButton></Toolbar></AppBar>
       <Box sx={{ p: { xs: 1.5, md: 3 } }}>
         {loading && <LinearProgress sx={{ mb: 2 }} />}
         <Paper sx={{ p: 2, mb: 3 }}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={2}><Typography variant="h6">Paper Trading Audit</Typography><ButtonGroup size="small">{PERIODS.map((p) => <Button key={p} variant={period === p ? 'contained' : 'outlined'} onClick={() => setPeriod(p)}>{p === 'all-time' ? 'All Time' : p[0].toUpperCase() + p.slice(1)}</Button>)}</ButtonGroup></Stack></Paper>
@@ -66,7 +66,7 @@ export default function Reports() {
           {[['Completed Trades', metrics.total_trades || 0], ['Win Rate', `${((Number(metrics.win_rate) || 0) * 100).toFixed(1)}%`], ['Total PnL', idr(metrics.total_pnl)], ['Profit Factor', metrics.profit_factor == null ? '—' : Number(metrics.profit_factor).toFixed(2)]].map(([label, value]) => <Grid item xs={12} sm={6} md={3} key={label}><Card><CardContent><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="h5" sx={{ mt: .5 }}>{value}</Typography></CardContent></Card></Grid>)}
         </Grid>
         <Paper sx={{ p: 2.5, mb: 3 }}><Typography variant="h6">Metrics</Typography><Grid container spacing={2} sx={{ mt: .5 }}><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Wins</Typography><Typography>{metrics.winning_trades || 0}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Losses</Typography><Typography>{metrics.losing_trades || 0}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Best</Typography><Typography color="success.main">{idr(metrics.max_profit)}</Typography></Grid><Grid item xs={6} md={3}><Typography variant="caption" color="text.secondary">Worst</Typography><Typography color="error.main">{idr(metrics.max_loss)}</Typography></Grid></Grid></Paper>
-        <Paper sx={{ p: 2.5 }}><Typography variant="h6" gutterBottom>Trade History</Typography>{shownTrades.length === 0 ? <Typography color="text.secondary">No completed paper trades in this period.</Typography> : <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Symbol</TableCell><TableCell>Side</TableCell><TableCell>Price</TableCell><TableCell>Quantity</TableCell><TableCell>PnL</TableCell><TableCell>Status</TableCell><TableCell>Time</TableCell></TableRow></TableHead><TableBody>{shownTrades.slice(-50).reverse().map((trade, i) => <TableRow key={`${trade.created_at || ''}-${i}`}><TableCell>{trade.symbol}</TableCell><TableCell><Chip size="small" label={trade.side || trade.action} color="error" /></TableCell><TableCell>{idr(trade.price || trade.exit_price)}</TableCell><TableCell>{Number(trade.quantity || 0).toFixed(8)}</TableCell><TableCell sx={{ color: Number(trade.pnl) >= 0 ? 'success.main' : 'error.main', fontWeight: 700 }}>{idr(trade.pnl)}</TableCell><TableCell>{trade.status || 'CLOSED'}</TableCell><TableCell>{trade.created_at ? new Date(trade.created_at).toLocaleString('id-ID') : '—'}</TableCell></TableRow>)}</TableBody></Table></TableContainer>}</Paper>
+        <Paper sx={{ p: 2.5 }}><Typography variant="h6" gutterBottom>Closed Trade Ledger</Typography>{shownTrades.length === 0 ? <Typography color="text.secondary">No completed paper trades in this period.</Typography> : <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Trade</TableCell><TableCell>Decision</TableCell><TableCell>Symbol</TableCell><TableCell>Entry</TableCell><TableCell>Exit</TableCell><TableCell>Quantity</TableCell><TableCell>PnL</TableCell><TableCell>Status</TableCell><TableCell>Closed</TableCell></TableRow></TableHead><TableBody>{shownTrades.slice(-50).reverse().map((trade, i) => <TableRow key={`${trade.id || ''}-${trade.closed_at || trade.created_at || ''}-${i}`}><TableCell>#{trade.id ?? '—'}</TableCell><TableCell>#{trade.exit_decision_id ?? trade.decision_id ?? '—'}</TableCell><TableCell>{trade.symbol}</TableCell><TableCell>{idr(trade.entry_price)}</TableCell><TableCell>{idr(trade.exit_price || trade.price)}</TableCell><TableCell>{Number(trade.quantity || 0).toFixed(8)}</TableCell><TableCell sx={{ color: Number(trade.pnl) >= 0 ? 'success.main' : 'error.main', fontWeight: 700 }}>{idr(trade.pnl)}</TableCell><TableCell><Chip size="small" label={trade.status || 'CLOSED'} color={trade.status === 'CLOSED' ? 'default' : 'warning'} /></TableCell><TableCell>{trade.closed_at ? new Date(trade.closed_at).toLocaleString('id-ID') : trade.created_at ? new Date(trade.created_at).toLocaleString('id-ID') : '—'}</TableCell></TableRow>)}</TableBody></Table></TableContainer>}</Paper>
         <PaperHistoryLibrary />
       </Box>
     </Box>
