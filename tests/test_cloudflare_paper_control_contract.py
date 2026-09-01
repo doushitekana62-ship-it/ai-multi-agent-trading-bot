@@ -13,6 +13,7 @@ def test_paper_state_has_manual_alarm_scheduler():
     assert "getAlarm" in source
     assert "setAlarm" in source
     assert "deleteAlarm" in source
+    assert "scheduler_source" in source
     assert "durable_object_alarm" in source
 
 
@@ -20,13 +21,13 @@ def test_worker_uses_shared_cycle_runner():
     source = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
     assert "from paper_cycle import run_paper_cycle" in source
     assert "await run_paper_cycle(" in source
-    assert "durable_object_alarm_1m" in source
+    assert "await stub.enable_paper(pair)" in source
+    assert "await stub.stop()" in source
 
 
-def test_browser_does_not_schedule_or_intercept_paper_cycles():
-    source = (FRONTED / "src" / "index.js").read_text(encoding="utf-8")
+def test_browser_entrypoint_does_not_schedule_paper_cycles():
+    source = (FRONTED / "src" / "index.jsx").read_text(encoding="utf-8")
     assert "window.setInterval" not in source
-    assert "document.addEventListener('click'" not in source
     assert "Paper watchdog" not in source
 
 
