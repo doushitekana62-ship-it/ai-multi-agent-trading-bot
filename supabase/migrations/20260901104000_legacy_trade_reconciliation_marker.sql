@@ -17,5 +17,4 @@ SET decision_id = 787,
     reconciled = true,
     reconciliation_reason = 'LEGACY_STATE_CLOSE_WITHOUT_TRADE_LEDGER',
     reconciled_at = now()
-WHERE t.id = 1
-  AND t.status = 'OPEN';
+WHERE t.id = 1;
