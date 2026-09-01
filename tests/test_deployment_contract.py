@@ -59,7 +59,7 @@ def test_paper_scheduler_is_durable_object_alarm_driven():
     assert "getAlarm" in state
     assert "setAlarm" in state
     assert "deleteAlarm" in state
-    assert "CYCLE_INTERVAL_MS = 5_000" in state
+    assert "CYCLE_INTERVAL_MS = 60_000" in state
     assert "DECISION_INTERVAL_MS = 60_000" in state
 
 
@@ -87,3 +87,10 @@ def test_legacy_worker_entrypoint_is_only_a_compatibility_shim():
     source = (FRONTED / "worker_entry.py").read_text(encoding="utf-8")
     assert "from worker_entry_api import Default, PaperTradingState" in source
     assert "class Default" not in source
+
+
+def test_cloudflare_asgi_compatibility_shim_uses_workers_runtime_api():
+    shim = (FRONTED / "asgi.py").read_text(encoding="utf-8")
+    assert "from workers import asgi as _asgi" in shim
+    assert "fetch = _asgi.fetch" in shim
+    assert "entrypoint = _asgi.entrypoint" in shim
