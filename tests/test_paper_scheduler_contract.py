@@ -13,7 +13,7 @@ def test_paper_state_has_durable_object_alarm_scheduler():
     assert "getAlarm" in source
     assert "setAlarm" in source
     assert "deleteAlarm" in source
-    assert "CYCLE_INTERVAL_MS = 5_000" in source
+    assert "CYCLE_INTERVAL_MS = 60_000" in source
     assert "DECISION_INTERVAL_MS = 60_000" in source
     assert "durable_object_alarm" in source
 
