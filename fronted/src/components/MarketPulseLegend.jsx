@@ -18,8 +18,8 @@ function localFallback(points) {
   rows.forEach((p) => {
     const minute = Math.floor(p.at / MINUTE_MS) * MINUTE_MS;
     if (minute < current - 29 * MINUTE_MS || minute > current) return;
-    const b = buckets.get(minute) || { minute, open: p.price, close: p.price, samples: 0, changed: false };
-    if (p.price !== b.close) b.changed = true;
+    const b = buckets.get(minute) || { minute, open: p.price, close: p.price, samples: 0, changed: false, lastDirection: 'GRAY' };
+    if (p.price !== b.close) { b.changed = true; b.lastDirection = p.price > b.close ? 'GREEN' : 'RED'; }
     b.close = p.price; b.samples += 1; buckets.set(minute, b);
   });
   const segments = Array.from({ length: WINDOW_MINUTES }, (_, i) => {
@@ -27,7 +27,8 @@ function localFallback(points) {
     const b = buckets.get(minute);
     if (!b) return { minute, status: 'GRAY', move: null, samples: 0, changed: false };
     const move = b.open > 0 ? ((b.close - b.open) / b.open) * 100 : 0;
-    return { ...b, move, status: move > 0 ? 'GREEN' : move < 0 ? 'RED' : b.changed ? 'GREEN' : 'GRAY' };
+    const status = move > 0 ? 'GREEN' : move < 0 ? 'RED' : b.changed ? b.lastDirection : 'GRAY';
+    return { ...b, move, status };
   });
   const populated = segments.filter((s) => Number.isFinite(s.move) && s.open > 0);
   const first = populated[0]?.open; const last = populated.at(-1)?.close;
