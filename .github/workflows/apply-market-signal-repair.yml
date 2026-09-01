@@ -24,20 +24,20 @@ jobs:
           python-version: '3.13'
 
       - name: Apply deterministic repair
-        run: python tools/repair_market_signal.py
+        run: python tools/repair_market_signal_v2.py
 
       - name: Validate Python syntax
-        run: python -m py_compile fronted/cf_worker.py fronted/paper_cycle.py
+        run: python -m py_compile fronted/cf_worker.py fronted/paper_cycle.py fronted/paper_state.py
 
       - name: Commit repaired runtime
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add fronted/cf_worker.py fronted/paper_cycle.py
+          git add fronted/cf_worker.py fronted/paper_cycle.py fronted/paper_state.py
           git diff --cached --check
           if git diff --cached --quiet; then
             echo 'No runtime changes were necessary.'
             exit 0
           fi
-          git commit -m 'Apply market signal repair: live observations and persistence contract'
+          git commit -m 'Apply market signal repair: five-second observations'
           git push
