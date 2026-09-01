@@ -183,6 +183,42 @@ async def _fetch_market(env, pair):
     return await cf_worker._market_overview({"env": env, "query_string": f"pair={pair}".encode("latin-1")})
 
 
+async def run_market_observation(env, state_api, pair="btc_idr", session_id=None):
+    """Observe real market data without invoking the AI decision engine."""
+    pair = cf_worker._clean_pair(pair)
+    market = await _fetch_market(env, pair)
+    if not market.get("available") or _num(market.get("last")) <= 0:
+        return {"ok": False, "reason": "market_data_unavailable"}
+    points = _normalize_trades(market.get("points"))[-PULSE_FETCH_LIMIT:]
+    history = _merge(await state_api.get_paper_market_history(), points)
+    await state_api.set_paper_market_history(history)
+    anchor = max([_trade_ts(x) for x in history] or [datetime.now(timezone.utc).timestamp()])
+    segments, _, current_pulse, _ = _pulse(history, anchor)
+    latest = history[-1] if history else {}
+    previous = history[-2] if len(history) > 1 else None
+    latest_price = _num(latest.get("price"))
+    previous_price = _num(previous.get("price")) if previous else None
+    observation_move = ((latest_price - previous_price) / previous_price) * 100.0 if previous_price and latest_price else None
+    observation_ts = _trade_ts(latest) or datetime.now(timezone.utc).timestamp()
+    observation_id = f"OBS-{uuid.uuid4()}"
+    payload = {
+        "cycle_id": observation_id,
+        "session_id": session_id or datetime.now(timezone.utc).isoformat(),
+        "symbol": market["pair"].upper().replace("_", "/"),
+        "observed_at": datetime.fromtimestamp(observation_ts, timezone.utc).isoformat(),
+        "minute_bucket": datetime.fromtimestamp(int(observation_ts // 60) * 60, timezone.utc).isoformat(),
+        "price": latest_price,
+        "source": str(latest.get("source") or "INDODAX public market data"),
+        "observation_type": str(latest.get("observation_type") or "TRADE").upper(),
+        "trade_count": sum(1 for point in history if str(point.get("observation_type", "TRADE")).upper() == "TRADE" and int(_trade_ts(point) // 60) == int(observation_ts // 60)),
+        "move_from_previous_pct": observation_move,
+        "pulse_status": current_pulse,
+        "raw_observation": {"price": latest_price, "timestamp": observation_ts, "source": latest.get("source"), "observation_type": latest.get("observation_type"), "pulse_segments": segments[-1:]},
+    }
+    saved = await _supabase(env, "market_observations", payload=payload)
+    return {"ok": True, "observation_id": saved.get("id"), "persistence": saved, "price": latest_price, "current_pulse_status": current_pulse}
+
+
 async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
     pair = cf_worker._clean_pair(pair)
     begin = await state_api.begin_cycle()

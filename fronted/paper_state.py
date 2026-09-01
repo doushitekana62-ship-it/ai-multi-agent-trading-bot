@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 
 from workers import DurableObject
 
-from paper_cycle import run_paper_cycle
+from paper_cycle import run_market_observation, run_paper_cycle
 
-CYCLE_INTERVAL_MS = 60_000
+CYCLE_INTERVAL_MS = 5_000
+DECISION_INTERVAL_MS = 60_000
 MAX_POSITIONS = 3
 DEFAULT_POSITION_ALLOCATION = 0.10
 STATE_VERSION = 3
@@ -402,9 +403,25 @@ class PaperTradingState(DurableObject):
             return
 
         try:
-            await run_paper_cycle(self.env, self, state.get("paper_pair") or "btc_idr")
+            last_cycle_at = state.get("last_cycle_at")
+            decision_due = True
+            if last_cycle_at:
+                try:
+                    last_cycle_ms = datetime.fromisoformat(str(last_cycle_at)).timestamp() * 1000.0
+                    now_ms = datetime.now(timezone.utc).timestamp() * 1000.0
+                    decision_due = (now_ms - last_cycle_ms) >= DECISION_INTERVAL_MS
+                except (TypeError, ValueError):
+                    decision_due = True
+            if decision_due:
+                await run_paper_cycle(self.env, self, state.get("paper_pair") or "btc_idr")
+            else:
+                await run_market_observation(self.env, self, state.get("paper_pair") or "btc_idr", state.get("started_at"))
         except Exception as exc:
-            await self.finish_cycle(f"alarm_cycle_error: {exc}")
+            # Observation failures must not be misclassified as decision failures.
+            state = await self._get()
+            state["last_error"] = f"market_observation_error: {type(exc).__name__}: {exc}"
+            state["updated_at"] = _now()
+            await self.ctx.storage.put("state", state)
 
         state = await self._get()
         if not state.get("enabled"):
