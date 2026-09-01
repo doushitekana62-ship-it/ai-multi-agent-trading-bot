@@ -86,7 +86,7 @@ def _normalize_trades(payload):
         if price <= 0 or ts <= 0:
             continue
         side = str(item.get("type") or item.get("side") or "").lower()
-        out.append({"tid": str(item.get("tid") or item.get("trade_id") or ""), "price": price, "timestamp": ts, "amount": _num(item.get("amount")), "type": side, "side": side, "source": "INDODAX public market data"})
+        out.append({"tid": str(item.get("tid") or item.get("trade_id") or ""), "price": price, "timestamp": ts, "amount": _num(item.get("amount")), "type": side, "side": side, "source": str(item.get("source") or "INDODAX public market data"), "observation_type": str(item.get("observation_type") or ("TRADE" if item.get("tid") or item.get("trade_id") else "UNKNOWN")).upper()})
     return out
 
 
@@ -116,17 +116,35 @@ def _pulse(points, anchor):
         if ts <= 0 or price <= 0 or ts < current - 29 * 60 or ts > anchor:
             continue
         bucket = int(ts // 60) * 60
-        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0})
-        row["high"] = max(row["high"], price); row["low"] = min(row["low"], price); row["close"] = price; row["trades"] += 1
+        row = buckets.setdefault(bucket, {"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "open": price, "high": price, "low": price, "close": price, "trades": 0, "observations": 0, "changed": False})
+        if row["observations"] > 0 and price != row["close"]:
+            row["changed"] = True
+        row["high"] = max(row["high"], price)
+        row["low"] = min(row["low"], price)
+        row["close"] = price
+        row["trades"] += 1 if str(point.get("observation_type", "TRADE")).upper() == "TRADE" else 0
+        row["observations"] += 1
     segments = []
     for bucket in range(current - 29 * 60, current + 60, 60):
         row = buckets.get(bucket)
         if not row:
-            segments.append({"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "status": "GRAY", "move_pct": None, "trades": 0, "open": None, "close": None})
+            segments.append({"timestamp": datetime.fromtimestamp(bucket, timezone.utc).isoformat(), "status": "GRAY", "move_pct": None, "trades": 0, "observations": 0, "changed": False, "open": None, "close": None})
             continue
         move = ((row["close"] - row["open"]) / row["open"]) * 100.0 if row["open"] > 0 else 0.0
-        row["move_pct"] = move; row["status"] = "GREEN" if move > 0 else "RED" if move < 0 else "GRAY"; segments.append(row)
-    populated = [x for x in segments if x.get("trades", 0) > 0 and x.get("open")]
+        if move > 0:
+            status = "GREEN"
+        elif move < 0:
+            status = "RED"
+        elif row["changed"] and row["high"] > row["open"]:
+            status = "GREEN"
+        elif row["changed"] and row["low"] < row["open"]:
+            status = "RED"
+        else:
+            status = "GRAY"
+        row["move_pct"] = move
+        row["status"] = status
+        segments.append(row)
+    populated = [x for x in segments if x.get("observations", 0) > 0 and x.get("open")]
     if not populated:
         return segments, "GRAY", "GRAY", None
     net = ((populated[-1]["close"] - populated[0]["open"]) / populated[0]["open"]) * 100.0
@@ -190,6 +208,27 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         symbol = market["pair"].upper().replace("_", "/")
         market_data = {"symbol": symbol, "current_price": _num(market["last"]), "unified_price": _num(market["last"]), "high_24h": _num(market.get("high")), "low_24h": _num(market.get("low")), "volume_24h": _num(market.get("volume")), "ohlcv": candles, "recent_trades": history, "timeframe": "1m", "timestamp": datetime.fromtimestamp(anchor, timezone.utc).isoformat(), "source": "INDODAX public market data", "market_source": "INDODAX public market data", "pulse_segments": segments, "pulse_status": pulse_status, "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net, "data_quality_score": min(1.0, max(0.3, len(candles) / 60.0)), **moves}
         market_data.update({"movement_1m": moves["move_1m_pct"] / 100.0 if moves["move_1m_pct"] is not None else None, "movement_5m": moves["move_5m_pct"] / 100.0 if moves["move_5m_pct"] is not None else None, "movement_15m": moves["move_15m_pct"] / 100.0 if moves["move_15m_pct"] is not None else None, "movement_30m": moves["move_30m_pct"] / 100.0 if moves["move_30m_pct"] is not None else None})
+        latest_observation = history[-1] if history else {}
+        previous_observation = history[-2] if len(history) > 1 else None
+        previous_price = _num(previous_observation.get("price")) if previous_observation else None
+        latest_price = _num(latest_observation.get("price"))
+        observation_move = ((latest_price - previous_price) / previous_price) * 100.0 if previous_price and latest_price else None
+        observation_ts = _trade_ts(latest_observation) or datetime.now(timezone.utc).timestamp()
+        observation_payload = {
+            "cycle_id": cycle_id,
+            "session_id": session_id,
+            "symbol": symbol,
+            "observed_at": datetime.fromtimestamp(observation_ts, timezone.utc).isoformat(),
+            "minute_bucket": datetime.fromtimestamp(int(observation_ts // 60) * 60, timezone.utc).isoformat(),
+            "price": latest_price,
+            "source": str(latest_observation.get("source") or "INDODAX public market data"),
+            "observation_type": str(latest_observation.get("observation_type") or "TRADE").upper(),
+            "trade_count": sum(1 for point in history if str(point.get("observation_type", "TRADE")).upper() == "TRADE" and int(_trade_ts(point) // 60) == int(observation_ts // 60)),
+            "move_from_previous_pct": observation_move,
+            "pulse_status": current_pulse,
+            "raw_observation": {"price": latest_price, "timestamp": observation_ts, "source": latest_observation.get("source"), "observation_type": latest_observation.get("observation_type")},
+        }
+        observation_result = await _supabase(env, "market_observations", payload=observation_payload)
         result = await CloudflareOrchestrator({"min_confidence": EXECUTION_CONFIDENCE_THRESHOLD, "max_position_size": MAX_POSITION_SIZE, "debug_enabled": True}, env=env).analyze(symbol, market_data)
         raw_action = str(getattr(result, "final_action", "HOLD") or "HOLD").upper()
         candidate = {"STRONG_BUY": "BUY", "STRONG_SELL": "SELL"}.get(raw_action, raw_action)
@@ -204,7 +243,7 @@ async def run_paper_cycle(env, state_api, pair="btc_idr", state_response=None):
         metadata = {"cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "symbol": symbol, "action": action, "candidate_action": candidate, "raw_action": raw_action, "confidence": confidence, "source": getattr(result, "engine_source", "deterministic_market_fallback"), "warning": getattr(result, "engine_warning", None), "cycle_status": getattr(result, "cycle_status", "NO_EDGE" if action == "HOLD" else "ANALYZED"), "votes": dict(getattr(result, "agent_votes", {}) or {}), "market_scores": scores, "confidence_components": components, "execution_gate": {"threshold": EXECUTION_CONFIDENCE_THRESHOLD, "candidate_action": candidate, "passed": execution_pass, "executed_action": action, "reason": "PASS" if execution_pass else "CONFIDENCE_BELOW_EXECUTION_THRESHOLD" if candidate in {"BUY", "SELL"} else "NO_DIRECTIONAL_CANDIDATE"}, "consensus_action": getattr(result, "consensus_action", candidate), "consensus_score": _num(getattr(result, "consensus_score", 0)), "position_size": min(MAX_POSITION_SIZE, _num(getattr(result, "position_size", 0))), "stop_loss": _optional_num(getattr(result, "stop_loss", None)), "take_profit": _optional_num(getattr(result, "take_profit", None)), "execution_reason": getattr(result, "execution_reason", None), "hold_reason": getattr(result, "hold_reason", None), "summary": getattr(result, "summary", ""), "hold_analysis": hold_analysis, "agent_details": details, "market_timestamp": datetime.fromtimestamp(anchor, timezone.utc).isoformat(), "market_source": "INDODAX public market data", "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "pulse_status": pulse_status, "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net, "pulse_segments": segments, "market_history_points": len(history), "library_version": getattr(result, "library_version", "unknown"), "library_alerts": list(getattr(result, "library_alerts", []) or [])[:4], "candle_analysis": dict(getattr(result, "candle_analysis", {}) or {}), "knowledge_topics": list(getattr(result, "knowledge_topics", []) or [])}
         snapshot = {**market, "points": history, "ohlcv": candles, "pulse_segments": segments, "pulse_status": pulse_status, "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net}
         now_iso = datetime.now(timezone.utc).isoformat()
-        common = {"cycle_at": now_iso, "trading_date": now_iso[:10], "pair": symbol, "action": action, "raw_action": raw_action, "confidence": confidence * 100, "price": market_data["current_price"], "balance": _num(pre.get("balance")), "portfolio_value": _num(pre.get("portfolio_value")), "daily_pnl": _num(pre.get("daily_pnl")), "total_pnl": _num(pre.get("total_pnl")), "active_positions": int(pre.get("active_positions", 0)), "positions": list(pre.get("positions") or []), "agent_votes": metadata["votes"], "market_scores": scores, "confidence_components": components, "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"], "position_size": metadata["position_size"], "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"], "reasoning": _reasoning(getattr(result, "execution_reason", None) or getattr(result, "hold_reason", None) or getattr(result, "summary", ""), metadata["library_alerts"]), "engine_source": metadata["source"], "engine_warning": metadata["warning"], "cycle_status": metadata["cycle_status"], "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "bid": _optional_num(market.get("buy")), "ask": _optional_num(market.get("sell")), "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "pulse_status": pulse_status, "pulse_segments": segments, "agent_details": details, "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"], "market_snapshot": snapshot, "persistence_status": "pending", "library_version": metadata["library_version"], "library_alerts": metadata["library_alerts"], "candle_analysis": metadata["candle_analysis"], "knowledge_topics": metadata["knowledge_topics"], "market_regime": metadata["cycle_status"], "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net, "data_quality_status": "OK" if len(candles) >= 10 else "DEGRADED", "candidate_action": candidate, "execution_status": "APPROVED" if execution_pass else "NOT_EXECUTED", "risk_rejection_reason": None if execution_pass else metadata["execution_gate"]["reason"] if candidate in {"BUY", "SELL"} else None, "consecutive_hold_count": 0, "no_edge_count": 1 if metadata["cycle_status"] == "NO_EDGE" else 0, "agent_run_count": len(details)}
+        common = {"cycle_at": now_iso, "trading_date": now_iso[:10], "pair": symbol, "action": action, "raw_action": raw_action, "confidence": confidence * 100, "price": market_data["current_price"], "balance": _num(pre.get("balance")), "portfolio_value": _num(pre.get("portfolio_value")), "daily_pnl": _num(pre.get("daily_pnl")), "total_pnl": _num(pre.get("total_pnl")), "active_positions": int(pre.get("active_positions", 0)), "positions": list(pre.get("positions") or []), "agent_votes": metadata["votes"], "market_scores": scores, "confidence_components": components, "consensus_action": metadata["consensus_action"], "consensus_score": metadata["consensus_score"], "position_size": metadata["position_size"], "stop_loss": metadata["stop_loss"], "take_profit": metadata["take_profit"], "reasoning": _reasoning(getattr(result, "execution_reason", None) or getattr(result, "hold_reason", None) or getattr(result, "summary", ""), metadata["library_alerts"]), "engine_source": metadata["source"], "engine_warning": metadata["warning"], "cycle_status": metadata["cycle_status"], "cycle_id": cycle_id, "session_id": session_id, "cycle_number": cycle_number, "market_timestamp": metadata["market_timestamp"], "market_source": metadata["market_source"], "bid": _optional_num(market.get("buy")), "ask": _optional_num(market.get("sell")), "move_1m_pct": moves["move_1m_pct"], "move_5m_pct": moves["move_5m_pct"], "move_15m_pct": moves["move_15m_pct"], "move_30m_pct": moves["move_30m_pct"], "pulse_status": pulse_status, "pulse_segments": segments, "agent_details": details, "hold_analysis": hold_analysis, "execution_gate": metadata["execution_gate"], "market_snapshot": snapshot, "persistence_status": "saved", "library_version": metadata["library_version"], "library_alerts": metadata["library_alerts"], "candle_analysis": metadata["candle_analysis"], "knowledge_topics": metadata["knowledge_topics"], "market_regime": metadata["cycle_status"], "current_pulse_status": current_pulse, "pulse_net_move_30m_pct": pulse_net, "data_quality_status": "OK" if len(candles) >= 10 else "DEGRADED", "candidate_action": candidate, "execution_status": "APPROVED" if execution_pass else "NOT_EXECUTED", "risk_rejection_reason": None if execution_pass else metadata["execution_gate"]["reason"] if candidate in {"BUY", "SELL"} else None, "consecutive_hold_count": 0, "no_edge_count": 1 if metadata["cycle_status"] == "NO_EDGE" else 0, "agent_run_count": len(details)}
         decision = await _supabase(env, "decisions", payload=common)
         if not decision.get("saved"):
             state = await state_api.finish_cycle("decision_persistence_failed")

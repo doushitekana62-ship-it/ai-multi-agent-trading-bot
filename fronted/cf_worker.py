@@ -189,7 +189,20 @@ async def _market_overview(scope):
     if not ticker or not isinstance(ticker.get("ticker"), dict):
         return {"available": False, "pair": pair, "currency": "IDR", "currency_symbol": "Rp", "source": "INDODAX public market data"}
     t = ticker["ticker"]
-    points = _normalize_public_trades(trades)[-1440:]
+    trade_points = _normalize_public_trades(trades)[-1440:]
+    last_price = float(t.get("last") or 0)
+    ticker_timestamp = int(time.time())
+    ticker_point = {
+        "tid": f"ticker:{pair}:{ticker_timestamp}:{last_price}",
+        "price": last_price,
+        "timestamp": ticker_timestamp,
+        "amount": 0.0,
+        "type": "ticker",
+        "side": "",
+        "source": "INDODAX public ticker",
+        "observation_type": "TICKER",
+    } if last_price > 0 else None
+    points = [*trade_points, ticker_point] if ticker_point else trade_points
     return {
         "available": True,
         "pair": pair,
@@ -204,10 +217,10 @@ async def _market_overview(scope):
         "low": float(t.get("low") or 0),
         "volume": float(t.get("vol_idr") or t.get("vol") or 0),
         "recent_move": _recent_trade_move(points),
-        "recent_move_label": "INDODAX public trades",
+        "recent_move_label": "INDODAX public observations",
         "points": points,
         "source": "INDODAX public market data",
-        "market_data_quality": "TRADE_STREAM_OK" if points else "TICKER_ONLY",
+        "market_data_quality": "TRADE_STREAM_PLUS_TICKER" if trade_points else "TICKER_FALLBACK",
     }
 
 
