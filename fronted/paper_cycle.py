@@ -176,7 +176,7 @@ def _agent_details(result):
 
 def _reasoning(reason, alerts):
     text = str(reason or "").split(LIBRARY_ALERT_MARKER, 1)[0].strip()
-    return f"{text} {LIBRARY_ALERT_MARKER}{json.dumps(alerts[:4], separators=(",", ":"))}".strip() if alerts else text
+    return f"{text} {LIBRARY_ALERT_MARKER}{json.dumps(alerts[:4], separators=(',', ':'))}".strip() if alerts else text
 
 
 async def _fetch_market(env, pair):
