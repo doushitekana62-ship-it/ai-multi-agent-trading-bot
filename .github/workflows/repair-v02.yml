@@ -2,6 +2,7 @@ name: Apply V0.2 Ledger Runtime Repair
 on:
   push:
     branches: [repair/v02-ledger-runtime]
+  workflow_dispatch:
 permissions:
   contents: write
 concurrency:
