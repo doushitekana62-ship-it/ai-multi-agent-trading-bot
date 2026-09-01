@@ -59,7 +59,8 @@ def test_paper_scheduler_is_durable_object_alarm_driven():
     assert "getAlarm" in state
     assert "setAlarm" in state
     assert "deleteAlarm" in state
-    assert "CYCLE_INTERVAL_MS = 60_000" in state
+    assert "CYCLE_INTERVAL_MS = 5_000" in state
+    assert "DECISION_INTERVAL_MS = 60_000" in state
 
 
 def test_paper_position_control_is_persistent_and_bounded():
@@ -77,7 +78,7 @@ def test_paper_history_route_is_on_authoritative_worker():
     cycle = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
     migration = (ROOT / "supabase" / "migrations" / "20260829130000_create_paper_history.sql").read_text(encoding="utf-8")
     assert 'path == "/api/dashboard/history"' in worker
-    assert '"/rest/v1/paper_history?' in worker
+    assert "/rest/v1/paper_history?" in worker
     assert '"paper_history"' in cycle
     assert "create table if not exists public.paper_history" in migration
 
