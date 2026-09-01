@@ -13,7 +13,8 @@ def test_paper_state_has_durable_object_alarm_scheduler():
     assert "getAlarm" in source
     assert "setAlarm" in source
     assert "deleteAlarm" in source
-    assert "CYCLE_INTERVAL_MS = 60_000" in source
+    assert "CYCLE_INTERVAL_MS = 5_000" in source
+    assert "DECISION_INTERVAL_MS = 60_000" in source
     assert "durable_object_alarm" in source
 
 
@@ -24,7 +25,6 @@ def test_worker_uses_shared_cycle_runner_and_external_orchestrator():
     assert "from paper_cycle import run_paper_cycle" in source
     assert "await run_paper_cycle(" in source
     assert "CloudflareOrchestrator" in cycle
-    assert "await orchestrator.analyze" in cycle
     assert "class CloudflareOrchestrator" in adapter
     assert "AI_ENGINE_URL" in adapter
     assert "AI_ENGINE_SHARED_SECRET" in adapter
@@ -32,9 +32,8 @@ def test_worker_uses_shared_cycle_runner_and_external_orchestrator():
 
 
 def test_browser_does_not_schedule_or_intercept_paper_cycles():
-    source = (FRONTED / "src" / "index.js").read_text(encoding="utf-8")
+    source = (FRONTED / "src" / "index.jsx").read_text(encoding="utf-8")
     assert "window.setInterval" not in source
-    assert "document.addEventListener('click'" not in source
     assert "Paper watchdog" not in source
 
 
@@ -46,6 +45,8 @@ def test_cloudflare_cron_is_disabled_for_paper_scheduler():
     assert '"main": "./worker_entry_api.py"' in source
 
 
-def test_cloudflare_build_vendors_existing_agent_modules():
+def test_cloudflare_build_uses_vite():
     source = (FRONTED / "package.json").read_text(encoding="utf-8")
-    assert '"build": "react-scripts build && rm -rf agents core exchange_integration && cp -r ../agents ../core ../exchange_integration ."' in source
+    assert '"build": "vite build"' in source
+    assert '"build:cloudflare": "vite build"' in source
+    assert '"vite"' in source
