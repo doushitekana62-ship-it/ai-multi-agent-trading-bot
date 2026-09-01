@@ -4,10 +4,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTED = ROOT / "fronted"
 
 
-def test_paper_scheduler_keeps_five_second_observation_baseline():
-    source = (FRONTED / "paper_state.py").read_text(encoding="utf-8")
-    assert "CYCLE_INTERVAL_MS = 5_000" in source
-    assert "DECISION_INTERVAL_MS = 60_000" in source
+def test_paper_scheduler_keeps_minute_decision_and_live_observation_surface():
+    state_source = (FRONTED / "paper_state.py").read_text(encoding="utf-8")
+    pulse_source = (FRONTED / "src" / "components" / "MarketPulseLegend.jsx").read_text(encoding="utf-8")
+    # Server-side AI decisions stay on the canonical sixty-second cadence.
+    # The dashboard observes intraminute ticker movement every five seconds.
+    assert "CYCLE_INTERVAL_MS = 60_000" in state_source
+    assert "DECISION_INTERVAL_MS = 60_000" in state_source
+    assert "POLL_MS = 5000" in pulse_source
 
 
 def test_market_observation_is_minute_idempotent():
