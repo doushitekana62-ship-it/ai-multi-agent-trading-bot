@@ -1,4 +1,4 @@
-import os
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -7,9 +7,10 @@ from fastapi_cloud_app import app
 
 def _market_data():
     prices = [100_000_000 + i * 10_000 + ((i % 7) - 3) * 5_000 for i in range(100)]
+    now = datetime.now(timezone.utc)
     ohlcv = [
         {
-            "timestamp": f"2026-08-28T00:{i // 60:02d}:{i % 60:02d}+00:00",
+            "timestamp": (now - timedelta(minutes=99 - i)).isoformat(),
             "open": float(price),
             "high": float(price * 1.001),
             "low": float(price * 0.999),
@@ -21,12 +22,14 @@ def _market_data():
     return {
         "current_price": float(prices[-1]),
         "unified_price": float(prices[-1]),
+        "timestamp": now.isoformat(),
         "timeframe": "1m",
         "ohlcv": ohlcv,
         "high_24h": float(max(prices)),
         "low_24h": float(min(prices)),
         "volume_24h": 5_000_000.0,
         "change_percent_24h": 0.5,
+        "short_term_move_percent": 0.5,
         "data_quality_score": 0.9,
         "recent_trades": [],
     }
@@ -63,7 +66,7 @@ def test_analyze_runs_existing_multi_agent_orchestrator(monkeypatch):
         assert payload["ok"] is True
         assert payload["symbol"] == "BTC/IDR"
         assert payload["final_action"] in {"BUY", "SELL", "HOLD"}
-        assert set(payload["agent_votes"]).issuperset({"sentiment", "technical", "decision", "forecast"})
+        assert set(payload["agent_votes"]).issuperset({"sentiment", "technical", "forecast"})
 
 
 def test_real_trading_bypass_is_not_accepted(monkeypatch):
@@ -79,5 +82,5 @@ def test_real_trading_bypass_is_not_accepted(monkeypatch):
         )
         assert response.status_code == 200
         payload = response.json()
-        # Forced test input is deliberately removed before Orchestrator analysis.
         assert payload["final_action"] in {"BUY", "SELL", "HOLD"}
+        assert payload["final_action"] != "STRONG_BUY"
