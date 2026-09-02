@@ -51,8 +51,7 @@ def _pulse(rows):
     return segments,"GREEN" if net is not None and net>0 else "RED" if net is not None and net<0 else "GRAY",net
 
 async def _light_market_overview(pair,env=None):
-    pair=_clean_pair(pair)
-    ticker=await _fresh_public_indodax(f"/{pair}/ticker")
+    pair=_clean_pair(pair);ticker=await _fresh_public_indodax(f"/{pair}/ticker")
     if not ticker or not isinstance(ticker.get("ticker"),dict):return {"available":False,"pair":pair,"currency":"IDR","currency_symbol":"Rp","source":"INDODAX public market data"}
     t=ticker["ticker"];last=float(t.get("last") or 0);rows=await _supabase_observations(env,pair) if env is not None else []
     points=[{"tid":f"supabase:{i}:{r.get('observed_at')}","price":float(r.get("price") or 0),"timestamp":r.get("observed_at"),"amount":0,"source":r.get("source") or "INDODAX public market data","observation_type":r.get("observation_type") or "TICKER"} for i,r in enumerate(reversed(rows)) if float(r.get("price") or 0)>0]
@@ -68,7 +67,7 @@ async def fetch(app, request, env):
     if request.method=="GET" and path=="/api/health":return Response.json({"status":"healthy","runtime":"cloudflare-python-worker"})
     if request.method=="GET" and path=="/api/ready":
         configured=all(str(getattr(env,n,"") or "").strip() for n in ("SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY","JWT_SECRET_KEY","ADMIN_USERNAME","ADMIN_PASSWORD"));supabase=await _cf_worker._supabase_probe(scope) if configured else False;return Response.json({"status":"ready" if configured and supabase else "degraded","supabase":bool(supabase),"secrets_configured":configured,"runtime":"cloudflare-python-worker"})
-    if request.method=="GET" and path in {"/api/market/overview","/api/market/data":}:return Response.json(await _light_market_overview(pair,env))
+    if request.method=="GET" and path in {"/api/market/overview","/api/market/data"}:return Response.json(await _light_market_overview(pair,env))
     # Compatibility contract: await _light_market_overview(pair)
     if request.method=="GET" and path=="/api/market/insights":return Response.json(await _cf_worker._market_insights(scope))
     return Response.json({"detail":"API route not found"},status=404)
