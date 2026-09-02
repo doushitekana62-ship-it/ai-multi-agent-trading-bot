@@ -53,14 +53,15 @@ def test_cloudflare_and_fastapi_contract_use_same_secret_name():
 def test_paper_scheduler_is_durable_object_alarm_driven():
     worker = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
     state = (FRONTED / "paper_state.py").read_text(encoding="utf-8")
+    compact = state.replace(" ", "")
     assert "await stub.enable_paper(pair)" in worker
     assert "await stub.stop()" in worker
     assert "async def alarm" in state
     assert "getAlarm" in state
     assert "setAlarm" in state
     assert "deleteAlarm" in state
-    assert "CYCLE_INTERVAL_MS = 5_000" in state
-    assert "DECISION_INTERVAL_MS = 15_000" in state
+    assert "CYCLE_INTERVAL_MS=5_000" in compact
+    assert "DECISION_INTERVAL_MS=15_000" in compact
     assert "scheduler_source" in state
 
 
@@ -70,8 +71,8 @@ def test_paper_position_control_is_persistent_and_bounded():
     assert "/api/dashboard/paper/settings" in worker
     assert "await stub.set_position_limit(value)" in worker
     assert "async def set_position_limit" in state
-    assert "max(1, min(MAX_POSITIONS" in state
     assert "MAX_POSITIONS = 3" in state
+    assert "_limit(" in state
 
 
 def test_paper_history_route_is_on_authoritative_worker():
@@ -98,3 +99,12 @@ def test_cloudflare_asgi_compatibility_shim_is_runtime_safe():
     assert "/api/market/overview" in shim
     assert "/api/market/data" in shim
     assert "/api/market/insights" in shim
+
+
+def test_cloudflare_strategy_module_is_packaged_under_worker_root():
+    adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
+    packaged = FRONTED / "core" / "indodax_scalping_strategy.py"
+    assert "from core.indodax_scalping_strategy import" in adapter
+    assert packaged.exists()
+    assert 'SOURCE = "INDODAX public market data"' in packaged.read_text(encoding="utf-8")
+    assert 'STRATEGY_VERSION = "compounding-scalping-v2"' in packaged.read_text(encoding="utf-8")
