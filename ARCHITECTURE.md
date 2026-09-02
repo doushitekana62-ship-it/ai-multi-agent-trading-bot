@@ -215,6 +215,8 @@ AI does not own final risk approval, authoritative account balance, authoritativ
 
 Dynamic position management must remain deterministic even when external AI is unavailable.
 
+Missing/degraded evidence is excluded from directional scoring; it is not silently converted into BUY/SELL/HOLD evidence.
+
 ## 9. Risk Principle
 
 Compounding is permitted only inside hard risk boundaries.
@@ -281,7 +283,7 @@ In particular:
 - Persistence is an audit/state layer, not a competing trading engine.
 - Cloudflare/deployment must not change trading-domain semantics.
 
-This version adds the **COMPOUNDING SCALPING** strategic direction; implementation now proceeds only under the explicit project-owner instruction already provided.
+This version adds the **COMPOUNDING SCALPING** strategic direction; implementation now proceeds under the explicit project-owner instruction.
 
 ## 12. Change-Control for Compounding Scalping
 
