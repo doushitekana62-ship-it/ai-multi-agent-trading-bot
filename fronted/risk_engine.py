@@ -29,7 +29,7 @@ DEFAULT_RISK_SETTINGS = {
     "break_even_enabled": True,
     "break_even_trigger_r": 1.0,
     "break_even_offset_pct": 0.05,
-    "fee_rate": 0.0030,
+    "fee_rate": 0.000111,
     "slippage_bps": 5.0,
     "max_hold_minutes": 0,
 }
