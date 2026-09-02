@@ -3,88 +3,92 @@ CLOUDFLARE DEPLOYMENT TROUBLE RECORD
 
 Purpose
 -------
-Permanent record of recurring Cloudflare deployment regressions. This file is the deployment checkpoint. Do not restart troubleshooting by randomly changing architecture or dependency versions.
+Permanent operational record for Cloudflare deployment regressions. Read this file before changing the deployment foundation. Change only the layer proven to be failing.
 
-CLOUDFLARE BUILD ENVIRONMENT — 2026-08-31
-------------------------------------------
-- Repository: doushitekana62-ship-it/ai-multi-agent-trading-bot
-- Branch: main
-- Frontend root: fronted
-- Cloudflare build command: bun run build
-- Cloudflare automatically runs bun install first.
-- Current environment: Node.js 20.20.2 and Bun 1.2.15.
-- Python package installation succeeds.
+CURRENT KNOWN-GOOD BASELINE — 2026-09-02
+-----------------------------------------
+- Workers Builds root directory: fronted
+- Frontend build: Vite (`npm run build` -> `vite build`)
+- Worker deployment: `uvx --from workers-py pywrangler deploy`
+- Worker entrypoint: `fronted/worker_entry_api.py`
+- Node.js: 22.x (Wrangler 4.127.1 requires Node >=22 in this deployment stack)
+- Python Workers compatibility flag: `python_workers`
+- Static assets: `./build` through `ASSETS`
+- Durable Object: `PAPER_STATE -> PaperTradingState`
+- Cloudflare Cron: disabled; Durable Object alarm is the paper scheduler
+- FastAPI Cloud is the external CPython AI execution layer
+- GitHub Actions validates the repository; Cloudflare Workers Builds is the production deployment path
 
-HISTORICAL MUI INCIDENTS
-------------------------
-1. Bun dependency resolution failed on @mui/icons-material 5.14.20.
-2. Bun dependency resolution failed on @mui/utils and @mui/private-theming 5.18.0.
-3. CRA/Webpack failed on elementAcceptingRef with tested later MUI 5.x versions.
-4. CRA/Webpack failed on chainPropTypes default export.
-5. A compatibility patch was introduced and expanded from a few files to 66 and then 912 MUI JS files.
-6. The patch merely moved the failure to refType and then HTMLElementType. This proved that patching MUI node_modules files is not a valid solution.
-7. MUI 5.17.1 installed successfully, but CRA still failed on MUI utility default exports.
+HISTORICAL FRONTEND INCIDENTS
+-----------------------------
+1. CRA/MUI failed with `elementAcceptingRef` export errors.
+2. Invalid MUI internal version pins caused dependency-resolution failures.
+3. Vite initially parsed JSX as plain JavaScript because JSX was left in an incompatible `.js` entry path.
+4. Node.js 20 failed with Wrangler because the active Wrangler stack requires Node >=22.
+5. MUI/node_modules patching was rejected as an invalid solution and must never be reintroduced.
 
-LATEST CLOUDLFARE ERROR — 2026-08-31 05:01 UTC
------------------------------------------------
-Cloudflare successfully reached the frozen environment and installed:
-- Node 20.20.2
-- Bun 1.2.15
-- @mui/material 5.17.1
-- @mui/icons-material 5.17.1
-- 1296 packages
-- Python worker package
+CURRENT FRONTEND CONTRACT
+-------------------------
+- Vite, not Create React App.
+- MUI dependency graph remains explicitly pinned to the tested working graph.
+- Do not introduce arbitrary MUI overrides or patch node_modules.
+- Do not change the trading architecture to solve a frontend build problem.
 
-Build contract passed and correctly confirmed no MUI node_modules patching. CRA then failed again with:
-Attempted import error: '@mui/utils/chainPropTypes' does not contain a default export (imported as 'chainPropTypes').
+INCIDENT — 2026-09-02 — CLOUDFLARE DEPLOY REGRESSION AFTER ENTRYPOINT CHANGE
+------------------------------------------------------------------------
+The Cloudflare run supplied on 2026-09-02 began immediately after commit `d1e9a6c008b34278540d7f8d20a391908c0f8d7d` changed Wrangler `main` from the known-good `./worker_entry_api.py` to an experimental `./worker_entry_resilient.py` wrapper.
 
-This proves the remaining problem is not the build contract or Cloudflare environment. The MUI 5.17.1 graph itself is incompatible with the frozen CRA 5/Webpack compilation path used by this repository.
+The supplied run successfully completed:
+- build environment initialization
+- repository checkout
+- dependency installation
+- Python package installation
+- Vite production build
+- Pywrangler environment creation
+- Python package installation into the Worker environment
+- Wrangler startup
 
-REFERENCE RESEARCH — 2026-08-31
--------------------------------
-Web research found MUI's own changelog documenting a @mui/utils module/export change around 5.15.7. The MUI 5.14.0 package dependency graph is therefore the safer compatibility baseline for this legacy CRA/Webpack application.
+The supplied log then ended inside the large `Attaching additional modules` table. That table is Python Worker packaging output and is not itself an error. The final Cloudflare error line was not included in the supplied log, so the exact remote failure cannot be asserted from that log alone.
 
-The documented 5.14.0 graph is:
-- @mui/material 5.14.0
-- @mui/icons-material 5.14.0
-- @mui/system 5.14.0
-- @mui/utils 5.13.7
-- @mui/private-theming 5.13.7
-- @mui/styled-engine 5.13.2
-- @mui/core-downloads-tracker 5.14.0
-- @mui/types 7.2.4
-- @mui/base 5.0.0-beta.7
+However, the entrypoint change was unnecessary, immediately preceded the failed deployment, and violated the repository's documented known-good deployment contract. The smallest evidence-based correction was therefore to restore the canonical entrypoint rather than redesign the Worker.
 
-FIX APPLIED — 2026-08-31
-------------------------
-Commit 91ea90ebb51acc563a3dc1bf69f4fd44bf14cca1 freezes fronted/package.json to the complete MUI 5.14-compatible dependency graph instead of allowing transitive MUI packages to float to 5.17.x.
+FIX APPLIED
+-----------
+- Restored `fronted/wrangler.jsonc` main to `./worker_entry_api.py`.
+- Removed the experimental `fronted/worker_entry_resilient.py` deployment entrypoint.
+- Updated `tests/test_paper_scheduler_contract.py` so CI explicitly protects the canonical entrypoint.
+- Durable Object alarm scheduling remains inside `PaperTradingState`; no Cloudflare Cron was added.
 
-Commit 7c35c96dd6da1cbd9fdb08a6333f52e679d4ea2a updates verify-build-contract.js to validate the complete graph. The verifier now fails early if any MUI package drifts.
+WHY THIS FIX
+------------
+The repository's own Cloudflare incident log identifies `worker_entry_api.py` as the deployment contract. The new wrapper was a speculative scheduler-recovery change, not a demonstrated deployment fix. Cloudflare Workers Builds deploys the Worker specified by the Wrangler configuration, so changing the entrypoint changes the packaged Worker surface. The correct response to an incomplete `Attaching additional modules` log is not to redesign the entrypoint.
 
-Browserslist duplicate configuration was fixed in commit e72641ad1e9863d30b52f22c137989e9d50507cb by removing fronted/.browserslistrc, leaving package.json as the sole Browserslist configuration.
-
-STRICT PREVENTION RULES
------------------------
-- Never patch files under node_modules/@mui.
-- Never add one-off export patches for chainPropTypes, elementAcceptingRef, refType, HTMLElementType, or another MUI utility.
-- Never change one MUI package independently while leaving its transitive MUI graph floating.
-- Never use MUI 5.15.7+ for this frozen CRA 5/Webpack baseline unless the frontend is deliberately migrated away from CRA.
-- Never run a second package manager after Bun install.
-- Never run npm audit fix --force during deployment troubleshooting.
-- Never change trading architecture to solve a frontend dependency error.
-- Keep Node 20 for CRA 5 unless the project deliberately migrates away from CRA.
-
-ARCHITECTURE PROTECTION
------------------------
-Cloudflare frontend troubleshooting must not alter the trading architecture, INDODAX real-market data requirement, Market Pulse 30-minute rolling window / one-minute segments, AI agent pipeline, Durable Object manual paper-trading STOP/START control, or real-exchange lock.
+PACKAGE MANAGER NOTE
+--------------------
+The supplied Cloudflare run shows Workers Builds automatically selected Bun 1.2.15 and created an ephemeral lockfile because no Bun lockfile was present. The historical deployment record warns against mixing package-manager resolution paths. This run nevertheless completed the Vite build successfully, so the current evidence does not justify changing the dependency graph. If dependency-resolution failure returns, first standardize the Workers Builds install configuration rather than changing application code.
 
 VALIDATION ORDER
 ----------------
-1. bun install succeeds.
-2. Complete MUI 5.14 compatibility graph resolves exactly.
-3. build-contract passes.
-4. No node_modules MUI patch executes.
-5. Browserslist has one configuration source.
-6. react-scripts build succeeds.
-7. Worker/static asset deployment succeeds.
-8. Verify application health/API and existing trading architecture.
+1. Workers Builds root is `fronted`.
+2. Dependency installation succeeds without MUI patching.
+3. `npm run build` / Vite succeeds.
+4. `pywrangler deploy` packages the Python Worker.
+5. Wrangler deploy completes and reports the final Worker upload/deployment result.
+6. Worker health/API routes respond.
+7. Durable Object PAPER_STATE is available.
+8. FastAPI Cloud `/health` and `/ready` respond.
+9. AI engine HTTPS connection works.
+10. Manual START creates the first paper cycle.
+11. The cycle is persisted and Market Pulse remains populated from real market observations.
+12. Manual STOP prevents future cycles.
+
+STRICT RULES
+------------
+- Do not change trading architecture to solve Cloudflare deployment errors.
+- Do not move the CPython multi-agent orchestrator into the Cloudflare Worker.
+- Do not add a Cloudflare AI service binding.
+- Do not replace real INDODAX market data with synthetic browser data.
+- Do not remove Durable Object manual START/STOP control.
+- Real exchange execution remains locked during this development phase.
+- Do not add real exchange credentials during deployment troubleshooting.
+- Identify the first actual error line; do not treat warnings or long packaging tables as failures.
