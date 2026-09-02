@@ -56,6 +56,8 @@ jobs:
       - name: Build React dashboard
         working-directory: fronted
         run: npm run build
+      - name: Install uv for Cloudflare Python Worker validation
+        run: python -m pip install uv
       - name: Validate Cloudflare Python Worker bundle
         working-directory: fronted
         run: uvx --from workers-py pywrangler deploy --dry-run
