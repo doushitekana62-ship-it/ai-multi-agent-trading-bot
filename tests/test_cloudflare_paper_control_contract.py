@@ -17,6 +17,8 @@ def test_paper_state_has_manual_alarm_scheduler():
     assert "durable_object_alarm" in source
     assert "CYCLE_INTERVAL_MS = 60_000" in source
     assert "risk_settings" in source
+    assert "async def preview_risk_exit" in source
+    assert "update_protection(position, current_price, points, risk)" in source
 
 
 def test_worker_uses_shared_cycle_runner_and_risk_api():
