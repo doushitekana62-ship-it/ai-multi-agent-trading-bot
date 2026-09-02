@@ -257,6 +257,37 @@ class PaperTradingState(DurableObject):
         await self.ctx.storage.put("last_orchestrator", safe)
         return safe
 
+    async def preview_risk_exit(self, symbol, price):
+        """Preview the authoritative risk exit without mutating paper state."""
+        state = await self._get()
+        risk = settings_with_defaults(state.get("risk_settings"))
+        if not risk.get("enabled"):
+            return {"triggered": False, "reason": None, "symbol": symbol, "price": _num(price), "risk_enabled": False}
+        try:
+            current_price = float(price or 0)
+        except (TypeError, ValueError):
+            current_price = 0.0
+        if current_price <= 0:
+            return {"triggered": False, "reason": None, "symbol": symbol, "price": current_price, "risk_enabled": True}
+        normalized_symbol = str(symbol or "").upper()
+        position = next(
+            (p for p in state.get("positions") or []
+             if str(p.get("symbol") or "").upper() == normalized_symbol),
+            None,
+        )
+        if position is None:
+            return {"triggered": False, "reason": None, "symbol": symbol, "price": current_price, "risk_enabled": True}
+        points = await self.get_paper_market_history()
+        snapshot = update_protection(position, current_price, points, risk)
+        return {
+            "triggered": bool(snapshot.get("triggered")),
+            "reason": snapshot.get("reason"),
+            "symbol": symbol,
+            "price": current_price,
+            "risk_enabled": True,
+            "snapshot": snapshot,
+        }
+
     async def record_cycle(self, decision=None, confidence=0.0, symbol="BTC/IDR", price=0.0, reasoning="", analysis=None):
         state = await self._get()
         if not state.get("enabled"):
