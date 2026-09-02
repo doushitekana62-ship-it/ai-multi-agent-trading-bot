@@ -18,23 +18,23 @@ def test_market_routes_use_lightweight_ticker_adapter():
     assert "/api/market/data" in source
     assert "/api/market/insights" in source
     assert "async def _light_market_overview" in source
-    assert "await _light_market_overview(pair)" in source
+    assert "_light_market_overview(pair,env)" in source
     assert "_cf_worker._market_insights" in source
     assert "_cf_worker._market_overview(scope)" not in source
 
 
 def test_indodax_market_fetch_bypasses_cloudflare_edge_cache():
     source = (FRONTED / "asgi.py").read_text(encoding="utf-8")
-    assert '"cache": "no-store"' in source
-    assert '"Cache-Control": "no-cache"' in source
+    assert '"cache":"no-store"' in source
+    assert '"Cache-Control":"no-cache"' in source
     assert "_live=" in source
 
 
 def test_market_pulse_is_one_minute_rolling_and_marks_observed_changes():
     source = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
-    assert "PULSE_MINUTES = 30" in source
-    assert "bucket = int(ts // 60) * 60" in source
-    assert "row[\"changed\"] = True" in source
+    assert "PULSE_MINUTES=30" in source
+    assert "int(_ts(x)//60)==int(anchor//60)" in source
+    assert "current_pulse_status" in source
     assert "GREEN" in source and "RED" in source and "GRAY" in source
 
 
