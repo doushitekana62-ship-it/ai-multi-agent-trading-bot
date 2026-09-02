@@ -9,7 +9,6 @@ import DashboardAnalytics from '../components/DashboardAnalytics';
 import DashboardTools from '../components/DashboardTools';
 import MarketPulseLegend from '../components/MarketPulseLegend';
 import TargetPlanner from '../components/TargetPlanner';
-
 const PAIRS=[['btc_idr','BTC/IDR'],['eth_idr','ETH/IDR'],['usdt_idr','USDT/IDR'],['xrp_idr','XRP/IDR'],['doge_idr','DOGE/IDR'],['sol_idr','SOL/IDR'],['beat_idr','BEAT/IDR'],['hype_idr','HYPE/IDR'],['ada_idr','ADA/IDR'],['trx_idr','TRX/IDR'],['shib_idr','SHIB/IDR'],['pepe_idr','PEPE/IDR']];
 const POLL_MS=2000,ZERO={BUY:0,SELL:0,HOLD:0};
 const idr=v=>new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',maximumFractionDigits:0}).format(Number(v)||0);
@@ -34,7 +33,7 @@ export default function Dashboard(){
  <Grid container spacing={3} sx={{mt:.1,mb:3}}><Grid item xs={12} md={3}><Card><CardContent><Typography variant="caption" color="text.secondary">ACCOUNT EQUITY</Typography><Typography variant="h5">{idr(equity)}</Typography></CardContent></Card></Grid><Grid item xs={12} md={3}><Card><CardContent><Typography variant="caption" color="text.secondary">DAILY PNL</Typography><Typography variant="h5">{idr(dailyPnl)}</Typography></CardContent></Card></Grid><Grid item xs={12} md={3}><Card><CardContent><Typography variant="caption" color="text.secondary">BUY / SELL / HOLD</Typography><Typography variant="h5">{counts.BUY} / {counts.SELL} / {counts.HOLD}</Typography></CardContent></Card></Grid><Grid item xs={12} md={3}><Card><CardContent><Typography variant="caption" color="text.secondary">OPEN POSITIONS</Typography><Typography variant="h5">{positions.length}</Typography></CardContent></Card></Grid></Grid>
  <DashboardAnalytics decision={decision} insights={insights} selectedPair={pair} onPairChange={v=>{if(!enabled){setPair(v);localStorage.setItem('paperTradingPair',v)}}}/>
  <Grid container spacing={3} sx={{mb:3}}><Grid item xs={12}><TargetPlanner dailyActual={dailyPnl}/></Grid></Grid>
- <Box sx={{'& > div:nth-child(10)':{display:'none'}}}><DashboardTools enabled={enabled} market={chartMarket} decision={decision} counts={counts} runtimeHours={runtimeHours} cycles={cycles} targets={targets} dailyActual={dailyPnl} positions={positions}/></Box>
+ <Box sx={{'& > div > div:nth-child(10)':{display:'none'}}}><DashboardTools enabled={enabled} market={chartMarket} decision={decision} counts={counts} runtimeHours={runtimeHours} cycles={cycles} targets={targets} dailyActual={dailyPnl} positions={positions}/></Box>
  <Paper sx={{p:2.5,mt:3}}><Typography variant="h6">Latest Decision</Typography><Typography variant="body1" sx={{mt:1,fontWeight:700}}>{decision?.action||'HOLD'} · {Number(decision?.confidence||0).toFixed(1)}%</Typography><Typography variant="body2" color="text.secondary">{decision?.reasoning||decision?.summary||'Waiting for a decision cycle.'}</Typography></Paper>
  </Box></Box>;
 }
