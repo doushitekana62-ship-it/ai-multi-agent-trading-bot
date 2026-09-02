@@ -6,7 +6,7 @@
 >
 > **Status:** CANONICAL STRATEGIC DIRECTION / IMPLEMENTATION SOURCE OF TRUTH — 2026-09-02
 >
-> **Implementation rule:** This architecture update defines the strategic direction and contracts. It does not authorize code changes by itself. Implementation requires explicit project-owner instruction.
+> **Implementation rule:** This architecture update defines the strategic direction and contracts. Implementation changes require explicit project-owner instruction.
 >
 > **Previous version:** The complete v0.3 baseline is preserved unchanged in `ARCHITECTURE_v0.3.md` and in Git history.
 
@@ -47,6 +47,8 @@ NEXT SCALP
 A profitable trade may increase the capital base available to subsequent sizing. A losing trade decreases it. The system must never increase risk merely to recover a previous loss.
 
 The intended behavior is **small risk, small profit, repeated only when a valid edge exists**. `HOLD` / `NO_EDGE` remains a valid outcome when conditions are insufficient.
+
+The historical architecture rule remains explicit: **Data failure is never represented as normal HOLD.**
 
 ## 2. Compounding Capital Principle
 
@@ -279,7 +281,7 @@ In particular:
 - Persistence is an audit/state layer, not a competing trading engine.
 - Cloudflare/deployment must not change trading-domain semantics.
 
-This version adds the **COMPOUNDING SCALPING** strategic direction; it does not authorize a rewrite of the application.
+This version adds the **COMPOUNDING SCALPING** strategic direction; implementation now proceeds only under the explicit project-owner instruction already provided.
 
 ## 12. Change-Control for Compounding Scalping
 
@@ -291,8 +293,6 @@ Before implementation of any compounding-scalping behavior, explicitly identify:
 4. the tests needed to prove accounting and risk correctness;
 5. compatibility with Indodax execution constraints;
 6. preservation of paper/real behavioral parity.
-
-No code change is authorized by this architecture document alone. The project owner must explicitly instruct implementation.
 
 ## 13. Version History
 
