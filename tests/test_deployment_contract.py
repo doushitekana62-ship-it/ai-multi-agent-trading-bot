@@ -59,8 +59,9 @@ def test_paper_scheduler_is_durable_object_alarm_driven():
     assert "getAlarm" in state
     assert "setAlarm" in state
     assert "deleteAlarm" in state
-    assert "CYCLE_INTERVAL_MS = 60_000" in state
-    assert "DECISION_INTERVAL_MS = 60_000" in state
+    assert "CYCLE_INTERVAL_MS = 5_000" in state
+    assert "DECISION_INTERVAL_MS = 15_000" in state
+    assert "scheduler_source" in state
 
 
 def test_paper_position_control_is_persistent_and_bounded():
