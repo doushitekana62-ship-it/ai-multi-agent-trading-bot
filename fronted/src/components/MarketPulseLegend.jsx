@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Chip, Paper, Stack, Tooltip, Typography } from '@mui/material';
+import { Box, Chip, Stack, Tooltip, Typography } from '@mui/material';
 import axios from 'axios';
 
 const POLL_MS = 5000;
@@ -46,7 +46,6 @@ function localFallback(points) {
 
 export default function MarketPulseLegend() {
   const [market, setMarket] = useState(null);
-  const [points, setPoints] = useState([]);
 
   useEffect(() => {
     let stopped = false;
@@ -58,9 +57,7 @@ export default function MarketPulseLegend() {
         const pair = localStorage.getItem('paperTradingPair') || 'btc_idr';
         const response = await axios.get('/api/market/overview', { params: { pair, _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 });
         if (stopped) return;
-        const data = response.data || {};
-        setMarket(data);
-        setPoints((current) => [...current, ...(Array.isArray(data.points) ? data.points : [])].slice(-360));
+        setMarket(response.data || {});
       } catch {
         // Preserve the last valid pulse on transient API failures.
       } finally {
@@ -72,11 +69,17 @@ export default function MarketPulseLegend() {
     return () => { stopped = true; window.clearInterval(timer); };
   }, []);
 
-  const pulse = useMemo(() => localFallback(points), [points]);
+  const pulse = useMemo(() => {
+    if (Array.isArray(market?.pulse_segments) && market.pulse_segments.length) {
+      const segments = market.pulse_segments.slice(-WINDOW_MINUTES);
+      return { segments, move30: Number.isFinite(Number(market?.recent_move)) ? Number(market.recent_move) : null };
+    }
+    return localFallback(market?.points || []);
+  }, [market]);
   const current = pulse.segments.at(-1);
   const currentMove = Number.isFinite(Number(current?.move)) ? Number(current.move) : null;
 
-  return <Paper sx={{ mt: 1.5, p: 2, borderRadius: 2.5 }} aria-label="Market Pulse 30 minute timeline">
+  return <Box sx={{ mt: 1.5 }} aria-label="Market Pulse 30 minute timeline">
     <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={1}>
       <Box>
         <Typography variant="caption" fontWeight={700} sx={{ display: 'block' }}>MARKET PULSE · ROLLING 30 MINUTES</Typography>
@@ -88,7 +91,7 @@ export default function MarketPulseLegend() {
       </Stack>
     </Stack>
     <Stack direction="row" spacing={0.35} sx={{ mt: 1.5, minHeight: 34 }}>
-      {pulse.segments.map((segment, index) => <Tooltip key={`${segment.minute}-${index}`} title={`${new Date(segment.minute).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} · ${label(segment.status)}${Number.isFinite(Number(segment.move)) ? ` ${Number(segment.move) >= 0 ? '+' : ''}${Number(segment.move).toFixed(4)}%` : ' · no observed data'}${segment.changed ? ' · price changed' : ''}`}><Box sx={{ flex: 1, minWidth: 4, height: 30, borderRadius: .7, bgcolor: color(segment.status), opacity: Number(segment.samples ?? segment.observations ?? 0) > 0 ? 1 : .28, border: index === pulse.segments.length - 1 ? '2px solid' : 'none', borderColor: 'primary.main' }} /></Tooltip>)}
+      {pulse.segments.map((segment, index) => <Tooltip key={`${segment.minute ?? segment.timestamp ?? index}-${index}`} title={`${new Date(tsMs(segment) ?? segment.minute ?? Date.now()).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} · ${label(segment.status || 'GRAY')}${Number.isFinite(Number(segment.move ?? segment.move_pct)) ? ` ${Number(segment.move ?? segment.move_pct).toFixed(4)}%` : ' · no observed data'}${segment.changed ? ' · price changed' : ''}`}><Box sx={{ flex: 1, minWidth: 4, height: 30, borderRadius: .7, bgcolor: color(segment.status || 'GRAY'), opacity: Number(segment.samples ?? segment.observations ?? 0) > 0 ? 1 : .28, border: index === pulse.segments.length - 1 ? '2px solid' : 'none', borderColor: 'primary.main' }} /></Tooltip>)}
     </Stack>
     <Stack direction="row" justifyContent="space-between" sx={{ mt: .7 }}>
       <Typography variant="caption" color="text.secondary">30 menit lalu</Typography>
@@ -101,5 +104,5 @@ export default function MarketPulseLegend() {
       <Typography variant="caption" color="text.secondary">24H Low {idr(market?.low)}</Typography>
       <Typography variant="caption" color="text.secondary">24H Volume {idr(market?.volume)}</Typography>
     </Stack>
-  </Paper>;
+  </Box>;
 }
