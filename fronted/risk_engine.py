@@ -200,7 +200,7 @@ def update_protection(position, current_price, points, settings=None):
         stop = max(stop, breakeven)
         position["stop_loss"] = stop
 
-    if cfg["trailing_enabled"] and high_water > entry:
+    if cfg["trailing_enabled"] and profit_active and high_water > entry:
         if cfg["trailing_mode"] == "PERCENT":
             trail_distance = high_water * cfg["trailing_pct"] / 100.0
         else:
