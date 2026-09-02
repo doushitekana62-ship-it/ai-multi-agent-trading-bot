@@ -5,6 +5,8 @@ name: Validate Cloudflare Worker
 # Keeping deployment in one place prevents duplicate builds and stale bindings.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
