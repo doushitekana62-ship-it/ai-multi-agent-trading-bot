@@ -8,7 +8,16 @@ const WINDOW_MINUTES = 30;
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0);
 const color = (status) => status === 'GREEN' ? 'success.main' : status === 'RED' ? 'error.main' : 'grey.500';
 const label = (status) => status === 'GREEN' ? 'UP' : status === 'RED' ? 'DOWN' : 'FLAT';
-const tsMs = (item) => { const n = Number(item?.timestamp ?? item?.date ?? item?.trade_time ?? 0); if (!Number.isFinite(n) || n <= 0) return null; return n > 1e12 ? n : n * 1000; };
+const tsMs = (item) => {
+  const raw = item?.timestamp ?? item?.date ?? item?.trade_time ?? item?.observed_at ?? item?.minute_bucket ?? 0;
+  if (typeof raw === 'string' && !/^\d+(?:\.\d+)?$/.test(raw)) {
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n > 1e12 ? n : n * 1000;
+};
 
 function localFallback(points) {
   const rows = (points || []).map((p) => ({ at: tsMs(p), price: Number(p?.price) })).filter((p) => p.at && p.price > 0).sort((a, b) => a.at - b.at);
@@ -33,23 +42,6 @@ function localFallback(points) {
   const populated = segments.filter((s) => Number.isFinite(s.move) && s.open > 0);
   const first = populated[0]?.open; const last = populated.at(-1)?.close;
   return { segments, move30: first > 0 && last > 0 ? ((last - first) / first) * 100 : null };
-}
-
-function normalizeServerPulse(raw) {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-  const segments = raw.slice(-WINDOW_MINUTES).map((item) => {
-    const minute = tsMs(item) || Date.now();
-    const move = Number(item?.move_pct);
-    const status = ['GREEN', 'RED', 'GRAY'].includes(String(item?.status).toUpperCase()) ? String(item.status).toUpperCase() : 'GRAY';
-    return { ...item, minute, move: Number.isFinite(move) ? move : null, samples: Number(item?.observations || 0), status };
-  });
-  while (segments.length < WINDOW_MINUTES) {
-    const first = segments[0]?.minute || Date.now();
-    segments.unshift({ minute: first - MINUTE_MS, status: 'GRAY', move: null, samples: 0, changed: false });
-  }
-  const populated = segments.filter((s) => Number.isFinite(s.move) && Number(s.open) > 0);
-  const first = populated[0]?.open; const last = populated.at(-1)?.close;
-  return { segments: segments.slice(-WINDOW_MINUTES), move30: first > 0 && last > 0 ? ((last - first) / first) * 100 : null };
 }
 
 export default function MarketPulseLegend() {
@@ -80,8 +72,7 @@ export default function MarketPulseLegend() {
     return () => { stopped = true; window.clearInterval(timer); };
   }, []);
 
-  const fallback = useMemo(() => localFallback(points), [points]);
-  const pulse = useMemo(() => fallback, [fallback]);
+  const pulse = useMemo(() => localFallback(points), [points]);
   const current = pulse.segments.at(-1);
   const currentMove = Number.isFinite(Number(current?.move)) ? Number(current.move) : null;
 
