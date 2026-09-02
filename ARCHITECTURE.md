@@ -285,7 +285,19 @@ In particular:
 
 This version adds the **COMPOUNDING SCALPING** strategic direction; implementation now proceeds under the explicit project-owner instruction.
 
-## 12. Change-Control for Compounding Scalping
+## 12. Preserved v0.3 Operational Semantics
+
+The following v0.3 runtime semantics remain authoritative unless explicitly superseded:
+
+- `HOLD_EXISTING_POSITION` is a distinct position-management state.
+- `AI_DEGRADED` is an explicit runtime/degradation state, not a normal HOLD reason.
+- `RISK_REJECTED` is an explicit deterministic risk outcome.
+- **Data failure is never represented as normal HOLD.**
+- **Missing/degraded evidence is excluded from directional scoring.**
+
+Compatibility action values may remain `BUY | SELL | HOLD`, while explicit cycle status explains why an action did or did not execute.
+
+## 13. Change-Control for Compounding Scalping
 
 Before implementation of any compounding-scalping behavior, explicitly identify:
 
@@ -296,7 +308,7 @@ Before implementation of any compounding-scalping behavior, explicitly identify:
 5. compatibility with Indodax execution constraints;
 6. preservation of paper/real behavioral parity.
 
-## 13. Version History
+## 14. Version History
 
 - **v0.4 — COMPOUNDING SCALPING:** strategic direction established on 2026-09-02.
 - **v0.3:** previous canonical baseline, preserved unchanged in `ARCHITECTURE_v0.3.md` and Git history.
