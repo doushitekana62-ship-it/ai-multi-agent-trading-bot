@@ -3,14 +3,15 @@ ROOT=Path(__file__).resolve().parents[1];FRONTED=ROOT/"fronted"
 
 def test_paper_state_has_durable_object_alarm_scheduler():
     source=(FRONTED/"paper_state.py").read_text(encoding="utf-8")
+    compact=source.replace(" ", "")
     assert "async def enable_paper" in source
     assert "async def stop" in source
     assert "async def alarm" in source
     assert "getAlarm" in source
     assert "setAlarm" in source
     assert "deleteAlarm" in source
-    assert "CYCLE_INTERVAL_MS=5_000" in source
-    assert "DECISION_INTERVAL_MS=15_000" in source
+    assert "CYCLE_INTERVAL_MS=5_000" in compact
+    assert "DECISION_INTERVAL_MS=15_000" in compact
     assert "durable_object_alarm" in source
 
 def test_worker_uses_canonical_entrypoint_shared_cycle_runner_and_external_orchestrator():
