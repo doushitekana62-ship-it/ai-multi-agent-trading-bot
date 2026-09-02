@@ -46,7 +46,6 @@ function localFallback(points) {
 
 export default function MarketPulseLegend() {
   const [market, setMarket] = useState(null);
-
   useEffect(() => {
     let stopped = false;
     let inFlight = false;
@@ -56,8 +55,7 @@ export default function MarketPulseLegend() {
       try {
         const pair = localStorage.getItem('paperTradingPair') || 'btc_idr';
         const response = await axios.get('/api/market/overview', { params: { pair, _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 });
-        if (stopped) return;
-        setMarket(response.data || {});
+        if (!stopped) setMarket(response.data || {});
       } catch {
         // Preserve the last valid pulse on transient API failures.
       } finally {
@@ -70,11 +68,15 @@ export default function MarketPulseLegend() {
   }, []);
 
   const pulse = useMemo(() => {
+    // The live point stream is authoritative for the visual minute pulse.
+    // Server pulse_segments can lag because it is a cycle snapshot; using it
+    // first makes the dashboard appear static even while prices change.
+    if (Array.isArray(market?.points) && market.points.length) return localFallback(market.points);
     if (Array.isArray(market?.pulse_segments) && market.pulse_segments.length) {
       const segments = market.pulse_segments.slice(-WINDOW_MINUTES);
       return { segments, move30: Number.isFinite(Number(market?.recent_move)) ? Number(market.recent_move) : null };
     }
-    return localFallback(market?.points || []);
+    return localFallback([]);
   }, [market]);
   const current = pulse.segments.at(-1);
   const currentMove = Number.isFinite(Number(current?.move)) ? Number(current.move) : null;
