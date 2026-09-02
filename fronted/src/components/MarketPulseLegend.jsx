@@ -5,6 +5,7 @@ import axios from 'axios';
 const POLL_MS = 5000;
 const MINUTE_MS = 60 * 1000;
 const WINDOW_MINUTES = 30;
+const MAX_POINTS = 1440;
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0);
 const color = (status) => status === 'GREEN' ? 'success.main' : status === 'RED' ? 'error.main' : 'grey.500';
 const label = (status) => status === 'GREEN' ? 'UP' : status === 'RED' ? 'DOWN' : 'FLAT';
@@ -17,6 +18,35 @@ const tsMs = (item) => {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
   return n > 1e12 ? n : n * 1000;
+};
+
+const normalizePoint = (point, fallbackPrice) => {
+  const price = Number(point?.price ?? fallbackPrice);
+  if (!(price > 0)) return null;
+  const at = tsMs(point) ?? Date.now();
+  return {
+    ...point,
+    price,
+    timestamp: at,
+    observation_type: point?.observation_type || point?.type || 'TICKER',
+    source: point?.source || 'INDODAX public ticker',
+  };
+};
+
+const mergePoints = (oldPoints, incoming, fallbackPrice) => {
+  const rows = [...(oldPoints || [])];
+  (incoming || []).forEach((point) => {
+    const normalized = normalizePoint(point, fallbackPrice);
+    if (normalized) rows.push(normalized);
+  });
+  const live = normalizePoint({ price: fallbackPrice, timestamp: Date.now(), tid: `live:${Date.now()}` }, fallbackPrice);
+  if (live) rows.push(live);
+  const deduped = new Map();
+  rows.forEach((point) => {
+    const key = `${point.timestamp}:${point.price}:${point.tid || point.observation_type || ''}`;
+    deduped.set(key, point);
+  });
+  return Array.from(deduped.values()).sort((a, b) => tsMs(a) - tsMs(b)).slice(-MAX_POINTS);
 };
 
 function localFallback(points) {
@@ -46,6 +76,8 @@ function localFallback(points) {
 
 export default function MarketPulseLegend() {
   const [market, setMarket] = useState(null);
+  const [livePoints, setLivePoints] = useState([]);
+
   useEffect(() => {
     let stopped = false;
     let inFlight = false;
@@ -55,7 +87,11 @@ export default function MarketPulseLegend() {
       try {
         const pair = localStorage.getItem('paperTradingPair') || 'btc_idr';
         const response = await axios.get('/api/market/overview', { params: { pair, _ts: Date.now() }, headers: { 'Cache-Control': 'no-cache' }, timeout: 8000 });
-        if (!stopped) setMarket(response.data || {});
+        const data = response.data || {};
+        if (!stopped) {
+          setMarket(data);
+          setLivePoints((previous) => mergePoints(previous, data.points, data.last));
+        }
       } catch {
         // Preserve the last valid pulse on transient API failures.
       } finally {
@@ -68,16 +104,15 @@ export default function MarketPulseLegend() {
   }, []);
 
   const pulse = useMemo(() => {
-    // The live point stream is authoritative for the visual minute pulse.
-    // Server pulse_segments can lag because it is a cycle snapshot; using it
-    // first makes the dashboard appear static even while prices change.
+    if (livePoints.length) return localFallback(livePoints);
     if (Array.isArray(market?.points) && market.points.length) return localFallback(market.points);
     if (Array.isArray(market?.pulse_segments) && market.pulse_segments.length) {
       const segments = market.pulse_segments.slice(-WINDOW_MINUTES);
       return { segments, move30: Number.isFinite(Number(market?.recent_move)) ? Number(market.recent_move) : null };
     }
     return localFallback([]);
-  }, [market]);
+  }, [livePoints, market]);
+
   const current = pulse.segments.at(-1);
   const currentMove = Number.isFinite(Number(current?.move)) ? Number(current.move) : null;
 
