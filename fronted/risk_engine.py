@@ -6,6 +6,7 @@ pipeline and produces deterministic entry/exit protection decisions.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import isfinite
 
 DEFAULT_RISK_SETTINGS = {
@@ -18,6 +19,9 @@ DEFAULT_RISK_SETTINGS = {
     "stop_atr_multiplier": 1.50,
     "take_profit_atr_multiplier": 2.50,
     "risk_reward_ratio": 2.0,
+    "profit_activation_enabled": True,
+    "profit_activation_pct": 1.0,
+    "hard_take_profit_enabled": False,
     "trailing_enabled": True,
     "trailing_mode": "ATR",
     "trailing_atr_multiplier": 1.25,
@@ -38,7 +42,12 @@ def settings_with_defaults(value=None):
     out["stop_loss_mode"] = str(out.get("stop_loss_mode") or "ATR").upper()
     out["take_profit_mode"] = str(out.get("take_profit_mode") or "RISK_REWARD").upper()
     out["trailing_mode"] = str(out.get("trailing_mode") or "ATR").upper()
-    for key in ("stop_loss_pct", "take_profit_pct", "stop_atr_multiplier", "take_profit_atr_multiplier", "risk_reward_ratio", "trailing_atr_multiplier", "trailing_pct", "break_even_trigger_r", "break_even_offset_pct", "fee_rate", "slippage_bps"):
+    for key in (
+        "stop_loss_pct", "take_profit_pct", "stop_atr_multiplier",
+        "take_profit_atr_multiplier", "risk_reward_ratio",
+        "profit_activation_pct", "trailing_atr_multiplier", "trailing_pct",
+        "break_even_trigger_r", "break_even_offset_pct", "fee_rate", "slippage_bps",
+    ):
         try:
             out[key] = float(out[key])
         except (TypeError, ValueError):
@@ -58,11 +67,14 @@ def settings_with_defaults(value=None):
     out["stop_atr_multiplier"] = max(0.25, min(10.0, out["stop_atr_multiplier"]))
     out["take_profit_atr_multiplier"] = max(0.25, min(20.0, out["take_profit_atr_multiplier"]))
     out["risk_reward_ratio"] = max(0.5, min(10.0, out["risk_reward_ratio"]))
+    out["profit_activation_pct"] = max(0.05, min(50.0, out["profit_activation_pct"]))
     out["trailing_atr_multiplier"] = max(0.25, min(10.0, out["trailing_atr_multiplier"]))
     out["trailing_pct"] = max(0.05, min(20.0, out["trailing_pct"]))
     out["break_even_trigger_r"] = max(0.25, min(10.0, out["break_even_trigger_r"]))
     out["break_even_offset_pct"] = max(0.0, min(2.0, out["break_even_offset_pct"]))
     out["enabled"] = bool(out.get("enabled", True))
+    out["profit_activation_enabled"] = bool(out.get("profit_activation_enabled", True))
+    out["hard_take_profit_enabled"] = bool(out.get("hard_take_profit_enabled", False))
     out["trailing_enabled"] = bool(out.get("trailing_enabled", True))
     out["break_even_enabled"] = bool(out.get("break_even_enabled", True))
     return out
@@ -123,7 +135,7 @@ def initial_levels(entry_price, points, settings=None):
     cfg = settings_with_defaults(settings)
     entry = _num(entry_price)
     if entry <= 0:
-        return {"stop_loss": None, "take_profit": None, "atr": None, "risk_distance": None}
+        return {"stop_loss": None, "take_profit": None, "profit_activation_price": None, "atr": None, "risk_distance": None}
     current_atr = atr(points, cfg["atr_period"])
     if cfg["stop_loss_mode"] == "FIXED_PERCENT":
         risk_distance = entry * cfg["stop_loss_pct"] / 100.0
@@ -138,7 +150,17 @@ def initial_levels(entry_price, points, settings=None):
         reward_distance = current_atr * cfg["take_profit_atr_multiplier"]
     else:
         reward_distance = risk_distance * cfg["risk_reward_ratio"]
-    return {"stop_loss": max(0.0, entry - risk_distance), "take_profit": entry + reward_distance, "atr": current_atr, "risk_distance": risk_distance, "reward_distance": reward_distance, "risk_reward": reward_distance / risk_distance if risk_distance > 0 else None, "settings": cfg}
+
+    return {
+        "stop_loss": max(0.0, entry - risk_distance),
+        "take_profit": entry + reward_distance,
+        "profit_activation_price": entry * (1.0 + cfg["profit_activation_pct"] / 100.0) if cfg["profit_activation_enabled"] else None,
+        "atr": current_atr,
+        "risk_distance": risk_distance,
+        "reward_distance": reward_distance,
+        "risk_reward": reward_distance / risk_distance if risk_distance > 0 else None,
+        "settings": cfg,
+    }
 
 
 def update_protection(position, current_price, points, settings=None):
@@ -147,19 +169,28 @@ def update_protection(position, current_price, points, settings=None):
     entry = _num(position.get("entry_price"))
     if entry <= 0 or price <= 0:
         return {"triggered": False, "position": position, "reason": None}
+
     if "initial_stop_loss" not in position or not position.get("initial_stop_loss"):
         levels = initial_levels(entry, points, cfg)
         position["initial_stop_loss"] = levels["stop_loss"]
         position["initial_take_profit"] = levels["take_profit"]
+        position["profit_activation_price"] = levels.get("profit_activation_price")
         position["stop_loss"] = levels["stop_loss"]
         position["take_profit"] = levels["take_profit"]
         position["atr_at_entry"] = levels["atr"]
         position["risk_distance"] = levels["risk_distance"]
     else:
         levels = {"atr": atr(points, cfg["atr_period"]), "risk_distance": _num(position.get("risk_distance"))}
+        if position.get("profit_activation_price") is None and cfg["profit_activation_enabled"]:
+            position["profit_activation_price"] = entry * (1.0 + cfg["profit_activation_pct"] / 100.0)
 
     high_water = max(_num(position.get("high_water_mark"), entry), price)
     position["high_water_mark"] = high_water
+
+    activation_price = _num(position.get("profit_activation_price")) if cfg["profit_activation_enabled"] else 0.0
+    profit_active = bool(position.get("profit_active")) or (activation_price > 0 and high_water >= activation_price)
+    position["profit_active"] = profit_active
+
     risk_distance = _num(position.get("risk_distance"))
     stop = _num(position.get("stop_loss"))
 
@@ -181,19 +212,26 @@ def update_protection(position, current_price, points, settings=None):
 
     if price <= _num(position.get("stop_loss")):
         reason = "BREAK_EVEN" if position.get("break_even_armed") and price >= entry else "TRAILING_STOP" if high_water > entry and _num(position.get("stop_loss")) > _num(position.get("initial_stop_loss")) else "STOP_LOSS"
-        return {"triggered": True, "reason": reason, "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "atr": levels.get("atr")}
-    if price >= _num(position.get("take_profit")):
-        return {"triggered": True, "reason": "TAKE_PROFIT", "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "atr": levels.get("atr")}
+        return {"triggered": True, "reason": reason, "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "profit_activation_price": activation_price or None, "profit_active": profit_active, "atr": levels.get("atr")}
+
+    hard_tp = bool(cfg["hard_take_profit_enabled"])
+    if not cfg["trailing_enabled"] and not hard_tp:
+        hard_tp = True
+    if hard_tp and price >= _num(position.get("take_profit")):
+        return {"triggered": True, "reason": "TAKE_PROFIT", "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "profit_activation_price": activation_price or None, "profit_active": profit_active, "atr": levels.get("atr")}
+
     if cfg["max_hold_minutes"] > 0:
         try:
-            from datetime import datetime, timezone
-            created = datetime.fromisoformat(str(position.get("created_at"))).replace(tzinfo=timezone.utc) if "+" not in str(position.get("created_at")) else datetime.fromisoformat(str(position.get("created_at")))
+            created = datetime.fromisoformat(str(position.get("created_at")))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
             age = (datetime.now(timezone.utc) - created).total_seconds() / 60.0
             if age >= cfg["max_hold_minutes"]:
-                return {"triggered": True, "reason": "TIME_EXIT", "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "atr": levels.get("atr")}
-        except Exception:
+                return {"triggered": True, "reason": "TIME_EXIT", "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "profit_activation_price": activation_price or None, "profit_active": profit_active, "atr": levels.get("atr")}
+        except (TypeError, ValueError, OverflowError):
             pass
-    return {"triggered": False, "reason": None, "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "atr": levels.get("atr")}
+
+    return {"triggered": False, "reason": None, "position": position, "stop_loss": position.get("stop_loss"), "take_profit": position.get("take_profit"), "profit_activation_price": activation_price or None, "profit_active": profit_active, "atr": levels.get("atr")}
 
 
 def apply_slippage(price, side, slippage_bps):
