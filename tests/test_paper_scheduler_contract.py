@@ -20,10 +20,13 @@ def test_paper_state_has_durable_object_alarm_scheduler():
 
 def test_worker_uses_shared_cycle_runner_and_external_orchestrator():
     source = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
+    resilient = (FRONTED / "worker_entry_resilient.py").read_text(encoding="utf-8")
     cycle = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
     adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
     assert "from paper_cycle import run_paper_cycle" in source
     assert "await run_paper_cycle(" in source
+    assert "class Default(CanonicalDefault)" in resilient
+    assert "await stub.ensure_scheduler()" in resilient
     assert "CloudflareOrchestrator" in cycle
     assert "class CloudflareOrchestrator" in adapter
     assert "AI_ENGINE_URL" in adapter
@@ -42,7 +45,7 @@ def test_cloudflare_cron_is_disabled_for_paper_scheduler():
     assert '"crons": []' in source
     assert '"PaperTradingState"' in source
     assert '"storage": "sqlite"' in source
-    assert '"main": "./worker_entry_api.py"' in source
+    assert '"main": "./worker_entry_resilient.py"' in source
 
 
 def test_cloudflare_build_uses_vite():
