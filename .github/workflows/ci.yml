@@ -56,6 +56,6 @@ jobs:
       - name: Build React dashboard
         working-directory: fronted
         run: npm run build
-      - name: Validate Cloudflare Worker bundle
+      - name: Validate Cloudflare Python Worker bundle
         working-directory: fronted
-        run: npx wrangler deploy --dry-run
+        run: uvx --from workers-py pywrangler deploy --dry-run
