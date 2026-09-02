@@ -5,12 +5,14 @@ from workers import DurableObject
 from paper_cycle import run_market_observation, run_paper_cycle
 from risk_engine import apply_slippage, settings_with_defaults, update_protection
 
-CYCLE_INTERVAL_MS=5_000
-DECISION_INTERVAL_MS=15_000
-MAX_POSITIONS=3
-DEFAULT_POSITION_ALLOCATION=0.10
-STATE_VERSION=5
-MARKET_HISTORY_LIMIT=1440
+# Scheduler polls market observations every 5s; decisions are evaluated every 15s.
+# CYCLE_INTERVAL_MS = 60_000
+CYCLE_INTERVAL_MS = 5_000
+DECISION_INTERVAL_MS = 15_000
+MAX_POSITIONS = 3
+DEFAULT_POSITION_ALLOCATION = 0.10
+STATE_VERSION = 5
+MARKET_HISTORY_LIMIT = 1440
 DEFAULT_STATE={"state_version":STATE_VERSION,"enabled":False,"mode":"paper","cycle_running":False,"started_at":None,"last_cycle_at":None,"last_cycle_started_at":None,"last_cycle_finished_at":None,"last_cycle_status":"idle","cycles_today":0,"cycle_failures":0,"consecutive_cycle_failures":0,"balance":10_000_000.0,"initial_balance":10_000_000.0,"portfolio_value":10_000_000.0,"daily_pnl":0.0,"total_pnl":0.0,"daily_trades":0,"total_trades":0,"active_positions":0,"max_open_positions":MAX_POSITIONS,"position_allocation":DEFAULT_POSITION_ALLOCATION,"decision_counts":{"BUY":0,"SELL":0,"HOLD":0},"positions":[],"trade_history":[],"last_decision":None,"last_error":None,"paper_pair":"btc_idr","scheduler_active":False,"scheduler_source":"durable_object_alarm","last_scheduler_at":None,"scheduler_invocations":0,"next_cycle_at":None,"risk_settings":settings_with_defaults(),"updated_at":None}
 
 def _now():return datetime.now(timezone.utc).isoformat()
@@ -25,7 +27,7 @@ def _copy():
 def _limit(v):
     try:v=int(v)
     except (TypeError,ValueError):v=MAX_POSITIONS
-    return max(1,min(MAX_POSITIONS,v))
+    return max(1, min(MAX_POSITIONS, v))
 
 class PaperTradingState(DurableObject):
     def __init__(self,ctx,env):super().__init__(ctx,env);self.ctx=ctx;self.env=env
@@ -52,7 +54,8 @@ class PaperTradingState(DurableObject):
         return _iso(alarm)
     async def ensure_scheduler(self):
         s=await self._get()
-        if s.get("enabled") and not s.get("cycle_running"):s["scheduler_active"]=True;s["next_cycle_at"]=await self._arm();await self.ctx.storage.put("state",s)
+        if s.get("enabled") and not s.get("cycle_running"):
+            s["scheduler_active"]=True; s["next_cycle_at"]=await self._arm(); await self.ctx.storage.put("state",s)
         return s
     async def enable_paper(self,pair="btc_idr"):
         s=await self._get(); now=_now(); s.update({"enabled":True,"mode":"paper","cycle_running":False,"started_at":now,"last_cycle_status":"waiting","cycle_failures":0,"consecutive_cycle_failures":0,"last_error":None,"paper_pair":str(pair or "btc_idr").strip().lower(),"scheduler_active":True,"scheduler_source":"durable_object_alarm","updated_at":now}); s["next_cycle_at"]=await self._arm(); await self.ctx.storage.put("state",s); return s
@@ -69,7 +72,7 @@ class PaperTradingState(DurableObject):
         if s.get("cycle_running"):return {"ok":False,"state":s,"reason":"cycle_already_running"}
         now=_now();s.update({"cycle_running":True,"last_error":None,"last_cycle_started_at":now,"last_cycle_status":"running","scheduler_active":True,"updated_at":now});await self.ctx.storage.put("state",s);return {"ok":True,"state":s,"reason":None}
     async def finish_cycle(self,error=None):
-        s=await self._get();now=_now();s.update({"cycle_running":False,"last_cycle_finished_at":now,"last_cycle_status":"failed" if error else "completed","last_error":str(error) if error else None,"updated_at":now});
+        s=await self._get();now=_now();s.update({"cycle_running":False,"last_cycle_finished_at":now,"last_cycle_status":"failed" if error else "completed","last_error":str(error) if error else None,"updated_at":now})
         if error:s["cycle_failures"]=int(s.get("cycle_failures",0))+1;s["consecutive_cycle_failures"]=int(s.get("consecutive_cycle_failures",0))+1
         else:s["consecutive_cycle_failures"]=0
         await self.ctx.storage.put("state",s);return s
@@ -79,7 +82,7 @@ class PaperTradingState(DurableObject):
         if not risk.get("enabled") or p is None:return {"triggered":False,"reason":None,"symbol":symbol,"price":_num(price),"risk_enabled":bool(risk.get("enabled"))}
         snap=update_protection(p,_num(price),await self.get_paper_market_history(),risk);return {"triggered":bool(snap.get("triggered")),"reason":snap.get("reason"),"symbol":symbol,"price":_num(price),"risk_enabled":True,"snapshot":snap}
     async def record_cycle(self,decision="HOLD",confidence=0.0,symbol="BTC/IDR",price=0.0,reasoning="",analysis=None):
-        s=await self._get();
+        s=await self._get()
         if not s.get("enabled"):return s
         now=_now();action=str(decision or "HOLD").upper();action=action if action in {"BUY","SELL","HOLD"} else "HOLD";confidence=max(0,min(1,_num(confidence)));price=_num(price);risk=settings_with_defaults(s.get("risk_settings"));points=await self.get_paper_market_history();positions=list(s.get("positions") or []);idx=next((i for i,p in enumerate(positions) if str(p.get("symbol")).upper()==str(symbol).upper()),None);position=positions[idx] if idx is not None else None;risk_exit=None;executed=False;trade=None;realized=0.0;fee=0.0
         if position is not None and risk.get("enabled") and price>0:
@@ -102,7 +105,7 @@ class PaperTradingState(DurableObject):
         if trade:last["trade"]=trade
         s["last_decision"]=last;s["cycle_running"]=False;s["last_error"]=None;s["consecutive_cycle_failures"]=0;s["updated_at"]=now;await self.ctx.storage.put("state",s);return s
     async def apply_cycle(self,action="HOLD",price=0.0,confidence=0.0,cycle_id=None,metadata=None):
-        m=dict(metadata or {});
+        m=dict(metadata or {})
         if cycle_id is not None:m.setdefault("cycle_id",str(cycle_id))
         return await self.record_cycle(action,confidence,m.get("symbol","BTC/IDR"),price,m.get("summary",m.get("reasoning","")),m)
     async def record_cycle_payload(self,payload):
