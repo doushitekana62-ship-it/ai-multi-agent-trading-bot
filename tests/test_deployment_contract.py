@@ -104,7 +104,11 @@ def test_cloudflare_asgi_compatibility_shim_is_runtime_safe():
 def test_cloudflare_strategy_module_is_packaged_under_worker_root():
     adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
     packaged = FRONTED / "core" / "indodax_scalping_strategy.py"
+    dynamic_exit = FRONTED / "core" / "dynamic_exit.py"
+    source = packaged.read_text(encoding="utf-8")
     assert "from core.indodax_scalping_strategy import" in adapter
+    assert "from core.dynamic_exit import forecast_exit" in adapter
     assert packaged.exists()
-    assert 'SOURCE = "INDODAX public market data"' in packaged.read_text(encoding="utf-8")
-    assert 'STRATEGY_VERSION = "compounding-scalping-v2"' in packaged.read_text(encoding="utf-8")
+    assert dynamic_exit.exists()
+    assert 'SOURCE="INDODAX public market data"' in source
+    assert 'STRATEGY_VERSION="compounding-scalping-v3"' in source
