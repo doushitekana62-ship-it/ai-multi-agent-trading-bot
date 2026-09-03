@@ -20,7 +20,7 @@ import cf_worker
 from paper_cycle import run_paper_cycle
 from paper_state import PaperTradingState
 
-RUNTIME_BUILD = "2026-09-03-paper-reset-runtime-v2"
+RUNTIME_BUILD = "2026-09-03-paper-reset-runtime-v3"
 HISTORY_FIELDS = (
     "id,cycle_at,trading_date,cycle_id,decision_id,trade_id,cycle_number,pair,symbol,"
     "action,candidate_action,raw_action,confidence,execution_status,price,"
@@ -220,8 +220,6 @@ class Default(WorkerEntrypoint):
             if not db_reset.get("ok"):
                 state = await stub.get_state()
                 return Response.json({**_state_response(state), "message": "Paper state reset, but Supabase ledger reset failed.", "reset": {"ok": False, "database": db_reset}}, status=502)
-            # The DB reset creates a new PAPER_RESET marker. Read it again so the
-            # Durable Object and response are synchronized to the same reset event.
             state = await stub.reset()
             return Response.json({**_state_response(state), "message": "Paper trading state and Supabase ledger reset.", "reset": {"ok": True, "database": db_reset.get("result")}})
         if path == "/api/dashboard/paper/settings" and request.method == "POST":
@@ -231,7 +229,6 @@ class Default(WorkerEntrypoint):
                 try: value = int(body.get("max_open_positions"))
                 except Exception: return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
                 if value < 1 or value > 3: return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
-                if value < 1 or value > 3: return Response.json({"detail": "max_open_positions must be between 1 and 3"}, status=400)
                 await stub.set_position_limit(value)
             risk_patch = body.get("risk_settings")
             if isinstance(risk_patch, dict): await stub.set_risk_settings(risk_patch)
@@ -242,10 +239,9 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state(); query = parse_qs(urlparse(request.url).query); deep = str(query.get("deep", ["0"])[0]).lower() in {"1", "true", "yes"}
             configured = bool(str(getattr(self.env, "SUPABASE_URL", "") or "").strip() and str(getattr(self.env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip())
-            if deep: supabase = await _supabase_health(self.env)
-            else: supabase = {"connected": None, "reason": "health_probe_deferred"}
+            supabase = await _supabase_health(self.env) if deep else {"connected": None, "reason": "health_probe_deferred"}
             result = _state_response(state)
-            result.update({"daily_pnl": float(state.get("daily_pnl", 0.0)), "daily_trades": int(state.get("daily_trades", 0)), "total_trades": int(state.get("total_trades", 0)), "active_positions": int(state.get("active_positions", 0)), "database": {"configured": configured, **supabase}, "market_data": {"source": "INDODAX public market data", "available": None, "fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "system_health": {"database": {"connected": supabase.get("connected")}, "market_data": {"fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}})
+            result.update({"daily_pnl": float(state.get("daily_pnl", 0.0)), "daily_trades": int(state.get("daily_trades", 0)), "total_trades": int(state.get("total_trades", 0)), "active_positions": int(state.get("active_positions", 0)), "database": {"configured": configured, **supabase}, "market_data": {"source": "INDODAX public market data", "available": None, "fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "system_health": {"database": {"connected": supabase.get("connected")}, "market_data": {"fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}}})
             return Response.json(result)
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state(); return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "max_open_positions": int(state.get("max_open_positions", 3)), "currency": "IDR", "currency_symbol": "Rp"})
