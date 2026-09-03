@@ -6,11 +6,10 @@ from types import SimpleNamespace
 from typing import Any, Dict
 from js import fetch
 from pyodide.ffi import to_js
-from core.indodax_scalping_strategy import SOURCE, STRATEGY_VERSION, analyze as analyze_indodax
+from core.indodax_scalping_strategy import SOURCE, STRATEGY_VERSION, analyze as analyze_indodax, _forecast_exit, _move
 
 class CloudflareOrchestrator:
-    def __init__(self, config: Dict[str, Any] | None = None, env: Any = None):
-        self.config=config or {}; self.env=env
+    def __init__(self, config: Dict[str, Any] | None = None, env: Any = None): self.config=config or {}; self.env=env
     @staticmethod
     def _number(value, default=0.0):
         try:return float(value)
@@ -22,13 +21,12 @@ class CloudflareOrchestrator:
     async def _runtime_position(self,symbol):
         if self.env is None:return None
         try:
-            stub=self.env.PAPER_STATE.getByName("global")
-            state=await stub.get_state()
+            stub=self.env.PAPER_STATE.getByName("global");state=await stub.get_state()
             return next((p for p in (state.get("positions") or []) if str(p.get("symbol","")).upper()==str(symbol).upper()),None)
         except Exception:return None
     @staticmethod
     def _namespace(result: Dict[str,Any]):
-        agents=result.get("agents") or {}; number=CloudflareOrchestrator._number; exit_plan=result.get("exit_plan") or {}
+        agents=result.get("agents") or {};number=CloudflareOrchestrator._number;exit_plan=result.get("exit_plan") or {}
         return SimpleNamespace(timestamp=datetime.now(timezone.utc),symbol=result.get("symbol",""),current_price=result.get("price",0.0),final_action=result.get("action","HOLD"),final_confidence=result.get("confidence",0.0),consensus_action=result.get("candidate_action","HOLD"),consensus_score=result.get("score",0.0),agent_votes={k:str(v.get("direction","NEUTRAL")).replace("BULLISH","BUY").replace("BEARISH","SELL") for k,v in agents.items()},market_scores={k:number(v.get("score")) for k,v in agents.items()},confidence_components={"net_edge_pct":number(result.get("net_edge_pct")),"confirmations":number(result.get("confirmations")),"expected_move_pct":number(result.get("expected_move_pct")),"friction_pct":number(result.get("friction_pct"))},position_size=number(result.get("position_size")),stop_loss=None,take_profit=result.get("take_profit") or result.get("take_profit_pct"),execution_reason=exit_plan.get("exit_reason") or result.get("reason"),hold_reason=result.get("reason") if result.get("action")=="HOLD" else None,summary=result.get("summary",""),engine_source="indodax_native",engine_warning=None,hold_agents=[k for k,v in agents.items() if v.get("direction")=="NEUTRAL"],opposing_agents=[],hold_analysis={"reason":result.get("reason"),"net_edge_pct":result.get("net_edge_pct"),"confirmations":result.get("confirmations"),"exit_plan":exit_plan},knowledge_topics=["1m micro-momentum","5m confirmation","30m regime","volume impulse","Indodax tape","dynamic TP continuation"],candle_analysis={"pulse":result.get("pulse")},library_alerts=[],library_version=STRATEGY_VERSION,agent_details=agents,cycle_status="ANALYZED",sentiment=SimpleNamespace(**(agents.get("sentiment") or {})),technical=SimpleNamespace(**(agents.get("technical") or {})),decision=SimpleNamespace(**(agents.get("decision") or {})),forecast=SimpleNamespace(**(agents.get("forecast") or {})),reflection=SimpleNamespace(**(agents.get("reflection") or {})),mimic_analysis=None,exit_plan=exit_plan,take_profit_pct=result.get("take_profit_pct"),stop_loss_pct=result.get("stop_loss_pct"))
     async def _fastapi(self,symbol,market_data):
         base=str(getattr(self.env,"AI_ENGINE_URL","") or "").strip().rstrip("/") if self.env is not None else "";secret=str(getattr(self.env,"AI_ENGINE_SHARED_SECRET","") or "").strip() if self.env is not None else ""
@@ -39,11 +37,16 @@ class CloudflareOrchestrator:
         if data.get("ok") is not True:raise RuntimeError(data.get("detail") or "AI engine rejected analysis")
         return data
     async def analyze(self,symbol:str,market_data:Dict[str,Any]|None=None):
-        market_data=dict(market_data or {}); position=await self._runtime_position(symbol)
+        market_data=dict(market_data or {});position=await self._runtime_position(symbol)
         if position is not None:market_data["position"]=position
         try:
             data=await self._fastapi(symbol,market_data)
-            if data:data["engine_source"]="fastapi_cloud";data["data_source"]=SOURCE;return self._from_fastapi(data,symbol)
+            if data:
+                data["engine_source"]="fastapi_cloud";data["data_source"]=SOURCE
+                if position is not None:
+                    agents=data.get("agent_details") or {};forecast=self._number((agents.get("forecast") or {}).get("score"));points=[p for p in (market_data.get("recent_trades") or []) if isinstance(p,dict)];now=datetime.now(timezone.utc).timestamp();m1=_move(points,now,1) or 0;m3=_move(points,now,3) or 0;m5=_move(points,now,5) or 0;exit_plan=_forecast_exit(position,self._number(data.get("current_price")),forecast,m1,m3,m5,.001);data["exit_plan"]=exit_plan;data["take_profit_pct"]=.40
+                    if exit_plan.get("exit_action")=="SELL":data["final_action"]="SELL"
+                return self._from_fastapi(data,symbol)
         except Exception:pass
         result=analyze_indodax(symbol,market_data,fee_rate=float(self.config.get("fee_rate",.0015)),slippage_rate=float(self.config.get("slippage_rate",.0002)),min_edge_pct=float(self.config.get("min_edge_pct",.45)),position=position)
         return self._namespace(result)
