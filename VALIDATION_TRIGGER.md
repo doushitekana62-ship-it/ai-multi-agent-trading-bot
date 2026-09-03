@@ -1,1 +1,1 @@
-Fresh validation marker: compounding execution fixes require a complete CI run before runtime certification.
+Fresh validation marker: current main includes TP/SL policy templates, reset-state clearing, and Supabase runtime-control hardening.
