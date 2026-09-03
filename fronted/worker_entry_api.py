@@ -94,12 +94,43 @@ async def _supabase_health(env):
     try:
         response = await fetch(f"{url}/rest/v1/decisions?select=id&limit=1", to_js({"method": "GET", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}}))
         code = int(response.status)
-        if 200 <= code < 300: return {"connected": True, "reason": "rest_probe_ok"}
-        if code in (401, 403): return {"connected": False, "reason": "invalid_credentials", "http_status": code}
-        if code == 404: return {"connected": False, "reason": "decisions_table_not_found", "http_status": code}
+        if 200 <= code < 300:
+            return {"connected": True, "reason": "rest_probe_ok"}
+        if code in (401, 403):
+            return {"connected": False, "reason": "invalid_credentials", "http_status": code}
+        if code == 404:
+            return {"connected": False, "reason": "decisions_table_not_found", "http_status": code}
         return {"connected": False, "reason": "supabase_http_error", "http_status": code}
     except Exception as exc:
         return {"connected": False, "reason": type(exc).__name__}
+
+
+async def _supabase_rpc(env, function_name: str, payload=None):
+    url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
+    key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    if not url or not key:
+        return {"ok": False, "reason": "credentials_missing"}
+    try:
+        body = payload if isinstance(payload, dict) else {}
+        response = await fetch(
+            f"{url}/rest/v1/rpc/{function_name}",
+            to_js({
+                "method": "POST",
+                "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json"},
+                "body": json.dumps(body, separators=(",", ":")),
+            }),
+        )
+        code = int(response.status)
+        text = await response.text()
+        if code < 200 or code >= 300:
+            return {"ok": False, "reason": f"http_{code}", "detail": text[:500]}
+        try:
+            result = json.loads(text) if text else None
+        except Exception:
+            result = None
+        return {"ok": True, "result": result}
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 async def _history(env, request):
@@ -181,7 +212,12 @@ class Default(WorkerEntrypoint):
             if not (await stub.get_state()).get("enabled"): return Response.json({"detail": "Paper trading is OFF. Start the bot first.", "bot_enabled": False}, status=409)
             cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response); return Response.json(cycle, status=200 if cycle.get("ok") else 409)
         if path in ("/api/bot/reset", "/api/dashboard/paper/reset") and request.method == "POST":
-            state = await stub.reset(); return Response.json({**_state_response(state), "message": "Paper trading state reset."})
+            # Reset the Durable Object first. If the database reset fails, the bot stays OFF and no new trades can start.
+            state = await stub.reset()
+            db_reset = await _supabase_rpc(self.env, "reset_paper_ledger")
+            if not db_reset.get("ok"):
+                return Response.json({**_state_response(state), "message": "Paper state reset, but Supabase ledger reset failed.", "reset": {"ok": False, "database": db_reset}}, status=502)
+            return Response.json({**_state_response(state), "message": "Paper trading state and Supabase ledger reset.", "reset": {"ok": True, "database": db_reset.get("result")}})
         if path == "/api/dashboard/paper/settings" and request.method == "POST":
             try:
                 body = await request.json()
@@ -201,10 +237,8 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state(); query = parse_qs(urlparse(request.url).query); deep = str(query.get("deep", ["0"])[0]).lower() in {"1", "true", "yes"}
             configured = bool(str(getattr(self.env, "SUPABASE_URL", "") or "").strip() and str(getattr(self.env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip())
-            if deep:
-                supabase = await _supabase_health(self.env)
-            else:
-                supabase = {"connected": None, "reason": "health_probe_deferred"}
+            if deep: supabase = await _supabase_health(self.env)
+            else: supabase = {"connected": None, "reason": "health_probe_deferred"}
             result = _state_response(state)
             result.update({
                 "daily_pnl": float(state.get("daily_pnl", 0.0)),
