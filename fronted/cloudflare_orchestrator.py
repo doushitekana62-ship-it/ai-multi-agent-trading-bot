@@ -31,14 +31,15 @@ class CloudflareOrchestrator:
     @staticmethod
     def _namespace(result: Dict[str,Any]):
         agents=result.get("agents") or {}
+        number=CloudflareOrchestrator._number
         return SimpleNamespace(
             timestamp=datetime.now(timezone.utc), symbol=result.get("symbol",""), current_price=result.get("price",0.0),
             final_action=result.get("action","HOLD"), final_confidence=result.get("confidence",0.0),
             consensus_action=result.get("candidate_action","HOLD"), consensus_score=result.get("score",0.0),
             agent_votes={k:str(v.get("direction","NEUTRAL")).replace("BULLISH","BUY").replace("BEARISH","SELL") for k,v in agents.items()},
-            market_scores={k:self._number(v.get("score")) for k,v in agents.items()},
-            confidence_components={"net_edge_pct":self._number(result.get("net_edge_pct")),"confirmations":self._number(result.get("confirmations")),"expected_move_pct":self._number(result.get("expected_move_pct")),"friction_pct":self._number(result.get("friction_pct"))},
-            position_size=self._number(result.get("position_size")),
+            market_scores={k:number(v.get("score")) for k,v in agents.items()},
+            confidence_components={"net_edge_pct":number(result.get("net_edge_pct")),"confirmations":number(result.get("confirmations")),"expected_move_pct":number(result.get("expected_move_pct")),"friction_pct":number(result.get("friction_pct"))},
+            position_size=number(result.get("position_size")),
             stop_loss=None, take_profit=None, execution_reason=result.get("reason"), hold_reason=result.get("reason") if result.get("action")=="HOLD" else None,
             summary=result.get("summary",""), engine_source="indodax_native", engine_warning=None,
             hold_agents=[k for k,v in agents.items() if v.get("direction")=="NEUTRAL"], opposing_agents=[],
