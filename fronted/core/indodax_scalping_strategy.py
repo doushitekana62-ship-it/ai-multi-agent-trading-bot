@@ -45,6 +45,13 @@ def _move(points:List[Dict[str,Any]],now_ts:float,minutes:int)->Optional[float]:
     return (rows[-1][1]/rows[0][1]-1.0)*100.0
 
 def _pulse(points:List[Dict[str,Any]],now_ts:float)->Dict[str,Any]:
+    """Build exactly 30 rolling one-minute segments from observed prices.
+
+    A segment is directional when any observed intraminute price movement exists.
+    This deliberately preserves the last observed direction even when price
+    returns to the opening price before the minute ends; GRAY is reserved for
+    minutes with no observation or no price change.
+    """
     current=int(now_ts//60)*60;by_minute={}
     for p in points:
         if not isinstance(p,dict):continue
@@ -53,12 +60,24 @@ def _pulse(points:List[Dict[str,Any]],now_ts:float)->Dict[str,Any]:
     segments=[]
     for i in range(30):
         b=current-(29-i)*60;rows=sorted(by_minute.get(b,[]))
-        if len(rows)>=2:
-            o,c=rows[0][1],rows[-1][1];move=(c/o-1)*100 if o else 0;status="GREEN" if move>0 else "RED" if move<0 else "GRAY"
-        else:o=rows[0][1] if rows else None;c=rows[-1][1] if rows else None;move=None;status="GRAY"
-        segments.append({"timestamp":datetime.fromtimestamp(b,timezone.utc).isoformat(),"status":status,"move_pct":move,"observations":len(rows),"open":o,"close":c})
-    populated=[x for x in segments if x["observations"]>=2 and x["open"]]
-    if populated:net=(populated[-1]["close"]/populated[0]["open"]-1)*100;overall="GREEN" if net>0 else "RED" if net<0 else "GRAY"
+        if rows:
+            o,c=rows[0][1],rows[-1][1];changed=any(price!=rows[j-1][1] for j,(_,price) in enumerate(rows) if j>0)
+            move=(c/o-1)*100 if o else 0
+            if move>0:status="GREEN"
+            elif move<0:status="RED"
+            elif changed:
+                direction="GREEN" if rows[-1][1]>rows[-2][1] else "RED" if rows[-1][1]<rows[-2][1] else None
+                if direction is None:
+                    for j in range(len(rows)-1,0,-1):
+                        if rows[j][1]!=rows[j-1][1]:
+                            direction="GREEN" if rows[j][1]>rows[j-1][1] else "RED";break
+                status=direction or "GRAY"
+            else:status="GRAY"
+        else:o=c=None;move=None;changed=False;status="GRAY"
+        segments.append({"timestamp":datetime.fromtimestamp(b,timezone.utc).isoformat(),"status":status,"move_pct":move,"observations":len(rows),"open":o,"close":c,"changed":changed})
+    populated=[x for x in segments if x["observations"]>=1 and x["open"]]
+    if len(populated)>=2:net=(populated[-1]["close"]/populated[0]["open"]-1)*100;overall="GREEN" if net>0 else "RED" if net<0 else "GREEN" if any(x["status"]=="GREEN" for x in populated) and not any(x["status"]=="RED" for x in populated) else "RED" if any(x["status"]=="RED" for x in populated) else "GRAY"
+    elif populated:net=0.0;overall=populated[-1]["status"]
     else:net,overall=None,"GRAY"
     return {"segments":segments,"overall":overall,"current":segments[-1]["status"],"net_move_pct":net}
 
