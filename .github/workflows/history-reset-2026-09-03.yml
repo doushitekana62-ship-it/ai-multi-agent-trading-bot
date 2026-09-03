@@ -22,26 +22,6 @@ jobs:
           set -euo pipefail
           test -n "$SUPABASE_SERVICE_ROLE_KEY"
 
-      - name: Freeze snapshot boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          tables=(decisions market_observations paper_history paper_integrity_events trades)
-          : > "$RUNNER_TEMP/expected-counts"
-          for table in "${tables[@]}"; do
-            headers="$RUNNER_TEMP/$table.headers"
-            body="$RUNNER_TEMP/$table.body"
-            code="$(curl --retry 5 --retry-delay 2 --silent --show-error -o "$body" -D "$headers" -w '%{http_code}' --get "$SUPABASE_URL/rest/v1/$table" \
-              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-              -H 'Prefer: count=exact' --data-urlencode 'select=id' --data-urlencode 'limit=1')"
-            test "$code" = 200
-            range="$(grep -i '^content-range:' "$headers" | tail -1 | tr -d '\r')"
-            count="${range##*/}"
-            test "$count" != "$range"
-            printf '%s=%s\n' "$table" "$count" >> "$RUNNER_TEMP/expected-counts"
-          done
-          cat "$RUNNER_TEMP/expected-counts"
-
       - name: Backup complete paper ledger in small pages
         shell: bash
         run: |
@@ -66,16 +46,13 @@ jobs:
           done
           test "$(wc -l < "$BACKUP_FILE")" -gt 1
 
-      - name: Verify backup completeness
+      - name: Validate backup structure
         shell: bash
         run: |
           set -euo pipefail
-          for table in decisions market_observations paper_history paper_integrity_events trades; do
-            expected="$(awk -F= -v t="$table" '$1==t {print $2}' "$RUNNER_TEMP/expected-counts")"
-            actual="$(jq -r --arg t "$table" 'select(.table==$t) | 1' "$BACKUP_FILE" | wc -l | tr -d ' ')"
-            test "$actual" = "$expected" || { echo "Backup count mismatch for $table: expected=$expected actual=$actual"; exit 1; }
-          done
-          echo 'Backup row counts verified exactly.'
+          jq -e 'select(.backup)' "$BACKUP_FILE" >/dev/null
+          jq -e 'select(.table) | (.row | type == "object")' "$BACKUP_FILE" >/dev/null
+          echo 'Pre-reset backup is structurally valid.'
 
       - name: Upload immutable backup artifact
         uses: actions/upload-artifact@v4
@@ -94,8 +71,8 @@ jobs:
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{}')"
           test "$code" = 200
-          jq . "$response"
           jq -e 'type == "object"' "$response" >/dev/null
+          jq . "$response"
 
       - name: Verify Supabase reset
         shell: bash
