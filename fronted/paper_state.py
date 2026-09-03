@@ -25,11 +25,12 @@ def _limit(v):
     try:v=int(v)
     except (TypeError,ValueError):v=MAX_POSITIONS
     return max(1,min(MAX_POSITIONS,v))
+def _supabase_key(env):return str(getattr(env,"SUPABASE_SECRET_KEY","") or getattr(env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
 class PaperTradingState(DurableObject):
     """One authoritative paper balance/position state; Supabase remains the ledger."""
     def __init__(self,ctx,env):super().__init__(ctx,env);self.ctx=ctx;self.env=env
     async def _latest_reset_event_id(self):
-        url=str(getattr(self.env,"SUPABASE_URL","") or "").strip().rstrip("/");key=str(getattr(self.env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
+        url=str(getattr(self.env,"SUPABASE_URL","") or "").strip().rstrip("/");key=_supabase_key(self.env)
         if not url or not key:return 0
         try:
             r=await fetch(f"{url}/rest/v1/paper_integrity_events?select=id&event_type=eq.PAPER_RESET&order=id.desc&limit=1",to_js({"method":"GET","headers":{"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json"}}))
@@ -37,7 +38,7 @@ class PaperTradingState(DurableObject):
             rows=json.loads(await r.text());return int(rows[0].get("id",0)) if isinstance(rows,list) and rows and isinstance(rows[0],dict) else 0
         except Exception:return 0
     async def _set_runtime_write_enabled(self,enabled):
-        url=str(getattr(self.env,"SUPABASE_URL","") or "").strip().rstrip("/");key=str(getattr(self.env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
+        url=str(getattr(self.env,"SUPABASE_URL","") or "").strip().rstrip("/");key=_supabase_key(self.env)
         if not url or not key:return False
         try:
             r=await fetch(f"{url}/rest/v1/rpc/set_paper_runtime_write_enabled",to_js({"method":"POST","headers":{"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json","Content-Type":"application/json"},"body":json.dumps({"p_enabled":bool(enabled)})}));return 200<=int(r.status)<300
@@ -69,7 +70,7 @@ class PaperTradingState(DurableObject):
         if s.get("enabled") and not s.get("cycle_running"):s["scheduler_active"]=True;s["next_cycle_at"]=await self._arm();s["updated_at"]=_now();await self.ctx.storage.put("state",s)
         return s
     async def enable_paper(self,pair="btc_idr"):
-        if not await self._set_runtime_write_enabled(True):raise RuntimeError("paper_runtime_write_enable_failed")
+        if not await self._set_runtime_write_enabled(True):raise RuntimeError("paper_runtime_write_enable_failed: Supabase elevated server key is missing or rejected; set SUPABASE_SECRET_KEY (preferred) or SUPABASE_SERVICE_ROLE_KEY in Cloudflare")
         s=await self._get();now=_now();s.update({"enabled":True,"mode":"paper","cycle_running":False,"started_at":now,"last_cycle_status":"waiting","cycle_failures":0,"consecutive_cycle_failures":0,"last_error":None,"paper_pair":str(pair or "btc_idr").strip().lower() or "btc_idr","scheduler_active":True,"scheduler_source":"durable_object_alarm","updated_at":now});s["next_cycle_at"]=await self._arm();await self.ctx.storage.put("state",s);return s
     async def start(self,pair="btc_idr"):return await self.enable_paper(pair)
     async def set_position_limit(self,value):
@@ -109,18 +110,18 @@ class PaperTradingState(DurableObject):
             if risk_gate.get("approved"):
                 size=min(_num(risk_gate.get("approved_position_size")),_num(s.get("position_allocation"),DEFAULT_POSITION_ALLOCATION));equity=max(_num(s.get("portfolio_value")),_num(s.get("balance")));allocation=min(equity*size,_num(s.get("balance"))/(1+risk["fee_rate"]))
                 if allocation>0:
-                    fill=apply_slippage(price,"BUY",risk["slippage_bps"]);qty=allocation/fill;fee=allocation*risk["fee_rate"];seed={"entry_price":fill,"created_at":now};levels=update_protection(seed,fill,points,risk);positions.append({"symbol":symbol,"side":"BUY","quantity":qty,"entry_price":fill,"price":fill,"capital":allocation,"position_size":size,"pnl":0,"unrealized_pnl":0,"confidence":confidence,"created_at":now,"entry_fee":fee,"fees":fee,"high_water_mark":fill,"stop_loss":levels.get("stop_loss"),"take_profit":levels.get("take_profit"),"initial_stop_loss":levels.get("stop_loss"),"initial_take_profit":levels.get("take_profit"),"risk_mode":risk["stop_loss_mode"],"risk_gate":risk_gate});s["balance"]=_num(s.get("balance"))-allocation-fee;executed=True;trade={"action":"BUY","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"entry_price":fill,"pnl":-fee,"confidence":confidence,"created_at":now,"fee":fee,"status":"OPEN","exit_reason":None}
+                    fill=apply_slippage(price,"BUY",risk["slippage_bps"]);qty=allocation/fill;fee=allocation*risk["fee_rate"];seed={"entry_price":fill,"created_at":now};levels=update_protection(seed,fill,points,risk);positions.append({"symbol":symbol,"side":"BUY","quantity":qty,"entry_price":fill,"price":fill,"capital":allocation,"position_size":size,"pnl":0,"unrealized_pnl":0,"confidence":confidence,"created_at":now,"entry_fee":fee,"fees":fee,"high_water_mark":fill,"stop_loss":levels.get("stop_loss"),"take_profit":levels.get("take_profit"),"initial_stop_loss":levels.get("stop_loss"),"initial_take_profit":levels.get("take_profit"),"risk_mode":risk["stop_loss_mode"],"risk_gate":risk_gate,"tp_sl_template":risk["tp_sl_template"]});s["balance"]=_num(s.get("balance"))-allocation-fee;executed=True;trade={"action":"BUY","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"entry_price":fill,"pnl":-fee,"confidence":confidence,"created_at":now,"fee":fee,"status":"OPEN","exit_reason":None,"tp_sl_template":risk["tp_sl_template"],"stop_loss":levels.get("stop_loss"),"take_profit":levels.get("take_profit")}
             else:action="HOLD"
         elif action=="SELL" and price>0 and idx is not None:
-            p=positions[idx];qty=_num(p.get("quantity"));entry=_num(p.get("entry_price"),price);fill=apply_slippage(price,"SELL",risk["slippage_bps"]);proceeds=qty*fill;fee=proceeds*risk["fee_rate"];realized=proceeds-fee-_num(p.get("capital"),entry*qty)-_num(p.get("entry_fee"));s["balance"]=_num(s.get("balance"))+proceeds-fee;positions.pop(idx);executed=True;trade={"action":"SELL","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"entry_price":entry,"exit_price":fill,"pnl":realized,"confidence":confidence,"created_at":now,"fee":fee,"entry_fee":_num(p.get("entry_fee")),"status":"CLOSED","exit_reason":risk_exit or str(a.get("exit_reason") or "AI_EXIT")};s["daily_pnl"]=_num(s.get("daily_pnl"))+realized;s["total_pnl"]=_num(s.get("total_pnl"))+realized
-        elif action=="SELL" and idx is None:action="HOLD"
+            p=positions[idx];qty=_num(p.get("quantity"));entry=_num(p.get("entry_price"),price);fill=apply_slippage(price,"SELL",risk["slippage_bps"]);proceeds=qty*fill;fee=proceeds*risk["fee_rate"];realized=proceeds-fee-_num(p.get("capital"),entry*qty)-_num(p.get("entry_fee"));s["balance"]=_num(s.get("balance"))+proceeds-fee;positions.pop(idx);executed=True;trade={"action":"SELL","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"entry_price":entry,"exit_price":fill,"pnl":realized,"confidence":confidence,"created_at":now,"fee":fee,"entry_fee":_num(p.get("entry_fee")),"status":"CLOSED","exit_reason":risk_exit or str(a.get("exit_reason") or "AI_EXIT"),"tp_sl_template":p.get("tp_sl_template",risk["tp_sl_template"]),"stop_loss":p.get("stop_loss"),"take_profit":p.get("take_profit")};s["daily_pnl"]=_num(s.get("daily_pnl"))+realized;s["total_pnl"]=_num(s.get("total_pnl"))+realized
+        elif action=="SELL" and idx is None:action="HOLD";a={**a,"reason":"NO_OPEN_POSITION"}
         for p in positions:
             if str(p.get("symbol")).upper()==str(symbol).upper() and price>0:p["price"]=price;p["unrealized_pnl"]=(price-_num(p.get("entry_price")))*_num(p.get("quantity"))-price*_num(p.get("quantity"))*risk["fee_rate"];p["pnl"]=p["unrealized_pnl"]
         if trade:s["trade_history"]=([*list(s.get("trade_history") or []),trade])[-100:]
         s["positions"]=positions;s["active_positions"]=len(positions);s["portfolio_value"]=_num(s.get("balance"))+sum(_num(p.get("quantity"))*_num(p.get("price",p.get("entry_price"))) for p in positions);s["cycles_today"]=int(s.get("cycles_today",0))+1;s["last_cycle_at"]=now;s["last_cycle_finished_at"]=now;s["last_cycle_status"]="completed";counts=s.setdefault("decision_counts",{"BUY":0,"SELL":0,"HOLD":0});counts[action]=int(counts.get(action,0))+1
         if executed:s["daily_trades"]=int(s.get("daily_trades",0))+1;s["total_trades"]=int(s.get("total_trades",0))+1
         last={"action":action,"candidate_action":candidate,"confidence":confidence,"symbol":symbol,"price":price,"executed":executed,"realized_pnl":realized,"fee":fee,"reasoning":reasoning,"created_at":now,"risk_exit_reason":risk_exit,"risk_gate":risk_gate,"trade":trade}
-        for k in ("votes","market_scores","confidence_components","consensus_action","consensus_score","position_size","stop_loss","take_profit","source","warning","raw_action","summary","execution_gate","cycle_id","cycle_number","market_timestamp","market_source","move_1m_pct","move_5m_pct","move_15m_pct","move_30m_pct","pulse_status","current_pulse_status","pulse_net_move_30m_pct","pulse_segments","hold_analysis","candidate_action","cycle_status","net_edge_pct","expected_move_pct","friction_pct","data_quality_status","library_version","library_alerts","agent_details"):
+        for k in ("votes","market_scores","confidence_components","consensus_action","consensus_score","position_size","stop_loss","take_profit","source","warning","raw_action","summary","execution_gate","cycle_id","cycle_number","market_timestamp","market_source","move_1m_pct","move_5m_pct","move_15m_pct","move_30m_pct","pulse_status","current_pulse_status","pulse_net_move_30m_pct","pulse_segments","hold_analysis","candidate_action","cycle_status","net_edge_pct","expected_move_pct","friction_pct","data_quality_status","library_version","library_alerts","agent_details","tp_sl_template","exit_plan"):
             if k in a:last[k]=a[k]
         s["last_decision"]=last;s["cycle_running"]=False;s["last_error"]=None;s["consecutive_cycle_failures"]=0;s["updated_at"]=now;await self.ctx.storage.put("state",s);return s
     async def apply_cycle(self,action="HOLD",price=0.0,confidence=0.0,cycle_id=None,metadata=None):
