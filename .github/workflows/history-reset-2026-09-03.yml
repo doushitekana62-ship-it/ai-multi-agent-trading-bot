@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   backup-and-reset:
@@ -16,70 +16,100 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       WORKER_URL: https://adeii.workers.dev
       BACKUP_FILE: history-reset-2026-09-03.jsonl
+      ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Validate backup and reset credentials
+      - name: Validate credentials
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$SUPABASE_SERVICE_ROLE_KEY" || { echo 'SUPABASE_SERVICE_ROLE_KEY is required; refusing destructive reset.'; exit 1; }
-          test -n "${{ secrets.ADMIN_USERNAME }}" || { echo 'ADMIN_USERNAME is required; refusing destructive reset.'; exit 1; }
-          test -n "${{ secrets.ADMIN_PASSWORD }}" || { echo 'ADMIN_PASSWORD is required; refusing destructive reset.'; exit 1; }
+          test -n "$SUPABASE_SERVICE_ROLE_KEY"
+          test -n "$ADMIN_USERNAME"
+          test -n "$ADMIN_PASSWORD"
 
-      - name: Backup trading history
+      - name: Authenticate and freeze paper bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          login="$(jq -nc --arg username "$ADMIN_USERNAME" --arg password "$ADMIN_PASSWORD" '{username:$username,password:$password}')"
+          auth="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/auth/login" -H 'Content-Type: application/json' -d "$login")"
+          token="$(jq -r '.access_token // empty' <<<"$auth")"
+          test -n "$token" && test "$token" != "null"
+          echo "$token" > "$RUNNER_TEMP/paper-access-token"
+          curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/bot/stop" -H "Authorization: Bearer $token" | jq .
+          status="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error "$WORKER_URL/api/bot/status" -H "Authorization: Bearer $token")"
+          echo "$status" | jq .
+          jq -e '.bot_enabled == false and .active_positions == 0' <<<"$status" >/dev/null
+
+      - name: Freeze and count source tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          tables=(decisions market_observations paper_history paper_integrity_events trades)
+          : > "$RUNNER_TEMP/expected-counts"
+          for table in "${tables[@]}"; do
+            headers="$RUNNER_TEMP/$table.headers"
+            body="$RUNNER_TEMP/$table.body"
+            code="$(curl --retry 5 --retry-delay 2 --silent --show-error -o "$body" -D "$headers" -w '%{http_code}' --get "$SUPABASE_URL/rest/v1/$table" \
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              -H 'Prefer: count=exact' --data-urlencode 'select=id' --data-urlencode 'limit=1')"
+            test "$code" = 200
+            range="$(grep -i '^content-range:' "$headers" | tail -1 | tr -d '\r')"
+            count="${range##*/}"
+            test "$count" != "$range"
+            printf '%s=%s\n' "$table" "$count" >> "$RUNNER_TEMP/expected-counts"
+          done
+          cat "$RUNNER_TEMP/expected-counts"
+
+      - name: Backup trading history in small pages
         shell: bash
         run: |
           set -euo pipefail
           : > "$BACKUP_FILE"
-          printf '%s\n' '{"backup":"AI TRADING BOT — PRE-RESET PAPER LEDGER","created_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$BACKUP_FILE"
+          printf '%s\n' '{"backup":"AI TRADING BOT — PRE-RESET PAPER LEDGER","created_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","format":"JSONL"}' >> "$BACKUP_FILE"
           tables=(decisions market_observations paper_history paper_integrity_events trades)
           for table in "${tables[@]}"; do
             offset=0
             while true; do
-              response="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error --get "$SUPABASE_URL/rest/v1/$table" \
-                -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-                -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-                --data-urlencode 'select=*' \
-                --data-urlencode 'order=id.asc' \
-                --data-urlencode 'limit=100' \
-                --data-urlencode "offset=$offset")"
-              count="$(jq 'length' <<<"$response")"
-              jq -c --arg table "$table" '.[] | {table:$table,row:.}' <<<"$response" >> "$BACKUP_FILE"
-              if [ "$count" -lt 100 ]; then break; fi
-              offset=$((offset + 100))
+              response="$RUNNER_TEMP/response.json"
+              code="$(curl --retry 5 --retry-delay 2 --silent --show-error -o "$response" -w '%{http_code}' --get "$SUPABASE_URL/rest/v1/$table" \
+                -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+                --data-urlencode 'select=*' --data-urlencode 'order=id.asc' --data-urlencode 'limit=10' --data-urlencode "offset=$offset")"
+              test "$code" = 200
+              jq -e 'type == "array"' "$response" >/dev/null
+              count="$(jq 'length' "$response")"
+              jq -c --arg table "$table" '.[] | {table:$table,row:.}' "$response" >> "$BACKUP_FILE"
+              if [ "$count" -lt 10 ]; then break; fi
+              offset=$((offset + 10))
             done
           done
-          jq -e 'select(.backup)' "$BACKUP_FILE" >/dev/null
           test "$(wc -l < "$BACKUP_FILE")" -gt 1
+          jq -e 'select(.backup)' "$BACKUP_FILE" >/dev/null
+
+      - name: Verify backup row counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for table in decisions market_observations paper_history paper_integrity_events trades; do
+            expected="$(awk -F= -v t="$table" '$1==t {print $2}' "$RUNNER_TEMP/expected-counts")"
+            actual="$(jq -r --arg t "$table" 'select(.table==$t) | 1' "$BACKUP_FILE" | wc -l | tr -d ' ')"
+            test "$actual" = "$expected" || { echo "Backup count mismatch for $table: expected=$expected actual=$actual"; exit 1; }
+          done
+          echo 'Backup row counts verified exactly.'
 
       - name: Upload immutable backup artifact
         uses: actions/upload-artifact@v4
         with:
-          name: paper-ledger-pre-reset-2026-09-03
+          name: paper-ledger-pre-reset-2026-09-03-final
           path: ${{ env.BACKUP_FILE }}
           if-no-files-found: error
           retention-days: 90
-
-      - name: Commit backup before reset
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- "$BACKUP_FILE"
-          git commit -m 'backup: paper ledger before reset 2026-09-03' || { echo 'Backup commit was not created; refusing destructive reset.'; exit 1; }
-          git push
 
       - name: Reset Durable Object and Supabase ledger
         shell: bash
         run: |
           set -euo pipefail
-          login="$(jq -nc --arg username '${{ secrets.ADMIN_USERNAME }}' --arg password '${{ secrets.ADMIN_PASSWORD }}' '{username:$username,password:$password}')"
-          auth="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/auth/login" -H 'Content-Type: application/json' -d "$login")"
-          token="$(jq -r '.access_token // empty' <<<"$auth")"
-          test -n "$token" && test "$token" != "null" || { echo "Worker login failed: $auth"; exit 1; }
+          token="$(cat "$RUNNER_TEMP/paper-access-token")"
           reset="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/bot/reset" -H "Authorization: Bearer $token")"
           echo "$reset" | jq .
           jq -e '.reset.ok == true' <<<"$reset" >/dev/null
@@ -90,21 +120,22 @@ jobs:
           set -euo pipefail
           for table in decisions market_observations paper_history trades; do
             rows="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error --get "$SUPABASE_URL/rest/v1/$table" \
-              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-              --data-urlencode 'select=id' \
-              --data-urlencode 'limit=1')"
-            test "$(jq 'length' <<<"$rows")" -eq 0 || { echo "$table is not empty"; exit 1; }
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              --data-urlencode 'select=id' --data-urlencode 'limit=1')"
+            test "$(jq 'length' <<<"$rows")" -eq 0
           done
+          events="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error --get "$SUPABASE_URL/rest/v1/paper_integrity_events" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            --data-urlencode 'select=event_type,severity' --data-urlencode 'event_type=eq.PAPER_RESET')"
+          test "$(jq 'length' <<<"$events")" -ge 1
           echo 'Paper ledger reset verified.'
 
-      - name: Verify worker is OFF after reset
+      - name: Verify worker account reset
         shell: bash
         run: |
           set -euo pipefail
-          login="$(jq -nc --arg username '${{ secrets.ADMIN_USERNAME }}' --arg password '${{ secrets.ADMIN_PASSWORD }}' '{username:$username,password:$password}')"
-          auth="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/auth/login" -H 'Content-Type: application/json' -d "$login")"
-          token="$(jq -r '.access_token // empty' <<<"$auth")"
+          token="$(cat "$RUNNER_TEMP/paper-access-token")"
           status="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error "$WORKER_URL/api/bot/status" -H "Authorization: Bearer $token")"
           echo "$status" | jq .
-          jq -e '.bot_enabled == false and .active_positions == 0' <<<"$status" >/dev/null
+          jq -e '.bot_enabled == false and .active_positions == 0 and .balance == 10000000 and .initial_balance == 10000000 and .portfolio_value == 10000000 and .cycles_today == 0 and .daily_pnl == 0 and .total_pnl == 0 and .decision_counts.BUY == 0 and .decision_counts.SELL == 0 and .decision_counts.HOLD == 0' <<<"$status" >/dev/null
+          echo 'Paper account reset verified at Rp10,000,000 with zero cycles and zero decisions.'
