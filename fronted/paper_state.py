@@ -13,7 +13,7 @@ CYCLE_INTERVAL_MS = 5_000
 DECISION_INTERVAL_MS = 15_000
 MAX_POSITIONS = 3
 DEFAULT_POSITION_ALLOCATION = 0.10
-STATE_VERSION = 6
+STATE_VERSION = 7
 MARKET_HISTORY_LIMIT = 1440
 DEFAULT_STATE={"state_version":STATE_VERSION,"enabled":False,"mode":"paper","cycle_running":False,"started_at":None,"last_cycle_at":None,"last_cycle_started_at":None,"last_cycle_finished_at":None,"last_cycle_status":"idle","cycles_today":0,"cycle_failures":0,"consecutive_cycle_failures":0,"balance":10_000_000.0,"initial_balance":10_000_000.0,"portfolio_value":10_000_000.0,"daily_pnl":0.0,"total_pnl":0.0,"daily_trades":0,"total_trades":0,"active_positions":0,"max_open_positions":MAX_POSITIONS,"position_allocation":DEFAULT_POSITION_ALLOCATION,"decision_counts":{"BUY":0,"SELL":0,"HOLD":0},"positions":[],"trade_history":[],"last_decision":None,"last_error":None,"paper_pair":"btc_idr","scheduler_active":False,"scheduler_source":"durable_object_alarm","last_scheduler_at":None,"scheduler_invocations":0,"next_cycle_at":None,"risk_settings":settings_with_defaults(),"last_reset_event_id":0,"updated_at":None}
 
@@ -42,6 +42,13 @@ class PaperTradingState(DurableObject):
             rows=json.loads(await response.text())
             return int(rows[0].get("id",0)) if isinstance(rows,list) and rows and isinstance(rows[0],dict) else 0
         except Exception:return 0
+    async def _set_runtime_write_enabled(self,enabled):
+        url=str(getattr(self.env,"SUPABASE_URL","") or "").strip().rstrip("/");key=str(getattr(self.env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
+        if not url or not key:return False
+        try:
+            response=await fetch(f"{url}/rest/v1/rpc/set_paper_runtime_write_enabled",to_js({"method":"POST","headers":{"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json","Content-Type":"application/json"},"body":json.dumps({"p_enabled":bool(enabled)},separators=(",",":"))}))
+            return 200<=int(response.status)<300
+        except Exception:return False
     async def _get(self):
         state=await self.ctx.storage.get("state")
         if not isinstance(state,dict):state=_copy()
@@ -73,14 +80,16 @@ class PaperTradingState(DurableObject):
             s["scheduler_active"]=True; s["next_cycle_at"]=await self._arm(); await self.ctx.storage.put("state",s)
         return s
     async def enable_paper(self,pair="btc_idr"):
+        if not await self._set_runtime_write_enabled(True):raise RuntimeError("paper_runtime_write_enable_failed")
         s=await self._get(); now=_now(); s.update({"enabled":True,"mode":"paper","cycle_running":False,"started_at":now,"last_cycle_status":"waiting","cycle_failures":0,"consecutive_cycle_failures":0,"last_error":None,"paper_pair":str(pair or "btc_idr").strip().lower(),"scheduler_active":True,"scheduler_source":"durable_object_alarm","updated_at":now}); s["next_cycle_at"]=await self._arm(); await self.ctx.storage.put("state",s); return s
     async def start(self,pair="btc_idr"):return await self.enable_paper(pair)
     async def set_position_limit(self,value):
         s=await self._get();s["max_open_positions"]=_limit(value);s["active_positions"]=len(s.get("positions") or []);s["updated_at"]=_now();await self.ctx.storage.put("state",s);return s
     async def stop(self):
+        await self._set_runtime_write_enabled(False)
         s=await self._get();s.update({"enabled":False,"cycle_running":False,"scheduler_active":False,"next_cycle_at":None,"last_error":None,"last_cycle_status":"stopped","updated_at":_now()});self.ctx.storage.deleteAlarm();await self.ctx.storage.put("state",s);return s
     async def reset(self):
-        self.ctx.storage.deleteAlarm();await self.ctx.storage.delete("paper_market_history");marker=await self._latest_reset_event_id();s=_copy();s["last_reset_event_id"]=marker;s["updated_at"]=_now();await self.ctx.storage.put("state",s);return s
+        await self._set_runtime_write_enabled(False);self.ctx.storage.deleteAlarm();await self.ctx.storage.delete("paper_market_history");marker=await self._latest_reset_event_id();s=_copy();s["last_reset_event_id"]=marker;s["updated_at"]=_now();await self.ctx.storage.put("state",s);return s
     async def begin_cycle(self):
         s=await self._get()
         if not s.get("enabled"):return {"ok":False,"state":s,"reason":"paper_trading_disabled"}
@@ -108,7 +117,7 @@ class PaperTradingState(DurableObject):
             if allocation>0:
                 fill=apply_slippage(price,"BUY",risk["slippage_bps"]);qty=allocation/fill;fee=allocation*risk["fee_rate"];levels=update_protection({"entry_price":fill,"created_at":now},fill,points,risk);positions.append({"symbol":symbol,"side":"BUY","quantity":qty,"entry_price":fill,"price":fill,"capital":allocation,"position_size":allocation/equity if equity else 0,"pnl":0,"unrealized_pnl":0,"confidence":confidence,"created_at":now,"entry_fee":fee,"fees":fee,"high_water_mark":fill,"stop_loss":levels.get("stop_loss"),"take_profit":levels.get("take_profit"),"initial_stop_loss":levels.get("stop_loss"),"initial_take_profit":levels.get("take_profit"),"risk_mode":risk["stop_loss_mode"]});s["balance"]=_num(s.get("balance"))-allocation-fee;executed=True;trade={"action":"BUY","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"pnl":-fee,"confidence":confidence,"created_at":now,"fee":fee,"exit_reason":None}
         elif action=="SELL" and price>0 and idx is not None:
-            p=positions[idx];qty=_num(p.get("quantity"));entry=_num(p.get("entry_price"),price);fill=apply_slippage(price,"SELL",risk["slippage_bps"]);proceeds=qty*fill;fee=proceeds*risk["fee_rate"];realized=proceeds-fee-_num(p.get("capital"),entry*qty)-_num(p.get("entry_fee"));s["balance"]=_num(s.get("balance"))+proceeds-fee;positions.pop(idx);s["daily_pnl"]=_num(s.get("daily_pnl"))+realized;s["total_pnl"]=_num(s.get("total_pnl"))+realized;executed=True;trade={"action":"SELL","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"entry_price":entry,"pnl":realized,"confidence":confidence,"created_at":now,"fee":fee,"entry_fee":_num(p.get("entry_fee")),"exit_reason":risk_exit or str((analysis or {}).get("exit_reason") or "AI_EXIT")}
+            p=positions[idx];qty=_num(p.get("quantity"));entry=_num(p.get("entry_price"),price);fill=apply_slippage(price,"SELL",risk["slippage_bps"]);proceeds=qty*fill;fee=proceeds*risk["fee_rate"];realized=proceeds-fee-_num(p.get("capital"),entry*qty)-_num(p.get("entry_fee"));s["balance"]=_num(s.get("balance"))+proceeds-fee;s["positions"]=positions;positions.pop(idx);s["daily_pnl"]=_num(s.get("daily_pnl"))+realized;s["total_pnl"]=_num(s.get("total_pnl"))+realized;executed=True;trade={"action":"SELL","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"entry_price":entry,"pnl":realized,"confidence":confidence,"created_at":now,"fee":fee,"entry_fee":_num(p.get("entry_fee")),"exit_reason":risk_exit or str((analysis or {}).get("exit_reason") or "AI_EXIT")}
         for p in positions:
             if str(p.get("symbol")).upper()==str(symbol).upper() and price>0:
                 p["price"]=price;p["unrealized_pnl"]=(price-_num(p.get("entry_price")))*_num(p.get("quantity"))-price*_num(p.get("quantity"))*risk["fee_rate"];p["pnl"]=p["unrealized_pnl"]
