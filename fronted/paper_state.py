@@ -1,19 +1,21 @@
 """Persistent paper-trading state backed by a Durable Object."""
 from __future__ import annotations
+import json
 from datetime import datetime, timezone
+from js import fetch
+from pyodide.ffi import to_js
 from workers import DurableObject
 from paper_cycle import run_market_observation, run_paper_cycle
 from risk_engine import apply_slippage, settings_with_defaults, update_protection
 
 # Scheduler polls market observations every 5s; decisions are evaluated every 15s.
-# CYCLE_INTERVAL_MS = 60_000
 CYCLE_INTERVAL_MS = 5_000
 DECISION_INTERVAL_MS = 15_000
 MAX_POSITIONS = 3
 DEFAULT_POSITION_ALLOCATION = 0.10
-STATE_VERSION = 5
+STATE_VERSION = 6
 MARKET_HISTORY_LIMIT = 1440
-DEFAULT_STATE={"state_version":STATE_VERSION,"enabled":False,"mode":"paper","cycle_running":False,"started_at":None,"last_cycle_at":None,"last_cycle_started_at":None,"last_cycle_finished_at":None,"last_cycle_status":"idle","cycles_today":0,"cycle_failures":0,"consecutive_cycle_failures":0,"balance":10_000_000.0,"initial_balance":10_000_000.0,"portfolio_value":10_000_000.0,"daily_pnl":0.0,"total_pnl":0.0,"daily_trades":0,"total_trades":0,"active_positions":0,"max_open_positions":MAX_POSITIONS,"position_allocation":DEFAULT_POSITION_ALLOCATION,"decision_counts":{"BUY":0,"SELL":0,"HOLD":0},"positions":[],"trade_history":[],"last_decision":None,"last_error":None,"paper_pair":"btc_idr","scheduler_active":False,"scheduler_source":"durable_object_alarm","last_scheduler_at":None,"scheduler_invocations":0,"next_cycle_at":None,"risk_settings":settings_with_defaults(),"updated_at":None}
+DEFAULT_STATE={"state_version":STATE_VERSION,"enabled":False,"mode":"paper","cycle_running":False,"started_at":None,"last_cycle_at":None,"last_cycle_started_at":None,"last_cycle_finished_at":None,"last_cycle_status":"idle","cycles_today":0,"cycle_failures":0,"consecutive_cycle_failures":0,"balance":10_000_000.0,"initial_balance":10_000_000.0,"portfolio_value":10_000_000.0,"daily_pnl":0.0,"total_pnl":0.0,"daily_trades":0,"total_trades":0,"active_positions":0,"max_open_positions":MAX_POSITIONS,"position_allocation":DEFAULT_POSITION_ALLOCATION,"decision_counts":{"BUY":0,"SELL":0,"HOLD":0},"positions":[],"trade_history":[],"last_decision":None,"last_error":None,"paper_pair":"btc_idr","scheduler_active":False,"scheduler_source":"durable_object_alarm","last_scheduler_at":None,"scheduler_invocations":0,"next_cycle_at":None,"risk_settings":settings_with_defaults(),"last_reset_event_id":0,"updated_at":None}
 
 def _now():return datetime.now(timezone.utc).isoformat()
 def _iso(ms):return datetime.fromtimestamp(ms/1000,timezone.utc).isoformat()
@@ -31,10 +33,23 @@ def _limit(v):
 
 class PaperTradingState(DurableObject):
     def __init__(self,ctx,env):super().__init__(ctx,env);self.ctx=ctx;self.env=env
+    async def _latest_reset_event_id(self):
+        url=str(getattr(self.env,"SUPABASE_URL","") or "").strip().rstrip("/");key=str(getattr(self.env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
+        if not url or not key:return 0
+        try:
+            response=await fetch(f"{url}/rest/v1/paper_integrity_events?select=id&event_type=eq.PAPER_RESET&order=id.desc&limit=1",to_js({"method":"GET","headers":{"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json"}}))
+            if int(response.status)<200 or int(response.status)>=300:return 0
+            rows=json.loads(await response.text())
+            return int(rows[0].get("id",0)) if isinstance(rows,list) and rows and isinstance(rows[0],dict) else 0
+        except Exception:return 0
     async def _get(self):
         state=await self.ctx.storage.get("state")
         if not isinstance(state,dict):state=_copy()
         for k,v in DEFAULT_STATE.items():state.setdefault(k,v.copy() if isinstance(v,dict) else list(v) if isinstance(v,list) else v)
+        marker=await self._latest_reset_event_id()
+        seen=int(state.get("last_reset_event_id",0) or 0)
+        if marker>seen:
+            state=_copy();state["last_reset_event_id"]=marker;state["updated_at"]=_now();await self.ctx.storage.delete("paper_market_history")
         state["risk_settings"]=settings_with_defaults(state.get("risk_settings")); state["max_open_positions"]=_limit(state.get("max_open_positions")); state["active_positions"]=len(state.get("positions") or []); state["state_version"]=STATE_VERSION
         await self.ctx.storage.put("state",state); return state
     async def get_state(self):return await self._get()
@@ -65,7 +80,7 @@ class PaperTradingState(DurableObject):
     async def stop(self):
         s=await self._get();s.update({"enabled":False,"cycle_running":False,"scheduler_active":False,"next_cycle_at":None,"last_error":None,"last_cycle_status":"stopped","updated_at":_now()});self.ctx.storage.deleteAlarm();await self.ctx.storage.put("state",s);return s
     async def reset(self):
-        self.ctx.storage.deleteAlarm();await self.ctx.storage.delete("paper_market_history");s=_copy();s["updated_at"]=_now();await self.ctx.storage.put("state",s);return s
+        self.ctx.storage.deleteAlarm();await self.ctx.storage.delete("paper_market_history");marker=await self._latest_reset_event_id();s=_copy();s["last_reset_event_id"]=marker;s["updated_at"]=_now();await self.ctx.storage.put("state",s);return s
     async def begin_cycle(self):
         s=await self._get()
         if not s.get("enabled"):return {"ok":False,"state":s,"reason":"paper_trading_disabled"}
