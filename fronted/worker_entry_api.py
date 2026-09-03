@@ -20,7 +20,7 @@ import cf_worker
 from paper_cycle import run_paper_cycle
 from paper_state import PaperTradingState
 
-
+RUNTIME_BUILD = "2026-09-03-paper-reset-runtime-v2"
 HISTORY_FIELDS = (
     "id,cycle_at,trading_date,cycle_id,decision_id,trade_id,cycle_number,pair,symbol,"
     "action,candidate_action,raw_action,confidence,execution_status,price,"
@@ -86,6 +86,16 @@ async def _verify_access(env, request):
     return payload if payload and payload.get("type") == "access" else None
 
 
+def _runtime_config(env):
+    return {
+        "jwt_configured": len(str(getattr(env, "JWT_SECRET_KEY", "") or "").strip()) >= 32,
+        "admin_configured": bool(str(getattr(env, "ADMIN_USERNAME", "") or "").strip() and str(getattr(env, "ADMIN_PASSWORD", "") or "")),
+        "supabase_configured": bool(str(getattr(env, "SUPABASE_URL", "") or "").strip() and str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()),
+        "ai_engine_configured": bool(str(getattr(env, "AI_ENGINE_URL", "") or "").strip() and str(getattr(env, "AI_ENGINE_SHARED_SECRET", "") or "").strip()),
+        "paper_state_binding": bool(getattr(env, "PAPER_STATE", None)),
+    }
+
+
 async def _supabase_health(env):
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
     key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
@@ -112,14 +122,7 @@ async def _supabase_rpc(env, function_name: str, payload=None):
         return {"ok": False, "reason": "credentials_missing"}
     try:
         body = payload if isinstance(payload, dict) else {}
-        response = await fetch(
-            f"{url}/rest/v1/rpc/{function_name}",
-            to_js({
-                "method": "POST",
-                "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json"},
-                "body": json.dumps(body, separators=(",", ":")),
-            }),
-        )
+        response = await fetch(f"{url}/rest/v1/rpc/{function_name}", to_js({"method": "POST", "headers": {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json"}, "body": json.dumps(body, separators=(",", ":"))}))
         code = int(response.status)
         text = await response.text()
         if code < 200 or code >= 300:
@@ -212,20 +215,22 @@ class Default(WorkerEntrypoint):
             if not (await stub.get_state()).get("enabled"): return Response.json({"detail": "Paper trading is OFF. Start the bot first.", "bot_enabled": False}, status=409)
             cycle = await run_paper_cycle(self.env, stub, _pair(request), state_response=_state_response); return Response.json(cycle, status=200 if cycle.get("ok") else 409)
         if path in ("/api/bot/reset", "/api/dashboard/paper/reset") and request.method == "POST":
-            # Reset the Durable Object first. If the database reset fails, the bot stays OFF and no new trades can start.
-            state = await stub.reset()
+            await stub.reset()
             db_reset = await _supabase_rpc(self.env, "reset_paper_ledger")
             if not db_reset.get("ok"):
+                state = await stub.get_state()
                 return Response.json({**_state_response(state), "message": "Paper state reset, but Supabase ledger reset failed.", "reset": {"ok": False, "database": db_reset}}, status=502)
+            # The DB reset creates a new PAPER_RESET marker. Read it again so the
+            # Durable Object and response are synchronized to the same reset event.
+            state = await stub.reset()
             return Response.json({**_state_response(state), "message": "Paper trading state and Supabase ledger reset.", "reset": {"ok": True, "database": db_reset.get("result")}})
         if path == "/api/dashboard/paper/settings" and request.method == "POST":
-            try:
-                body = await request.json()
-            except Exception:
-                return Response.json({"detail": "Invalid JSON body"}, status=400)
+            try: body = await request.json()
+            except Exception: return Response.json({"detail": "Invalid JSON body"}, status=400)
             if "max_open_positions" in body:
                 try: value = int(body.get("max_open_positions"))
                 except Exception: return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
+                if value < 1 or value > 3: return Response.json({"detail": "max_open_positions must be an integer from 1 to 3"}, status=400)
                 if value < 1 or value > 3: return Response.json({"detail": "max_open_positions must be between 1 and 3"}, status=400)
                 await stub.set_position_limit(value)
             risk_patch = body.get("risk_settings")
@@ -240,22 +245,12 @@ class Default(WorkerEntrypoint):
             if deep: supabase = await _supabase_health(self.env)
             else: supabase = {"connected": None, "reason": "health_probe_deferred"}
             result = _state_response(state)
-            result.update({
-                "daily_pnl": float(state.get("daily_pnl", 0.0)),
-                "daily_trades": int(state.get("daily_trades", 0)),
-                "total_trades": int(state.get("total_trades", 0)),
-                "active_positions": int(state.get("active_positions", 0)),
-                "database": {"configured": configured, **supabase},
-                "market_data": {"source": "INDODAX public market data", "available": None, "fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"},
-                "system_health": {"database": {"connected": supabase.get("connected")}, "market_data": {"fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}}
-            })
+            result.update({"daily_pnl": float(state.get("daily_pnl", 0.0)), "daily_trades": int(state.get("daily_trades", 0)), "total_trades": int(state.get("total_trades", 0)), "active_positions": int(state.get("active_positions", 0)), "database": {"configured": configured, **supabase}, "market_data": {"source": "INDODAX public market data", "available": None, "fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "system_health": {"database": {"connected": supabase.get("connected")}, "market_data": {"fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}})
             return Response.json(result)
         if path == "/api/dashboard/positions" and request.method == "GET":
             state = await stub.get_state(); return Response.json({"positions": state.get("positions", []), "active_positions": int(state.get("active_positions", 0)), "max_open_positions": int(state.get("max_open_positions", 3)), "currency": "IDR", "currency_symbol": "Rp"})
         if path == "/api/dashboard/performance" and request.method == "GET":
-            state = await stub.get_state(); history = list(state.get("trade_history") or []); closed = [x for x in history if x.get("action") == "SELL"]
-            pnls = [float(x.get("pnl") or 0) for x in closed]; wins = [x for x in pnls if x > 0]; losses = [x for x in pnls if x < 0]
-            gross_profit = sum(wins); gross_loss = abs(sum(losses)); fees = sum(float(x.get("fee") or 0) + float(x.get("entry_fee") or 0) for x in closed)
+            state = await stub.get_state(); history = list(state.get("trade_history") or []); closed = [x for x in history if x.get("action") == "SELL"]; pnls = [float(x.get("pnl") or 0) for x in closed]; wins = [x for x in pnls if x > 0]; losses = [x for x in pnls if x < 0]; gross_profit = sum(wins); gross_loss = abs(sum(losses)); fees = sum(float(x.get("fee") or 0) + float(x.get("entry_fee") or 0) for x in closed)
             return Response.json({"performance": {"total_pnl": float(state.get("total_pnl", 0)), "daily_pnl": float(state.get("daily_pnl", 0)), "closed_trades": len(closed), "win_rate": len(wins) / len(closed) if closed else 0.0, "wins": len(wins), "losses": len(losses), "average_win": gross_profit / len(wins) if wins else 0.0, "average_loss": sum(losses) / len(losses) if losses else 0.0, "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None, "gross_profit": gross_profit, "gross_loss": -gross_loss, "fees": fees, "open_positions": len(state.get("positions") or []), "currency": "IDR", "currency_symbol": "Rp"}})
         if path == "/api/dashboard/recent-decision" and request.method == "GET":
             state = await stub.get_state(); return Response.json({"decision": state.get("last_decision")})
@@ -273,6 +268,9 @@ class Default(WorkerEntrypoint):
     async def fetch(self, request):
         path = urlparse(request.url).path
         try:
+            if path == "/api/system/health" and request.method == "GET":
+                config = _runtime_config(self.env)
+                return Response.json({"ok": True, "runtime": RUNTIME_BUILD, "mode": "paper", "real_trading_locked": True, "config": config, "timestamp": int(time.time())})
             auth = await self._auth(request, path)
             if auth is not None: return auth
             state = await self._state_routes(request, path)
@@ -280,7 +278,7 @@ class Default(WorkerEntrypoint):
             return await asgi.fetch(cf_worker.app, request, self.env)
         except Exception as exc:
             print(f"[worker:fetch] path={path} type={type(exc).__name__}: {exc}")
-            return Response.json({"detail": "Worker request failed", "error_type": type(exc).__name__, "path": path}, status=500)
+            return Response.json({"detail": "Worker request failed", "error_type": type(exc).__name__, "path": path, "runtime": RUNTIME_BUILD}, status=500)
 
 
 __all__ = ["Default", "PaperTradingState"]
