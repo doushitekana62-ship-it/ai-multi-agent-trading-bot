@@ -8,8 +8,7 @@ def _num(v,d=0.):
     except (TypeError,ValueError):return d
 def settings_with_defaults(value=None):
     out=dict(DEFAULT_RISK_SETTINGS);out.update(value or {});out["stop_loss_mode"]=str(out.get("stop_loss_mode") or "ATR").upper();out["take_profit_mode"]=str(out.get("take_profit_mode") or "RISK_REWARD").upper();out["trailing_mode"]=str(out.get("trailing_mode") or "ATR").upper()
-    for k in ("stop_loss_pct","take_profit_pct","stop_atr_multiplier","take_profit_atr_multiplier","risk_reward_ratio","profit_activation_pct","trailing_atr_multiplier","trailing_pct","break_even_trigger_r","break_even_offset_pct","fee_rate","slippage_bps","max_position_size","max_total_exposure","max_daily_loss_pct","minimum_confidence","minimum_net_edge_pct"):
-        out[k]=_num(out.get(k),DEFAULT_RISK_SETTINGS[k])
+    for k in ("stop_loss_pct","take_profit_pct","stop_atr_multiplier","take_profit_atr_multiplier","risk_reward_ratio","profit_activation_pct","trailing_atr_multiplier","trailing_pct","break_even_trigger_r","break_even_offset_pct","fee_rate","slippage_bps","max_position_size","max_total_exposure","max_daily_loss_pct","minimum_confidence","minimum_net_edge_pct"):out[k]=_num(out.get(k),DEFAULT_RISK_SETTINGS[k])
     try:out["atr_period"]=max(2,min(100,int(out.get("atr_period",14))))
     except (TypeError,ValueError):out["atr_period"]=14
     try:out["max_hold_minutes"]=max(0,int(out.get("max_hold_minutes",15)))
@@ -55,7 +54,7 @@ def update_protection(position,current_price,points,settings=None):
         if distance>0:stop=max(stop,high-distance);position["stop_loss"]=stop
     if price<=_num(position.get("stop_loss")):
         reason="BREAK_EVEN" if position.get("break_even_armed") and price>=entry else "TRAILING_STOP" if high>entry and _num(position.get("stop_loss"))>_num(position.get("initial_stop_loss")) else "STOP_LOSS";return {"triggered":True,"reason":reason,"position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
-    if cfg["hard_take_profit_enabled"] and price>=_num(position.get("take_profit")):return {"triggered":True,"reason":"TAKE_PROFIT","position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
+    if (cfg["hard_take_profit_enabled"] or not cfg["trailing_enabled"]) and price>=_num(position.get("take_profit")):return {"triggered":True,"reason":"TAKE_PROFIT","position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
     if cfg["max_hold_minutes"]>0 and position.get("last_observed_at"):
         try:
             created=datetime.fromisoformat(str(position["last_observed_at"]));created=created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created
