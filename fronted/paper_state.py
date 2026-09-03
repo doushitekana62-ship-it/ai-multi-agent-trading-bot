@@ -7,17 +7,15 @@ from pyodide.ffi import to_js
 from workers import DurableObject
 from paper_cycle import run_market_observation, run_paper_cycle
 from risk_engine import apply_slippage, evaluate_entry, settings_with_defaults, update_protection
-
-CYCLE_INTERVAL_MS = 5_000
-DECISION_INTERVAL_MS = 15_000
-MAX_POSITIONS = 3
-DEFAULT_POSITION_ALLOCATION = 0.10
-STATE_VERSION = 8
-MARKET_HISTORY_LIMIT = 1440
-DEFAULT_STATE = {"state_version":STATE_VERSION,"enabled":False,"mode":"paper","cycle_running":False,"started_at":None,"last_cycle_at":None,"last_cycle_started_at":None,"last_cycle_finished_at":None,"last_cycle_status":"idle","cycles_today":0,"cycle_failures":0,"consecutive_cycle_failures":0,"balance":10_000_000.0,"initial_balance":10_000_000.0,"portfolio_value":10_000_000.0,"daily_pnl":0.0,"total_pnl":0.0,"daily_trades":0,"total_trades":0,"active_positions":0,"max_open_positions":MAX_POSITIONS,"position_allocation":DEFAULT_POSITION_ALLOCATION,"decision_counts":{"BUY":0,"SELL":0,"HOLD":0},"positions":[],"trade_history":[],"last_decision":None,"last_error":None,"paper_pair":"btc_idr","scheduler_active":False,"scheduler_source":"durable_object_alarm","last_scheduler_at":None,"scheduler_invocations":0,"next_cycle_at":None,"risk_settings":settings_with_defaults(),"last_reset_event_id":0,"updated_at":None}
-
-def _now(): return datetime.now(timezone.utc).isoformat()
-def _iso(ms): return datetime.fromtimestamp(ms/1000,timezone.utc).isoformat()
+CYCLE_INTERVAL_MS=5_000
+DECISION_INTERVAL_MS=15_000
+MAX_POSITIONS=3
+DEFAULT_POSITION_ALLOCATION=.10
+STATE_VERSION=8
+MARKET_HISTORY_LIMIT=1440
+DEFAULT_STATE={"state_version":STATE_VERSION,"enabled":False,"mode":"paper","cycle_running":False,"started_at":None,"last_cycle_at":None,"last_cycle_started_at":None,"last_cycle_finished_at":None,"last_cycle_status":"idle","cycles_today":0,"cycle_failures":0,"consecutive_cycle_failures":0,"balance":10_000_000.0,"initial_balance":10_000_000.0,"portfolio_value":10_000_000.0,"daily_pnl":0.0,"total_pnl":0.0,"daily_trades":0,"total_trades":0,"active_positions":0,"max_open_positions":MAX_POSITIONS,"position_allocation":DEFAULT_POSITION_ALLOCATION,"decision_counts":{"BUY":0,"SELL":0,"HOLD":0},"positions":[],"trade_history":[],"last_decision":None,"last_error":None,"paper_pair":"btc_idr","scheduler_active":False,"scheduler_source":"durable_object_alarm","last_scheduler_at":None,"scheduler_invocations":0,"next_cycle_at":None,"risk_settings":settings_with_defaults(),"last_reset_event_id":0,"updated_at":None}
+def _now():return datetime.now(timezone.utc).isoformat()
+def _iso(ms):return datetime.fromtimestamp(ms/1000,timezone.utc).isoformat()
 def _num(v,d=0.0):
     try:return float(v)
     except (TypeError,ValueError):return d
@@ -27,15 +25,14 @@ def _limit(v):
     try:v=int(v)
     except (TypeError,ValueError):v=MAX_POSITIONS
     return max(1,min(MAX_POSITIONS,v))
-
 class PaperTradingState(DurableObject):
     """One authoritative paper balance/position state; Supabase remains the ledger."""
-    def __init__(self,ctx,env): super().__init__(ctx,env);self.ctx=ctx;self.env=env
+    def __init__(self,ctx,env):super().__init__(ctx,env);self.ctx=ctx;self.env=env
     async def _latest_reset_event_id(self):
         url=str(getattr(self.env,"SUPABASE_URL","") or "").strip().rstrip("/");key=str(getattr(self.env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
         if not url or not key:return 0
         try:
-            r=await fetch(f"{url}/rest/v1/paper_integrity_events?select=id&event_type=eq.PAPER_RESET&order=id.desc&limit=1",to_js({"method":"GET","headers":{"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json"}))
+            r=await fetch(f"{url}/rest/v1/paper_integrity_events?select=id&event_type=eq.PAPER_RESET&order=id.desc&limit=1",to_js({"method":"GET","headers":{"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json"}}))
             if not 200<=int(r.status)<300:return 0
             rows=json.loads(await r.text());return int(rows[0].get("id",0)) if isinstance(rows,list) and rows and isinstance(rows[0],dict) else 0
         except Exception:return 0
@@ -51,10 +48,8 @@ class PaperTradingState(DurableObject):
         for k,v in DEFAULT_STATE.items():
             if k not in s:s[k]=v.copy() if isinstance(v,dict) else list(v) if isinstance(v,list) else v
         marker=await self._latest_reset_event_id();seen=int(s.get("last_reset_event_id",0) or 0)
-        if marker>seen:
-            s=_copy();s["last_reset_event_id"]=marker;s["updated_at"]=_now();await self.ctx.storage.delete("paper_market_history")
-        s["risk_settings"]=settings_with_defaults(s.get("risk_settings"));s["max_open_positions"]=_limit(s.get("max_open_positions"));s["active_positions"]=len(s.get("positions") or []);s["state_version"]=STATE_VERSION
-        await self.ctx.storage.put("state",s);return s
+        if marker>seen:s=_copy();s["last_reset_event_id"]=marker;s["updated_at"]=_now();await self.ctx.storage.delete("paper_market_history")
+        s["risk_settings"]=settings_with_defaults(s.get("risk_settings"));s["max_open_positions"]=_limit(s.get("max_open_positions"));s["active_positions"]=len(s.get("positions") or []);s["state_version"]=STATE_VERSION;await self.ctx.storage.put("state",s);return s
     async def get_state(self):return await self._get()
     async def get_settings(self):
         s=await self._get();return {"max_open_positions":s["max_open_positions"],"position_allocation":s["position_allocation"],"active_positions":s["active_positions"],"hard_max_positions":MAX_POSITIONS,"updated_at":s.get("updated_at")}
@@ -109,9 +104,7 @@ class PaperTradingState(DurableObject):
             protection=update_protection(position,price,points,risk)
             if protection.get("triggered"):action="SELL";risk_exit=protection.get("reason") or "STOP_LOSS"
         if action=="BUY" and price>0 and idx is None:
-            requested=max(0.0,_num(a.get("position_size"),s.get("position_allocation",DEFAULT_POSITION_ALLOCATION)));daily_loss_pct=_num(s.get("daily_pnl"))/max(_num(s.get("initial_balance"),10_000_000),1)
-            gate_settings={**risk,"max_position_size":min(_num(risk.get("max_position_size"),.10),_num(s.get("position_allocation"),.10))}
-            risk_gate=evaluate_entry(action="BUY",confidence=confidence,requested_position_size=requested,net_edge_pct=_num(a.get("net_edge_pct")),balance=_num(s.get("balance")),portfolio_value=_num(s.get("portfolio_value")),open_positions=len(positions),current_exposure=self._exposure(s),settings=gate_settings);risk_gate["checks"]["daily_loss_limit"]=daily_loss_pct>-risk["max_daily_loss_pct"]
+            requested=max(0.0,_num(a.get("position_size"),s.get("position_allocation",DEFAULT_POSITION_ALLOCATION)));daily_loss_pct=_num(s.get("daily_pnl"))/max(_num(s.get("initial_balance"),10_000_000),1);gate_settings={**risk,"max_position_size":min(_num(risk.get("max_position_size"),.10),_num(s.get("position_allocation"),.10))};risk_gate=evaluate_entry(action="BUY",confidence=confidence,requested_position_size=requested,net_edge_pct=_num(a.get("net_edge_pct")),balance=_num(s.get("balance")),portfolio_value=_num(s.get("portfolio_value")),open_positions=len(positions),current_exposure=self._exposure(s),settings=gate_settings);risk_gate["checks"]["daily_loss_limit"]=daily_loss_pct>-risk["max_daily_loss_pct"]
             if daily_loss_pct<=-risk["max_daily_loss_pct"]:risk_gate["approved"]=False;risk_gate["approved_position_size"]=0;risk_gate["reason"]="DAILY_LOSS_LIMIT:FAILED"
             if risk_gate.get("approved"):
                 size=min(_num(risk_gate.get("approved_position_size")),_num(s.get("position_allocation"),DEFAULT_POSITION_ALLOCATION));equity=max(_num(s.get("portfolio_value")),_num(s.get("balance")));allocation=min(equity*size,_num(s.get("balance"))/(1+risk["fee_rate"]))
@@ -120,6 +113,7 @@ class PaperTradingState(DurableObject):
             else:action="HOLD"
         elif action=="SELL" and price>0 and idx is not None:
             p=positions[idx];qty=_num(p.get("quantity"));entry=_num(p.get("entry_price"),price);fill=apply_slippage(price,"SELL",risk["slippage_bps"]);proceeds=qty*fill;fee=proceeds*risk["fee_rate"];realized=proceeds-fee-_num(p.get("capital"),entry*qty)-_num(p.get("entry_fee"));s["balance"]=_num(s.get("balance"))+proceeds-fee;positions.pop(idx);executed=True;trade={"action":"SELL","symbol":symbol,"quantity":qty,"price":fill,"requested_price":price,"entry_price":entry,"exit_price":fill,"pnl":realized,"confidence":confidence,"created_at":now,"fee":fee,"entry_fee":_num(p.get("entry_fee")),"status":"CLOSED","exit_reason":risk_exit or str(a.get("exit_reason") or "AI_EXIT")};s["daily_pnl"]=_num(s.get("daily_pnl"))+realized;s["total_pnl"]=_num(s.get("total_pnl"))+realized
+        elif action=="SELL" and idx is None:action="HOLD"
         for p in positions:
             if str(p.get("symbol")).upper()==str(symbol).upper() and price>0:p["price"]=price;p["unrealized_pnl"]=(price-_num(p.get("entry_price")))*_num(p.get("quantity"))-price*_num(p.get("quantity"))*risk["fee_rate"];p["pnl"]=p["unrealized_pnl"]
         if trade:s["trade_history"]=([*list(s.get("trade_history") or []),trade])[-100:]
