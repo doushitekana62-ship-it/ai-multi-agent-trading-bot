@@ -35,7 +35,7 @@ async def _supabase(env,table,method="POST",query="",payload=None):
         if method.upper()=="POST":opts["headers"]["Prefer"]="return=representation"
         if payload is not None:opts["body"]=json.dumps(_safe(payload),separators=(",",":"))
         response=await fetch(f"{base}/rest/v1/{table}{query}",to_js(opts));text=await response.text();code=int(response.status)
-        if code<200 or code>=300:return {"ok":False,"saved":False,"reason":f"supabase_http_{code}","detail":text[:500]}
+        if code<200 or code>=300:return {"ok":False,"saved":False,"reason":f"supabase_http_{code}: {text[:500]}"}
         try:rows=json.loads(text) if text else []
         except Exception:rows=[]
         return {"ok":True,"saved":True,"rows":rows if isinstance(rows,list) else [rows] if isinstance(rows,dict) else []}
@@ -48,7 +48,7 @@ async def _persist_market_observation(env,payload):
         rpc_payload={"p_payload":_safe(payload)}
         opts={"method":"POST","headers":{"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json","Content-Type":"application/json"},"body":json.dumps(rpc_payload,separators=(",",":"))}
         response=await fetch(f"{base}/rest/v1/rpc/upsert_market_observation",to_js(opts));text=await response.text();code=int(response.status)
-        if code<200 or code>=300:return {"ok":False,"saved":False,"reason":f"market_observation_rpc_http_{code}","detail":text[:500]}
+        if code<200 or code>=300:return {"ok":False,"saved":False,"reason":f"market_observation_rpc_http_{code}: {text[:500]}"}
         return {"ok":True,"saved":True,"row":json.loads(text) if text else None}
     except Exception as exc:return {"ok":False,"saved":False,"reason":f"{type(exc).__name__}: {exc}"}
 
@@ -109,6 +109,13 @@ async def run_paper_cycle(env,state_api,pair="btc_idr",state_response=None):
         decision_rows=saved.get("rows") or [];decision_id=decision_rows[0].get("id") if isinstance(decision_rows[0],dict) else None
         paper_history={k:payload.get(k) for k in ("cycle_at","trading_date","pair","symbol","action","candidate_action","raw_action","confidence","execution_status","price","balance","portfolio_value","daily_pnl","total_pnl","active_positions","positions","agent_votes","market_scores","confidence_components","consensus_action","consensus_score","position_size","stop_loss","take_profit","reasoning","engine_source","engine_warning","cycle_id","session_id","cycle_number","decision_id","trade_id","market_timestamp","market_source","move_1m_pct","move_5m_pct","move_15m_pct","move_30m_pct","pulse_status","current_pulse_status","pulse_net_move_30m_pct","pulse_segments","hold_analysis","data_quality_status","execution_result","realized_pnl","unrealized_pnl","fees","risk_exit_reason","exit_reason")}
         paper_history["agent_details"]=agents
+        paper_history["execution_gate"]={"status":execution_status,"risk_rejection_reason":risk_rejection,"eligible":execution_status=="FILLED"}
+        paper_history["market_snapshot"]={"symbol":symbol,"price":price,"timestamp":datetime.fromtimestamp(anchor,timezone.utc).isoformat(),"source":"INDODAX public market data","move_1m_pct":paper_history.get("move_1m_pct"),"move_5m_pct":paper_history.get("move_5m_pct"),"move_15m_pct":paper_history.get("move_15m_pct"),"move_30m_pct":paper_history.get("move_30m_pct")}
+        paper_history["persistence_status"]="PENDING"
+        paper_history["library_alerts"]=getattr(result,"library_alerts",[]) or []
+        paper_history["candle_analysis"]=getattr(result,"candle_analysis",{}) or {}
+        paper_history["knowledge_topics"]=getattr(result,"knowledge_topics",[]) or []
+        paper_history["unrealized_pnl"]=_num(paper_history.get("unrealized_pnl"),0)
         history_saved=await _supabase(env,"paper_history",payload=paper_history)
         if not history_saved.get("saved"):raise RuntimeError(f"paper_history_persistence_failed: {history_saved.get('reason')}")
         await state_api.finish_cycle(None)
