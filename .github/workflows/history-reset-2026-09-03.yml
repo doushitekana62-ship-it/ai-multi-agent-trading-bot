@@ -39,17 +39,17 @@ jobs:
             echo "TABLE $table" >> "$BACKUP_FILE"
             offset=0
             while true; do
-              response="$(curl --fail-with-body --silent --show-error --get "$SUPABASE_URL/rest/v1/$table" \
+              response="$(curl --retry 3 --retry-delay 2 --fail-with-body --silent --show-error --get "$SUPABASE_URL/rest/v1/$table" \
                 -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
                 -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
                 --data-urlencode 'select=*' \
                 --data-urlencode 'order=id.asc' \
-                --data-urlencode 'limit=1000' \
+                --data-urlencode 'limit=100' \
                 --data-urlencode "offset=$offset")"
               count="$(jq 'length' <<<"$response")"
               jq -c '.[]' <<<"$response" >> "$BACKUP_FILE"
-              if [ "$count" -lt 1000 ]; then break; fi
-              offset=$((offset + 1000))
+              if [ "$count" -lt 100 ]; then break; fi
+              offset=$((offset + 100))
             done
             printf '\n' >> "$BACKUP_FILE"
           done
@@ -68,10 +68,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Child/reference rows first, then the decision ledger.
           for table in paper_history trades market_observations paper_integrity_events decisions; do
             echo "Resetting $table"
-            curl --fail-with-body --silent --show-error -X DELETE "$SUPABASE_URL/rest/v1/$table?id=not.is.null" \
+            curl --retry 3 --retry-delay 2 --fail-with-body --silent --show-error -X DELETE "$SUPABASE_URL/rest/v1/$table?id=not.is.null" \
               -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
               -H 'Prefer: return=minimal'
@@ -82,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           for table in decisions market_observations paper_history paper_integrity_events trades; do
-            rows="$(curl --fail-with-body --silent --show-error --get "$SUPABASE_URL/rest/v1/$table" \
+            rows="$(curl --retry 3 --retry-delay 2 --fail-with-body --silent --show-error --get "$SUPABASE_URL/rest/v1/$table" \
               -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
               --data-urlencode 'select=id' \
