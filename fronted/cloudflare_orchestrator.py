@@ -19,6 +19,13 @@ class CloudflareOrchestrator:
     def _timestamp(value):
         try:return datetime.fromisoformat(str(value).replace("Z","+00:00"))
         except (TypeError,ValueError):return datetime.now(timezone.utc)
+    async def _runtime_position(self,symbol):
+        if self.env is None:return None
+        try:
+            stub=self.env.PAPER_STATE.getByName("global")
+            state=await stub.get_state()
+            return next((p for p in (state.get("positions") or []) if str(p.get("symbol","")).upper()==str(symbol).upper()),None)
+        except Exception:return None
     @staticmethod
     def _namespace(result: Dict[str,Any]):
         agents=result.get("agents") or {}; number=CloudflareOrchestrator._number; exit_plan=result.get("exit_plan") or {}
@@ -32,12 +39,13 @@ class CloudflareOrchestrator:
         if data.get("ok") is not True:raise RuntimeError(data.get("detail") or "AI engine rejected analysis")
         return data
     async def analyze(self,symbol:str,market_data:Dict[str,Any]|None=None):
-        market_data=dict(market_data or {})
+        market_data=dict(market_data or {}); position=await self._runtime_position(symbol)
+        if position is not None:market_data["position"]=position
         try:
             data=await self._fastapi(symbol,market_data)
             if data:data["engine_source"]="fastapi_cloud";data["data_source"]=SOURCE;return self._from_fastapi(data,symbol)
         except Exception:pass
-        result=analyze_indodax(symbol,market_data,fee_rate=float(self.config.get("fee_rate",.0015)),slippage_rate=float(self.config.get("slippage_rate",.0002)),min_edge_pct=float(self.config.get("min_edge_pct",.45)),position=market_data.get("position"))
+        result=analyze_indodax(symbol,market_data,fee_rate=float(self.config.get("fee_rate",.0015)),slippage_rate=float(self.config.get("slippage_rate",.0002)),min_edge_pct=float(self.config.get("min_edge_pct",.45)),position=position)
         return self._namespace(result)
     @classmethod
     def _from_fastapi(cls,data,symbol):
