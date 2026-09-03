@@ -55,10 +55,11 @@ def update_protection(position,current_price,points,settings=None):
     if price<=_num(position.get("stop_loss")):
         reason="BREAK_EVEN" if position.get("break_even_armed") and price>=entry else "TRAILING_STOP" if high>entry and _num(position.get("stop_loss"))>_num(position.get("initial_stop_loss")) else "STOP_LOSS";return {"triggered":True,"reason":reason,"position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
     if (cfg["hard_take_profit_enabled"] or not cfg["trailing_enabled"]) and price>=_num(position.get("take_profit")):return {"triggered":True,"reason":"TAKE_PROFIT","position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
-    if cfg["max_hold_minutes"]>0 and position.get("last_observed_at"):
+    if cfg["max_hold_minutes"]>0:
+        stamp=position.get("last_observed_at") or position.get("created_at")
         try:
-            created=datetime.fromisoformat(str(position["last_observed_at"]));created=created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created
-            if (datetime.now(timezone.utc)-created).total_seconds()/60>=cfg["max_hold_minutes"]:return {"triggered":True,"reason":"TIME_EXIT","position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
+            created=datetime.fromisoformat(str(stamp));created=created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created;age=(datetime.now(timezone.utc)-created).total_seconds()/60
+            if age>=cfg["max_hold_minutes"]:return {"triggered":True,"reason":"TIME_EXIT","position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
         except (TypeError,ValueError,OverflowError):pass
     return {"triggered":False,"reason":None,"position":position,"stop_loss":position.get("stop_loss"),"take_profit":position.get("take_profit"),"profit_active":position["profit_active"]}
 def apply_slippage(price,side,slippage_bps):
