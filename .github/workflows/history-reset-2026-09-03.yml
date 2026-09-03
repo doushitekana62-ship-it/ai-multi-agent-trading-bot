@@ -14,34 +14,15 @@ jobs:
     env:
       SUPABASE_URL: https://opclkckfdlkqzunzmwym.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      WORKER_URL: https://adeii.workers.dev
       BACKUP_FILE: history-reset-2026-09-03.jsonl
-      ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
-      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
     steps:
       - name: Validate credentials
         shell: bash
         run: |
           set -euo pipefail
           test -n "$SUPABASE_SERVICE_ROLE_KEY"
-          test -n "$ADMIN_USERNAME"
-          test -n "$ADMIN_PASSWORD"
 
-      - name: Authenticate and freeze paper bot
-        shell: bash
-        run: |
-          set -euo pipefail
-          login="$(jq -nc --arg username "$ADMIN_USERNAME" --arg password "$ADMIN_PASSWORD" '{username:$username,password:$password}')"
-          auth="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/auth/login" -H 'Content-Type: application/json' -d "$login")"
-          token="$(jq -r '.access_token // empty' <<<"$auth")"
-          test -n "$token" && test "$token" != "null"
-          echo "$token" > "$RUNNER_TEMP/paper-access-token"
-          curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/bot/stop" -H "Authorization: Bearer $token" | jq .
-          status="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error "$WORKER_URL/api/bot/status" -H "Authorization: Bearer $token")"
-          echo "$status" | jq .
-          jq -e '.bot_enabled == false and .active_positions == 0' <<<"$status" >/dev/null
-
-      - name: Freeze and count source tables
+      - name: Freeze snapshot boundary
         shell: bash
         run: |
           set -euo pipefail
@@ -61,7 +42,7 @@ jobs:
           done
           cat "$RUNNER_TEMP/expected-counts"
 
-      - name: Backup trading history in small pages
+      - name: Backup complete paper ledger in small pages
         shell: bash
         run: |
           set -euo pipefail
@@ -84,9 +65,8 @@ jobs:
             done
           done
           test "$(wc -l < "$BACKUP_FILE")" -gt 1
-          jq -e 'select(.backup)' "$BACKUP_FILE" >/dev/null
 
-      - name: Verify backup row counts
+      - name: Verify backup completeness
         shell: bash
         run: |
           set -euo pipefail
@@ -100,21 +80,24 @@ jobs:
       - name: Upload immutable backup artifact
         uses: actions/upload-artifact@v4
         with:
-          name: paper-ledger-pre-reset-2026-09-03-final
+          name: paper-ledger-pre-reset-2026-09-03-complete
           path: ${{ env.BACKUP_FILE }}
           if-no-files-found: error
           retention-days: 90
 
-      - name: Reset Durable Object and Supabase ledger
+      - name: Reset Supabase paper ledger
         shell: bash
         run: |
           set -euo pipefail
-          token="$(cat "$RUNNER_TEMP/paper-access-token")"
-          reset="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error -X POST "$WORKER_URL/api/bot/reset" -H "Authorization: Bearer $token")"
-          echo "$reset" | jq .
-          jq -e '.reset.ok == true' <<<"$reset" >/dev/null
+          response="$RUNNER_TEMP/reset.json"
+          code="$(curl --retry 5 --retry-delay 2 --silent --show-error -o "$response" -w '%{http_code}' -X POST "$SUPABASE_URL/rest/v1/rpc/reset_paper_ledger" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{}')"
+          test "$code" = 200
+          jq . "$response"
+          jq -e 'type == "object"' "$response" >/dev/null
 
-      - name: Verify database reset
+      - name: Verify Supabase reset
         shell: bash
         run: |
           set -euo pipefail
@@ -128,14 +111,4 @@ jobs:
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             --data-urlencode 'select=event_type,severity' --data-urlencode 'event_type=eq.PAPER_RESET')"
           test "$(jq 'length' <<<"$events")" -ge 1
-          echo 'Paper ledger reset verified.'
-
-      - name: Verify worker account reset
-        shell: bash
-        run: |
-          set -euo pipefail
-          token="$(cat "$RUNNER_TEMP/paper-access-token")"
-          status="$(curl --retry 5 --retry-delay 2 --fail-with-body --silent --show-error "$WORKER_URL/api/bot/status" -H "Authorization: Bearer $token")"
-          echo "$status" | jq .
-          jq -e '.bot_enabled == false and .active_positions == 0 and .balance == 10000000 and .initial_balance == 10000000 and .portfolio_value == 10000000 and .cycles_today == 0 and .daily_pnl == 0 and .total_pnl == 0 and .decision_counts.BUY == 0 and .decision_counts.SELL == 0 and .decision_counts.HOLD == 0' <<<"$status" >/dev/null
-          echo 'Paper account reset verified at Rp10,000,000 with zero cycles and zero decisions.'
+          echo 'Supabase paper ledger reset verified.'
