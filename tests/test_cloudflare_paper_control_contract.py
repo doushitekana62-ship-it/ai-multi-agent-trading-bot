@@ -65,6 +65,13 @@ def test_dashboard_uses_external_fastapi_ai_engine():
     assert "CloudflareOrchestrator" in cycle
 
 
+def test_ai_engine_failure_is_explicitly_degraded_not_silent_hold():
+    adapter = (FRONTED / "cloudflare_orchestrator.py").read_text(encoding="utf-8")
+    assert "AI_DEGRADED" in adapter
+    assert 'cycle_status="AI_DEGRADED" if engine_warning else "ANALYZED"' in adapter
+    assert 'result["engine_warning"]=warning' in adapter
+
+
 def test_fastapi_cloud_entrypoint_is_explicit_and_safe():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     app = (ROOT / "fastapi_cloud_app.py").read_text(encoding="utf-8")
