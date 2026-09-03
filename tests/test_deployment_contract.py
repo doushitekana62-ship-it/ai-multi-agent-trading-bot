@@ -78,7 +78,9 @@ def test_paper_position_control_is_persistent_and_bounded():
 def test_paper_history_route_is_on_authoritative_worker():
     worker = (FRONTED / "worker_entry_api.py").read_text(encoding="utf-8")
     cycle = (FRONTED / "paper_cycle.py").read_text(encoding="utf-8")
-    migration = (ROOT / "supabase" / "migrations" / "20260829130000_create_paper_history.sql").read_text(encoding="utf-8")
+    migrations = list((ROOT / "supabase" / "migrations").glob("*_create_paper_history.sql"))
+    assert len(migrations) == 1
+    migration = migrations[0].read_text(encoding="utf-8")
     assert 'path == "/api/dashboard/history"' in worker
     assert "/rest/v1/paper_history?" in worker
     assert '"paper_history"' in cycle
