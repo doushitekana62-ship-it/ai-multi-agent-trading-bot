@@ -71,7 +71,13 @@ No INDODAX private credentials are required for the dashboard market-data layer.
 
 GitHub Actions is validation only. Cloudflare Workers Builds is the production deployment path.
 
-The repository's Actions runs were observed failing before any job steps executed. That is consistent with a runner/account-level Actions availability or billing problem rather than a source-code assertion failure. The code changes are committed independently of that external runner state.
+The validation workflow must not be interpreted as proof that the production Worker has deployed. Production runtime verification requires the Worker deployment itself to be current and its runtime variables/secrets to be present.
+
+## Paper-trading runtime write gate
+
+Supabase contains a singleton runtime write gate used to prevent ledger writes during destructive paper-ledger reset. `PAPER_STATE.enable_paper()` enables this gate before arming the Durable Object scheduler; `stop()` disables it. A reset leaves the gate disabled until the next explicit start.
+
+If the dashboard is tested immediately after a reset, the production Worker must be running the current `paper_state.py` implementation so that Start re-enables the gate. A stale Worker build can otherwise fail when the database write triggers are locked.
 
 ## Paper-trading safety contract
 
