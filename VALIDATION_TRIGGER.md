@@ -1,0 +1,1 @@
+Fresh validation marker: compounding execution fixes require a complete CI run before runtime certification.
