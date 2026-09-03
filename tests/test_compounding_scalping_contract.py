@@ -1,3 +1,4 @@
+from fronted.core.indodax_scalping_strategy import _pulse
 from fronted.risk_engine import initial_levels, settings_with_defaults, update_protection
 
 
@@ -52,3 +53,33 @@ def test_profit_activation_allows_momentum_to_run_until_trailing_reversal():
     result = update_protection(position, 102.4, points([100, 101, 103, 102.4]), settings)
     assert result["triggered"] is True
     assert result["reason"] == "TRAILING_STOP"
+
+
+def test_market_pulse_always_returns_30_one_minute_segments():
+    now = 30 * 60
+    pulse = _pulse(points([100 + i * 0.1 for i in range(31)]), now)
+    assert len(pulse["segments"]) == 30
+    assert all("timestamp" in segment and "status" in segment for segment in pulse["segments"])
+
+
+def test_market_pulse_marks_intraminute_reversal_as_directional():
+    now = 10 * 60
+    rows = [
+        {"timestamp": now - 59, "price": 100.0},
+        {"timestamp": now - 40, "price": 101.0},
+        {"timestamp": now - 20, "price": 100.0},
+    ]
+    pulse = _pulse(rows, now)
+    current = pulse["segments"][-1]
+    assert current["observations"] == 3
+    assert current["changed"] is True
+    assert current["status"] in {"GREEN", "RED"}
+    assert current["status"] != "GRAY"
+
+
+def test_market_pulse_keeps_gray_only_for_flat_or_empty_minutes():
+    now = 10 * 60
+    rows = [{"timestamp": now - 30, "price": 100.0}, {"timestamp": now - 10, "price": 100.0}]
+    pulse = _pulse(rows, now)
+    assert pulse["segments"][-1]["status"] == "GRAY"
+    assert pulse["segments"][-1]["changed"] is False
