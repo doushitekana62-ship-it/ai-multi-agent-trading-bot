@@ -9,7 +9,7 @@ from backend.routes.market import router as market_router
 from backend.routes.paper_control import router as paper_control_router
 from backend.routes.reports import router as reports_router
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 APP_ENTRYPOINT = "backend.api:app"
 
 app = FastAPI(title="AI Multi-Agent Trading Bot API", version=APP_VERSION)
