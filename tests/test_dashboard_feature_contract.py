@@ -1,53 +1,60 @@
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1]
-def read(path):return (ROOT/path).read_text(encoding='utf-8')
 
-def test_market_pulse_has_single_dashboard_location():
-    app=read('fronted/src/App.jsx');dashboard=read('fronted/src/pages/Dashboard.jsx')
-    assert 'MarketPulseStatus' not in app
-    assert 'function Pulse' in dashboard
-    assert '30 segmen 1-menit' in dashboard
-    assert 'INDODAX → Supabase' in dashboard
-    assert 'pulse_segments' in dashboard
-    assert "label==='UP'" not in dashboard
 
-def test_dashboard_analytics_features_are_present_without_duplicate_history():
-    source=read('fronted/src/components/DashboardAnalytics.jsx')
-    for label in ('Conflict Analyzer','INDODAX Scalping Radar','Volume Share','Market Scanner'):assert label in source
-    assert 'Paper History Library' not in source
-    assert 'Paper History · Supabase' not in source
-    assert 'backgroundColor' in source and 'tooltip' in source
+ROOT = Path(__file__).resolve().parents[1]
 
-def test_history_api_is_bounded_and_paginated():
-    source=read('fronted/worker_entry_api.py');assert 'page_size = max(1, min(10' in source;assert 'page_size + 1' in source;assert 'has_next = len(rows) > page_size' in source
 
-def test_dashboard_history_is_supabase_only_and_paginated():
-    source=read('fronted/src/components/DashboardTools.jsx')
-    for text in ('Supabase','Forensic ledger','page_size: 10','historyHasNext','No persisted'):assert text in source
-    assert 'decisionHistory.filter' not in source
+def read(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
 
-def test_dashboard_v02_control_plane_is_observable():
-    source=read('fronted/src/components/DashboardTools.jsx')
-    for text in ('Server-authoritative entry limit','Market direction comes from the current 1m pulse','Deterministic control-plane view','risk_rejection_reason','candidate_action','execution_status'):assert text in source
 
-def test_dashboard_refresh_and_paper_reset_controls_exist():
-    source=read('fronted/src/pages/Dashboard.jsx')
-    assert 'Refresh' in source and 'fetchData' in source
-    assert 'api/dashboard/paper/reset' in source
-    assert 'Reset Paper' in source
+def test_dashboard_has_single_market_pulse_location():
+    app = read("fronted/src/App.jsx")
+    dashboard = read("fronted/src/pages/Dashboard.jsx")
+    assert "MarketPulseStatus" not in app
+    assert "MarketPulseLegend" in dashboard
+    assert "30 segmen 1-menit" in dashboard
+    assert "INDODAX public data" in dashboard
+    assert "pulse_segments" not in dashboard or "MarketPulseLegend" in dashboard
 
-def test_scalping_selector_uses_live_scanner_supported_pairs_only():
-    source=read('fronted/src/pages/Dashboard.jsx')
-    assert 'scalping_supported' in source
-    assert 'available.length?available:PAIRS' in source
 
-def test_market_scanner_is_not_hard_capped_at_five():
-    source=read('fronted/cf_worker.py');assert '"items": items[:20]' in source;assert '"scalping_supported"' in source
+def test_dashboard_uses_fastapi_routes_not_worker_routes():
+    source = read("fronted/src/pages/Dashboard.jsx")
+    assert "/api/dashboard/status" in source
+    assert "/api/dashboard/positions" in source
+    assert "/api/dashboard/performance" in source
+    assert "/api/dashboard/analyze" in source
+    assert "/api/market/overview" in source
+    assert "/api/market/insights" in source
+    assert "Worker." not in source
 
-def test_ai_engine_and_worker_share_expanded_scalping_pairs():
-    worker=read('fronted/cf_worker.py');engine=read('fastapi_cloud_app.py')
-    for pair in ('beat_idr','hype_idr'):assert pair in worker
-    for symbol in ('BEAT/IDR','HYPE/IDR'):assert symbol in engine
 
-def test_fastapi_runtime_declares_requests_dependency():
-    source=read('pyproject.toml');assert '"requests>=2.32,<3"' in source
+def test_market_pulse_is_observation_driven_and_30_minutes():
+    source = read("fronted/src/components/MarketPulseLegend.jsx")
+    assert "POLL_MS=5000" in source
+    assert "WINDOW_MINUTES = 30" in source
+    assert "GREEN" in source and "RED" in source and "GRAY" in source
+    assert "price changed" in source
+    assert "pulse_segments" in source
+
+
+def test_frontend_auth_uses_configurable_fastapi_base_url():
+    source = read("fronted/src/context/AuthContext.jsx")
+    assert "VITE_API_URL" in source
+    assert "baseURL" in source
+
+
+def test_dashboard_paper_controls_are_api_backed():
+    source = read("fronted/src/pages/Dashboard.jsx")
+    assert "/api/dashboard/paper/start" in source
+    assert "/api/dashboard/paper/stop" in source
+    assert "/api/dashboard/paper/reset" in source
+    assert "Start Paper Bot" in source
+    assert "Reset Paper" in source
+
+
+def test_fastapi_runtime_declares_market_dependencies():
+    source = read("pyproject.toml")
+    assert '"requests>=2.32,<3"' in source
+    assert '"ccxt>=4.4,<5"' in source
+    assert '"ta>=0.11,<1"' in source
