@@ -1,2 +1,0 @@
--- Compatibility marker: this migration version is already applied in the authoritative Supabase project.
--- Keep the version in source control so Supabase Preview can reconcile migration history.
