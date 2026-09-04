@@ -20,7 +20,7 @@ import cf_worker
 from paper_cycle import run_paper_cycle
 from paper_state import PaperTradingState
 
-RUNTIME_BUILD = "2026-09-04-paper-start-diagnostics-v1"
+RUNTIME_BUILD = "2026-09-04-supabase-smoke-v1"
 HISTORY_FIELDS = (
     "id,cycle_at,trading_date,cycle_id,decision_id,trade_id,cycle_number,pair,symbol,"
     "action,candidate_action,raw_action,confidence,execution_status,price,"
@@ -338,8 +338,11 @@ class Default(WorkerEntrypoint):
         path = urlparse(request.url).path
         try:
             if path == "/api/system/health" and request.method == "GET":
+                query = parse_qs(urlparse(request.url).query)
+                deep = str(query.get("deep", ["0"])[0]).lower() in {"1", "true", "yes"}
                 config = _runtime_config(self.env)
-                return Response.json({"ok": True, "runtime": RUNTIME_BUILD, "mode": "paper", "real_trading_locked": True, "config": config, "timestamp": int(time.time())})
+                supabase = await _supabase_health(self.env) if deep else {"connected": None, "reason": "health_probe_deferred"}
+                return Response.json({"ok": True, "runtime": RUNTIME_BUILD, "mode": "paper", "real_trading_locked": True, "config": config, "database": {"configured": config["supabase_configured"], **supabase}, "timestamp": int(time.time())})
             auth = await self._auth(request, path)
             if auth is not None: return auth
             state = await self._state_routes(request, path)
