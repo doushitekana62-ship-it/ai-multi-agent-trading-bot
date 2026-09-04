@@ -53,7 +53,12 @@ jobs:
         run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fastapi_cloud_app.py
 
       - name: Verify canonical FastAPI deployment contract
-        run: pytest -q tests/test_deployment_contract.py tests/test_canonical_architecture_guards.py tests/test_fastapi_cloud_engine.py
+        run: |
+          pytest -q \
+            tests/test_deployment_contract.py \
+            tests/test_canonical_architecture_guards.py \
+            tests/test_fastapi_cloud_engine.py \
+            tests/test_dashboard_feature_contract.py
 
       - name: Run deterministic trading tests
         run: |
