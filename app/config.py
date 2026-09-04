@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     environment: str = "production"
     trading_mode: str = "paper"
     api_prefix: str = ""
-    cors_origins: str = "*"
+    cors_origins: str = "https://doushitekana62-ship-it.github.io,http://localhost:8000,http://127.0.0.1:8000"
     supabase_url: str = ""
     supabase_secret_key: str = ""
     supabase_service_role_key: str = ""
