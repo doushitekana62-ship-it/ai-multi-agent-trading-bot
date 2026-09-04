@@ -41,8 +41,10 @@ Runtime secrets:
 - `JWT_SECRET_KEY` — random secret, at least 32 characters
 - `ADMIN_USERNAME` — dashboard login username
 - `ADMIN_PASSWORD` — dashboard login password
-- `SUPABASE_URL` — Supabase project URL
-- `SUPABASE_SERVICE_ROLE_KEY` — Supabase service-role key
+- `SUPABASE_SECRET_KEY` — preferred current Supabase server secret (`sb_secret_...`)
+- `SUPABASE_SERVICE_ROLE_KEY` — legacy compatibility name, accepted if already configured
+
+`SUPABASE_URL` is pinned in `fronted/wrangler.jsonc` to the production Supabase project URL, so it does not need to be stored as a secret.
 
 Do not put these runtime values only in Workers Builds variables. The Worker code reads them from its runtime `env` object when a request or Durable Object alarm executes.
 
@@ -72,12 +74,14 @@ Open these URLs after deployment:
 2. Verify `/ready` returns `ready` and `ai_engine_secret_configured: true`.
 3. Put the same `AI_ENGINE_SHARED_SECRET` into the **Cloudflare Worker runtime secret store**.
 4. Put the FastAPI Cloud URL into the **Cloudflare Worker runtime variable store** as `AI_ENGINE_URL`.
-5. Deploy the Cloudflare Worker from Workers Builds.
-6. Log in to the dashboard.
-7. Confirm the dashboard reports database/market health before starting paper mode.
-8. Press `START PAPER BOT` manually.
-9. Wait for the first Durable Object alarm and confirm `Cycles` becomes `1`.
-10. Confirm the latest decision contains `agents_invoked` and Orchestrator data.
-11. Press `STOP PAPER BOT` and confirm the cycle counter stops increasing.
+5. Ensure the Worker runtime has either `SUPABASE_SECRET_KEY` or the legacy `SUPABASE_SERVICE_ROLE_KEY` configured with the server-side Supabase credential.
+6. Deploy the Cloudflare Worker from Workers Builds.
+7. Open `GET /api/system/health?deep=1` and require `database.connected: true` and `database.reason: rest_probe_ok`.
+8. Log in to the dashboard.
+9. Confirm the dashboard reports database/market health before starting paper mode.
+10. Press `START PAPER BOT` manually.
+11. Wait for the first Durable Object alarm and confirm `Cycles` becomes `1`.
+12. Confirm the latest decision contains `agents_invoked` and Orchestrator data.
+13. Press `STOP PAPER BOT` and confirm the cycle counter stops increasing.
 
 If START reports `ai_engine_not_configured`, fix the Worker runtime variables/secrets first. If the first alarm still fails after START succeeds, inspect the Worker logs and the FastAPI `/ready` response before changing the architecture.
