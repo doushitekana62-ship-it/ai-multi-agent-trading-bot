@@ -47,11 +47,15 @@ The backend owns Market Pulse. A rolling window contains 30 one-minute segments.
 - The same observations are available to the AI analysis pipeline; frontend rendering is presentation only.
 - The rolling 30-minute result must never be treated as a prediction by itself.
 
+Data failure is never represented as normal HOLD. Missing/degraded evidence is excluded from directional scoring and produces an explicit data-quality state.
+
 ## 4. Trading safety
 
 Default mode is paper. Real exchange orders are locked until an explicit, separately audited live-trading implementation exists. UI controls cannot bypass server-side risk gates.
 
 Paper execution must respect position limits, daily loss limits, minimum confidence, minimum confirmations, conflict thresholds, stop loss, take profit, and execution gating already defined by the core trading modules.
+
+Normal `HOLD_EXISTING_POSITION` is distinct from a data-quality failure or `AI_DEGRADED` state.
 
 ## 5. Authentication and secrets
 
@@ -108,7 +112,7 @@ Frontend: GitHub Pages workflow `.github/workflows/github-pages.yml` builds `fro
 
 Backend: deploy `backend.api:app` from the repository root on a persistent FastAPI host. `fastapi_cloud_app.py` is retained only as a compatibility import and points to the same canonical app.
 
-CI must test Python compilation, core trading contracts, FastAPI import/health, and frontend build. Cloudflare deployment and Cloudflare runtime smoke tests are not production gates.
+CI must test Python compilation, core trading contracts, FastAPI import/health, deployment identity, and frontend build. Cloudflare deployment and Cloudflare runtime smoke tests are not production gates.
 
 ## 8. Change discipline
 
