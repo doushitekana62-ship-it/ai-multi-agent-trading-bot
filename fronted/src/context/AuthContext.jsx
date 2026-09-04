@@ -46,7 +46,6 @@ export const AuthProvider = ({ children }) => {
       return true;
     } catch (error) {
       if (error.response?.status === 401) { clearSession(); return false; }
-      console.warn('Refresh token temporarily unavailable:', error.message);
       return null;
     }
   };
@@ -57,7 +56,7 @@ export const AuthProvider = ({ children }) => {
       async (error) => {
         const original = error.config;
         const stored = localStorage.getItem('refresh_token');
-        if (error.response?.status !== 401 || !original || original._retry || original.url?.includes('/api/auth/login') || original.url?.includes('/api/auth/refresh') || original.url?.includes('/api/auth/logout') || !stored) return Promise.reject(error);
+        if (error.response?.status !== 401 || !original || original._retry || original.url?.includes('/api/auth/login') || original.url?.includes('/api/auth/refresh') || !stored) return Promise.reject(error);
         original._retry = true;
         try {
           const response = await axios.post('/api/auth/refresh', { refresh_token: stored });
@@ -93,7 +92,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     try { if (token) await axios.post('/api/auth/logout'); }
-    catch (error) { console.warn('Logout request failed:', error.message); }
+    catch { /* local logout still succeeds */ }
     finally { clearSession(); toast.success('Logged out'); }
   };
 
@@ -106,17 +105,14 @@ export const AuthProvider = ({ children }) => {
       if (response.data.is_authenticated) {
         setUser({ username: response.data.username }); setIsAuthenticated(true); setLoading(false); return true;
       }
-    } catch (error) {
+    } catch {
       const refreshed = await refreshAccessToken();
       if (refreshed === true) {
         try {
           const response = await axios.get('/api/auth/verify');
           if (response.data.is_authenticated) { setUser({ username: response.data.username }); setIsAuthenticated(true); setLoading(false); return true; }
-        } catch (verifyError) {
-          if (verifyError.response?.status === 401) { clearSession(); setLoading(false); return false; }
-        }
+        } catch { /* fall through to clear */ }
       }
-      if (refreshed === null) { setIsAuthenticated(true); setLoading(false); return true; }
     }
     clearSession(); setLoading(false); return false;
   };
