@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Dashboard AI Compound Scalping Bot">
+  <title>Compound Scalping Bot</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">AI TRADING BOT</p>
+        <h1>Compound Scalping</h1>
+        <p id="userName" class="muted">Memuat user...</p>
+      </div>
+      <div class="top-actions">
+        <span id="botStatus" class="status stopped">Berhenti</span>
+        <button id="botToggle" class="button">Mulai Bot</button>
+        <div class="mode-switch" role="group" aria-label="Mode trading">
+          <button data-mode="paper" class="mode active">Paper</button>
+          <button data-mode="live" class="mode">Live</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="metrics" aria-label="Metrik">
+      <article class="card metric"><span>Saldo</span><strong id="balance">Rp 0</strong><small id="balanceMode">Paper balance</small></article>
+      <article class="card metric"><span>PnL hari ini</span><strong id="dailyPnl">Rp 0</strong><small id="dailyPnlPct">0.00%</small></article>
+      <article class="card metric"><span>Posisi terbuka</span><strong id="openCount">0</strong><small>Realtime</small></article>
+    </section>
+
+    <section class="card">
+      <div class="section-head"><div><h2>Alokasi coin</h2><p class="muted">Maksimal 6 coin aktif</p></div><button id="allocationBtn" class="button secondary">Ubah alokasi</button></div>
+      <div id="allocationList" class="coin-grid"><div class="empty">Memuat alokasi...</div></div>
+    </section>
+
+    <section class="card">
+      <div class="section-head"><div><h2>Posisi aktif</h2><p id="positionMode" class="muted">Paper Trading</p></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Coin</th><th>Entry</th><th>TP</th><th>SL</th><th>Status</th><th>Waktu buka</th></tr></thead><tbody id="positionsBody"><tr><td colspan="6" class="empty">Memuat posisi...</td></tr></tbody></table></div>
+    </section>
+
+    <section class="grid-two">
+      <article class="card">
+        <div class="section-head"><div><h2>Saran Forecast</h2><p class="muted">TP/SL berikutnya</p></div></div>
+        <div id="forecastList" class="forecast-list"><div class="empty">Memuat sinyal...</div></div>
+      </article>
+      <article class="card">
+        <div class="section-head"><div><h2>5 transaksi terakhir</h2><p class="muted">Hasil realisasi</p></div></div>
+        <div id="historyList" class="history-list"><div class="empty">Memuat riwayat...</div></div>
+      </article>
+    </section>
+  </main>
+
+  <dialog id="allocationDialog" class="dialog">
+    <form method="dialog" class="dialog-card" id="allocationForm">
+      <div class="section-head"><h2>Ubah alokasi</h2><button value="cancel" class="icon-button" aria-label="Tutup">×</button></div>
+      <p class="muted">Pilih maksimal 6 coin. Persentase harus berjumlah 100%.</p>
+      <div id="availableCoins" class="available-coins">Memuat pair Indodax...</div>
+      <div class="dialog-actions"><button value="cancel" class="button secondary">Batal</button><button id="saveAllocation" type="button" class="button">Simpan</button></div>
+    </form>
+  </dialog>
+
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>
