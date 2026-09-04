@@ -28,5 +28,8 @@ app.include_router(dashboard_router, prefix=settings.api_prefix)
 app.include_router(coins_router, prefix=settings.api_prefix)
 app.include_router(positions_router, prefix=settings.api_prefix)
 
+@app.get("/")
+def root(): return {"service": settings.app_name, "status": "ok", "mode": settings.trading_mode}
+
 @app.get("/health")
 def health(): return {"status": "ok", "mode": settings.trading_mode}
