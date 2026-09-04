@@ -20,7 +20,7 @@ import cf_worker
 from paper_cycle import run_paper_cycle
 from paper_state import PaperTradingState
 
-RUNTIME_BUILD = "2026-09-03-paper-reset-runtime-v3"
+RUNTIME_BUILD = "2026-09-04-paper-start-diagnostics-v1"
 HISTORY_FIELDS = (
     "id,cycle_at,trading_date,cycle_id,decision_id,trade_id,cycle_number,pair,symbol,"
     "action,candidate_action,raw_action,confidence,execution_status,price,"
@@ -73,6 +73,64 @@ def _pair(request, default="btc_idr"):
         return default
 
 
+def _supabase_key(env):
+    return str(
+        getattr(env, "SUPABASE_SECRET_KEY", "")
+        or getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "")
+        or ""
+    ).strip()
+
+
+def _supabase_configured(env):
+    return bool(str(getattr(env, "SUPABASE_URL", "") or "").strip() and _supabase_key(env))
+
+
+def _diagnostic_failure(message, default_code="PAPER_CYCLE_FAILED"):
+    text = str(message or "").lower()
+    if "paper_runtime_write_enable_failed" in text:
+        if "missing" in text or "credentials" in text:
+            return {"code": "SUPABASE_CREDENTIALS_MISSING", "stage": "supabase_runtime_write", "message": "Supabase server credential is missing in the Cloudflare Worker."}
+        return {"code": "SUPABASE_RUNTIME_WRITE_RPC_FAILED", "stage": "supabase_runtime_write", "message": "Supabase runtime-write RPC was rejected or unreachable."}
+    if "market_data_unavailable" in text:
+        return {"code": "MARKET_DATA_UNAVAILABLE", "stage": "market_data", "message": "INDODAX market data is unavailable or has no valid price."}
+    if "market_observation_persistence_failed" in text:
+        return {"code": "MARKET_OBSERVATION_PERSISTENCE_FAILED", "stage": "market_observation", "message": "Market observation could not be persisted to Supabase."}
+    if "decision_persistence_failed" in text:
+        return {"code": "DECISION_LEDGER_PERSISTENCE_FAILED", "stage": "decision_ledger", "message": "The paper decision could not be persisted to Supabase."}
+    if "trade_ledger_persistence_failed" in text:
+        return {"code": "TRADE_LEDGER_PERSISTENCE_FAILED", "stage": "trade_ledger", "message": "The paper trade could not be persisted to Supabase."}
+    if "decision_trade_link_failed" in text:
+        return {"code": "DECISION_TRADE_LINK_FAILED", "stage": "decision_ledger", "message": "Decision was created but linking it to the paper trade failed."}
+    if "paper_history_persistence_failed" in text:
+        return {"code": "PAPER_HISTORY_PERSISTENCE_FAILED", "stage": "paper_history", "message": "The paper history record could not be persisted to Supabase."}
+    if "cloudflareorchestrator" in text or "orchestrator" in text or "ai_engine" in text or "ai engine" in text:
+        return {"code": "AI_ENGINE_OR_ORCHESTRATOR_FAILED", "stage": "ai_engine", "message": "The AI/orchestrator analysis stage failed."}
+    if "open_trade_not_found_for_sell" in text:
+        return {"code": "TRADE_LEDGER_OPEN_POSITION_NOT_FOUND", "stage": "trade_ledger", "message": "The sell cycle could not find the open paper trade in the ledger."}
+    if "supabase" in text or "credentials" in text or "rpc" in text:
+        return {"code": "SUPABASE_OPERATION_FAILED", "stage": "supabase", "message": "A Supabase operation failed during the paper cycle."}
+    return {"code": default_code, "stage": "paper_cycle", "message": "The first paper cycle failed. Check the diagnostic code and Worker logs."}
+
+
+def _start_diagnostics(env, pair, state=None, failure=None):
+    config = _runtime_config(env)
+    out = {
+        "pair": pair,
+        "mode": "paper",
+        "real_trading_locked": True,
+        "config": config,
+        "market_source": "INDODAX public market data",
+    }
+    if state is not None:
+        out["bot_enabled"] = bool(state.get("enabled"))
+        out["cycle_running"] = bool(state.get("cycle_running"))
+        out["cycle_failures"] = int(state.get("cycle_failures", 0) or 0)
+        out["last_cycle_status"] = state.get("last_cycle_status")
+    if failure:
+        out["failure"] = failure
+    return out
+
+
 async def _verify_access(env, request):
     value = request.headers.get("authorization", "")
     if not value.lower().startswith("bearer "):
@@ -90,7 +148,8 @@ def _runtime_config(env):
     return {
         "jwt_configured": len(str(getattr(env, "JWT_SECRET_KEY", "") or "").strip()) >= 32,
         "admin_configured": bool(str(getattr(env, "ADMIN_USERNAME", "") or "").strip() and str(getattr(env, "ADMIN_PASSWORD", "") or "")),
-        "supabase_configured": bool(str(getattr(env, "SUPABASE_URL", "") or "").strip() and str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()),
+        "supabase_configured": _supabase_configured(env),
+        "supabase_key_source": "SUPABASE_SECRET_KEY" if str(getattr(env, "SUPABASE_SECRET_KEY", "") or "").strip() else ("SUPABASE_SERVICE_ROLE_KEY" if str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip() else "missing"),
         "ai_engine_configured": bool(str(getattr(env, "AI_ENGINE_URL", "") or "").strip() and str(getattr(env, "AI_ENGINE_SHARED_SECRET", "") or "").strip()),
         "paper_state_binding": bool(getattr(env, "PAPER_STATE", None)),
     }
@@ -98,7 +157,7 @@ def _runtime_config(env):
 
 async def _supabase_health(env):
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
-    key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    key = _supabase_key(env)
     if not url or not key:
         return {"connected": False, "reason": "credentials_missing"}
     try:
@@ -117,7 +176,7 @@ async def _supabase_health(env):
 
 async def _supabase_rpc(env, function_name: str, payload=None):
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
-    key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    key = _supabase_key(env)
     if not url or not key:
         return {"ok": False, "reason": "credentials_missing"}
     try:
@@ -139,7 +198,7 @@ async def _supabase_rpc(env, function_name: str, payload=None):
 async def _history(env, request):
     """Read one small, bounded page of the authoritative Supabase paper ledger."""
     url = str(getattr(env, "SUPABASE_URL", "") or "").strip().rstrip("/")
-    key = str(getattr(env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
+    key = _supabase_key(env)
     if not url or not key:
         return Response.json({"history": [], "count": 0, "connected": False, "has_next": False, "page": 1, "page_size": 10, "reason": "credentials_missing"}, status=503)
     query = parse_qs(urlparse(request.url).query)
@@ -203,10 +262,24 @@ class Default(WorkerEntrypoint):
         stub = await _state_stub(self.env)
         if path in ("/api/bot/status", "/api/dashboard/paper/status") and request.method == "GET": return Response.json(_state_response(await stub.get_state()))
         if path in ("/api/bot/start", "/api/dashboard/paper/start") and request.method == "POST":
-            pair = _pair(request); state = await stub.enable_paper(pair); cycle = await run_paper_cycle(self.env, stub, pair, state_response=_state_response)
-            if cycle.get("ok"): return Response.json({**_state_response(cycle["state"]), "message": "Paper trading started and first cycle completed.", "cycle": cycle})
+            pair = _pair(request)
+            try:
+                state = await stub.enable_paper(pair)
+            except Exception as exc:
+                failure = _diagnostic_failure(exc, "PAPER_START_ENABLE_FAILED")
+                safe_state = await stub.get_state()
+                return Response.json({**_state_response(safe_state), "message": "Paper trading could not be started.", "detail": failure["message"], "diagnostics": _start_diagnostics(self.env, pair, safe_state, failure)}, status=502)
+            try:
+                cycle = await run_paper_cycle(self.env, stub, pair, state_response=_state_response)
+            except Exception as exc:
+                failure = _diagnostic_failure(exc)
+                safe_state = await stub.get_state()
+                return Response.json({**_state_response(safe_state), "message": "Paper trading started but the first cycle crashed.", "detail": failure["message"], "diagnostics": _start_diagnostics(self.env, pair, safe_state, failure)}, status=502)
+            if cycle.get("ok"):
+                return Response.json({**_state_response(cycle["state"]), "message": "Paper trading started and first cycle completed.", "cycle": cycle, "diagnostics": _start_diagnostics(self.env, pair, cycle.get("state"))})
             failed_state = cycle.get("state") or state
-            return Response.json({**_state_response(failed_state), "message": "Paper trading enabled but first cycle failed.", "cycle": cycle, "detail": cycle.get("error") or cycle.get("reason") or "paper_cycle_failed"}, status=502)
+            failure = _diagnostic_failure(cycle.get("error") or cycle.get("reason") or "paper_cycle_failed")
+            return Response.json({**_state_response(failed_state), "message": "Paper trading enabled but first cycle failed.", "detail": failure["message"], "diagnostics": _start_diagnostics(self.env, pair, failed_state, failure), "cycle": {"ok": False, "cycle_id": cycle.get("cycle_id"), "reason": cycle.get("reason")}}, status=502)
         if path in ("/api/bot/stop", "/api/dashboard/paper/stop") and request.method == "POST":
             state = await stub.stop(); return Response.json({**_state_response(state), "message": "Paper trading stopped. Real trading remains locked."})
         if path in ("/api/bot/cycle", "/api/dashboard/paper/cycle") and request.method == "POST":
@@ -238,7 +311,7 @@ class Default(WorkerEntrypoint):
         if path == "/api/dashboard/history" and request.method == "GET": return await _history(self.env, request)
         if path == "/api/dashboard/status" and request.method == "GET":
             state = await stub.get_state(); query = parse_qs(urlparse(request.url).query); deep = str(query.get("deep", ["0"])[0]).lower() in {"1", "true", "yes"}
-            configured = bool(str(getattr(self.env, "SUPABASE_URL", "") or "").strip() and str(getattr(self.env, "SUPABASE_SERVICE_ROLE_KEY", "") or "").strip())
+            configured = _supabase_configured(self.env)
             supabase = await _supabase_health(self.env) if deep else {"connected": None, "reason": "health_probe_deferred"}
             result = _state_response(state)
             result.update({"daily_pnl": float(state.get("daily_pnl", 0.0)), "daily_trades": int(state.get("daily_trades", 0)), "total_trades": int(state.get("total_trades", 0)), "active_positions": int(state.get("active_positions", 0)), "database": {"configured": configured, **supabase}, "market_data": {"source": "INDODAX public market data", "available": None, "fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "system_health": {"database": {"connected": supabase.get("connected")}, "market_data": {"fresh": None, "stale": None, "age_seconds": None, "probe": "market_overview"}, "mode": "paper", "engine": {"running": bool(state.get("cycle_running")), "enabled": bool(state.get("enabled"))}}})
