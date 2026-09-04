@@ -3,7 +3,8 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 
 const AuthContext = createContext();
-const API_URL = '';
+const API_URL = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
+if (API_URL) axios.defaults.baseURL = API_URL;
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -25,12 +26,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const clearSession = () => {
-    setToken(null);
-    setRefreshToken(null);
-    setUser(null);
-    setIsAuthenticated(false);
-    localStorage.removeItem('token');
-    localStorage.removeItem('refresh_token');
+    setToken(null); setRefreshToken(null); setUser(null); setIsAuthenticated(false);
+    localStorage.removeItem('token'); localStorage.removeItem('refresh_token');
     delete axios.defaults.headers.common.Authorization;
   };
 
@@ -40,20 +37,15 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   const refreshAccessToken = async () => {
-    const storedRefreshToken = refreshToken || localStorage.getItem('refresh_token');
-    if (!storedRefreshToken) return false;
+    const stored = refreshToken || localStorage.getItem('refresh_token');
+    if (!stored) return false;
     try {
-      const response = await axios.post(`${API_URL}/api/auth/refresh`, { refresh_token: storedRefreshToken });
+      const response = await axios.post('/api/auth/refresh', { refresh_token: stored });
       if (!response.data?.access_token) return null;
       applyAccessToken(response.data.access_token);
       return true;
     } catch (error) {
-      // A Worker 1102/1101/5xx is an infrastructure failure, not proof that
-      // the user's session is invalid. Only a definitive 401 revokes it.
-      if (error.response?.status === 401) {
-        clearSession();
-        return false;
-      }
+      if (error.response?.status === 401) { clearSession(); return false; }
       console.warn('Refresh token temporarily unavailable:', error.message);
       return null;
     }
@@ -64,11 +56,11 @@ export const AuthProvider = ({ children }) => {
       (response) => response,
       async (error) => {
         const original = error.config;
-        const storedRefreshToken = localStorage.getItem('refresh_token');
-        if (error.response?.status !== 401 || !original || original._retry || original.url?.includes('/api/auth/login') || original.url?.includes('/api/auth/refresh') || original.url?.includes('/api/auth/logout') || !storedRefreshToken) return Promise.reject(error);
+        const stored = localStorage.getItem('refresh_token');
+        if (error.response?.status !== 401 || !original || original._retry || original.url?.includes('/api/auth/login') || original.url?.includes('/api/auth/refresh') || original.url?.includes('/api/auth/logout') || !stored) return Promise.reject(error);
         original._retry = true;
         try {
-          const response = await axios.post(`${API_URL}/api/auth/refresh`, { refresh_token: storedRefreshToken });
+          const response = await axios.post('/api/auth/refresh', { refresh_token: stored });
           if (!response.data?.access_token) return Promise.reject(error);
           applyAccessToken(response.data.access_token);
           original.headers = original.headers || {};
@@ -85,7 +77,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (username, password) => {
     try {
-      const response = await axios.post(`${API_URL}/api/auth/login`, { username, password });
+      const response = await axios.post('/api/auth/login', { username, password });
       applyAccessToken(response.data.access_token);
       setRefreshToken(response.data.refresh_token);
       localStorage.setItem('refresh_token', response.data.refresh_token);
@@ -94,76 +86,42 @@ export const AuthProvider = ({ children }) => {
       toast.success('Login successful!');
       return response.data;
     } catch (error) {
-      console.error('Login error:', error);
       toast.error(error.response?.data?.detail || 'Login failed');
       throw error;
     }
   };
 
   const logout = async () => {
-    try {
-      if (token) await axios.post(`${API_URL}/api/auth/logout`);
-    } catch (error) {
-      console.error('Logout error:', error);
-    } finally {
-      clearSession();
-      toast.success('Logged out');
-    }
+    try { if (token) await axios.post('/api/auth/logout'); }
+    catch (error) { console.warn('Logout request failed:', error.message); }
+    finally { clearSession(); toast.success('Logged out'); }
   };
 
   const verifyToken = async () => {
-    const currentToken = token || localStorage.getItem('token');
-    if (!currentToken) {
-      setLoading(false);
-      return false;
-    }
+    const current = token || localStorage.getItem('token');
+    if (!current) { setLoading(false); return false; }
     try {
-      axios.defaults.headers.common.Authorization = `Bearer ${currentToken}`;
-      const response = await axios.get(`${API_URL}/api/auth/verify`);
+      axios.defaults.headers.common.Authorization = `Bearer ${current}`;
+      const response = await axios.get('/api/auth/verify');
       if (response.data.is_authenticated) {
-        setUser({ username: response.data.username });
-        setIsAuthenticated(true);
-        setLoading(false);
-        return true;
+        setUser({ username: response.data.username }); setIsAuthenticated(true); setLoading(false); return true;
       }
     } catch (error) {
       const refreshed = await refreshAccessToken();
       if (refreshed === true) {
         try {
-          const response = await axios.get(`${API_URL}/api/auth/verify`);
-          if (response.data.is_authenticated) {
-            setUser({ username: response.data.username });
-            setIsAuthenticated(true);
-            setLoading(false);
-            return true;
-          }
+          const response = await axios.get('/api/auth/verify');
+          if (response.data.is_authenticated) { setUser({ username: response.data.username }); setIsAuthenticated(true); setLoading(false); return true; }
         } catch (verifyError) {
-          if (verifyError.response?.status === 401) {
-            clearSession();
-            setLoading(false);
-            return false;
-          }
-          console.warn('Token verification temporarily unavailable:', verifyError.message);
+          if (verifyError.response?.status === 401) { clearSession(); setLoading(false); return false; }
         }
-      } else if (refreshed === null) {
-        // Preserve the existing local session across transient Worker failures.
-        setIsAuthenticated(true);
-        setLoading(false);
-        return true;
       }
+      if (refreshed === null) { setIsAuthenticated(true); setLoading(false); return true; }
     }
-    clearSession();
-    setLoading(false);
-    return false;
+    clearSession(); setLoading(false); return false;
   };
 
-  useEffect(() => {
-    verifyToken();
-  }, []);
+  useEffect(() => { verifyToken(); }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, token, refreshToken, loading, isAuthenticated, login, logout, verifyToken, refreshAccessToken }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={{ user, token, refreshToken, loading, isAuthenticated, login, logout, verifyToken, refreshAccessToken }}>{children}</AuthContext.Provider>;
 };
