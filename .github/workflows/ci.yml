@@ -72,7 +72,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: fronted
-        run: npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
+        run: npm install --include=dev --legacy-peer-deps --no-audit --no-fund --ignore-scripts
 
       - name: Build React dashboard for GitHub Pages
         working-directory: fronted
