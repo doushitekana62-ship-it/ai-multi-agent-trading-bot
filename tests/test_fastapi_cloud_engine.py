@@ -25,6 +25,6 @@ def test_compatibility_module_exports_the_same_application():
 
 
 def test_legacy_engine_endpoint_is_not_required_by_the_canonical_service():
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()['paths'])
     assert '/engine/analyze' not in paths
     assert '/api/dashboard/analyze' in paths
