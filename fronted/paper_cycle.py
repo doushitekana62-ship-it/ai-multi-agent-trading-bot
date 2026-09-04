@@ -29,7 +29,8 @@ def _safe(v):
     return str(v)
 
 async def _supabase(env,table,method="POST",query="",payload=None):
-    base=str(getattr(env,"SUPABASE_URL","") or "").strip().rstrip("/");key=str(getattr(env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
+    base=str(getattr(env,"SUPABASE_URL","") or "").strip().rstrip("/")
+    key=str(getattr(env,"SUPABASE_SECRET_KEY","") or getattr(env,"SUPABASE_SERVICE_ROLE_KEY","") or "").strip()
     if not base or not key:return {"ok":False,"saved":False,"reason":"supabase_credentials_missing"}
     try:
         headers={"apikey":key,"Authorization":f"Bearer {key}","Accept":"application/json","Content-Type":"application/json"}
