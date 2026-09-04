@@ -22,8 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # Current FastAPI Cloud deployment shown by the repository deployment history.
-      # Override with repository variable VITE_API_URL if the backend hostname changes.
       VITE_API_URL: ${{ vars.VITE_API_URL || 'https://ai-multi-agent-trading-bot-7ba9bcfc.fastapicloud.dev' }}
     steps:
       - name: Checkout
@@ -43,7 +41,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: fronted
-        run: npm install --legacy-peer-deps
+        run: npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
 
       - name: Build dashboard
         working-directory: fronted
