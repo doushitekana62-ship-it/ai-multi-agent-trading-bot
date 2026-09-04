@@ -1,314 +1,123 @@
-# AI Multi-Agent Trading Bot — Architecture Contract
+# AI Trading Bot — Canonical Architecture
 
-# COMPOUNDING SCALPING
+Status: CANONICAL / 2026-09-04
 
-> **Architecture v0.4 — COMPOUNDING SCALPING**
->
-> **Status:** CANONICAL STRATEGIC DIRECTION / IMPLEMENTATION SOURCE OF TRUTH — 2026-09-02
->
-> **Implementation rule:** This architecture update defines the strategic direction and contracts. Implementation changes require explicit project-owner instruction.
->
-> **Previous version:** The complete v0.3 baseline is preserved unchanged in `ARCHITECTURE_v0.3.md` and in Git history.
+This document is the single runtime authority for the project. New features must fit this architecture; they must not introduce a second trading brain, second market-data truth, or a second execution state.
 
-## 1. Strategic Mission — COMPOUNDING SCALPING
-
-The project's intended trading direction is **COMPOUNDING SCALPING**.
-
-Compounding scalping means the system seeks small, repeatable, risk-controlled opportunities and automatically carries the resulting account capital/equity into the sizing reference of subsequent trades.
-
-The objective is not maximum profit per trade. The objective is a sustainable short-horizon trading loop:
+## 1. Production topology
 
 ```text
-CURRENT CAPITAL / EQUITY
-        ↓
-MARKET OBSERVATION
-        ↓
-SMALL VALID EDGE
-        ↓
-DETERMINISTIC RISK
-        ↓
-POSITION SIZING
-        ↓
-ENTRY
-        ↓
-POSITION MANAGEMENT
-        ↓
-PROFIT / LOSS / EXIT
-        ↓
-REALIZED RESULT + COSTS
-        ↓
-UPDATED CAPITAL / EQUITY
-        ↓
-NEXT POSITION SIZING
-        ↓
-NEXT SCALP
+GitHub Pages (React/Vite)
+        |
+        | HTTPS / JSON + JWT
+        v
+Canonical FastAPI service (backend.api:app)
+        |
+        +--> INDODAX public market API
+        |
+        +--> Multi-agent Orchestrator
+        |      Sentiment / Technical / Decision / Forecast / Reflector
+        |
+        +--> Risk + paper execution
+        |
+        +--> Supabase authoritative ledger/state
+        |
+        +--> Optional exchange credentials, paper mode only by default
 ```
 
-A profitable trade may increase the capital base available to subsequent sizing. A losing trade decreases it. The system must never increase risk merely to recover a previous loss.
-
-The intended behavior is **small risk, small profit, repeated only when a valid edge exists**. `HOLD` / `NO_EDGE` remains a valid outcome when conditions are insufficient.
-
-The historical architecture rule remains explicit: **Data failure is never represented as normal HOLD.**
-
-## 2. Compounding Capital Principle
-
-Starting capital is an initial condition, not a permanent sizing base.
-
-For each new position, sizing should ultimately derive from the authoritative current account state, subject to deterministic risk controls and exchange constraints.
+Cloudflare is NOT part of the production path. There is no Cloudflare Worker, Durable Object, Worker proxy, or Cloudflare-specific runtime dependency in the canonical deployment.
 
-```text
-trade closes
-    ↓
-actual fill/result reconciled
-    ↓
-fees/costs recorded
-    ↓
-realized PnL updated
-    ↓
-account state updated
-    ↓
-current capital/equity becomes the next sizing reference
-```
+## 2. Responsibilities
 
-Compounding must not become martingale behavior.
+GitHub Pages: static dashboard only. It contains no server secrets and never calls Supabase with an elevated key. Its API base is supplied at build time with the public repository variable `VITE_API_URL`.
 
-```text
-LOSS → lower/equal controlled risk
-WIN  → proportionally larger opportunity only when limits permit
-```
+FastAPI: single backend entrypoint, authentication, market API, agent orchestration, risk decisions, paper execution, reports, and API responses consumed by the dashboard.
 
-The exact risk percentage, sizing formula, exposure cap, and compounding parameters remain strategy controls to be calibrated and tested. This version intentionally does not prescribe final numerical values.
+Supabase: authoritative persistent ledger for decisions, trades, paper history, market observations, and runtime controls. Server-side access uses `SUPABASE_SECRET_KEY` when available, otherwise the legacy `SUPABASE_SERVICE_ROLE_KEY`.
 
-## 3. Scalping Entry Principle
+INDODAX: canonical public market-data source for the current paper/scalping implementation. The browser does not independently invent a different market signal.
 
-The system must not require an oversized predicted price movement merely to permit trading. Excessively strict thresholds can create a technically safe but practically inactive bot.
+## 3. Market Pulse contract
 
-Entry evaluation should consider, where available:
+The backend owns Market Pulse. A rolling window contains 30 one-minute segments. Each minute is derived from observed public market data.
 
-- short-horizon movement;
-- market regime;
-- momentum and structure;
-- volume/liquidity;
-- spread;
-- expected movement;
-- estimated fees;
-- estimated slippage/execution cost;
-- current account state;
-- deterministic risk limits.
+- Price change during a populated minute: GREEN for positive, RED for negative.
+- A populated minute with a flat final move but an observed intraminute price change uses the last observed direction.
+- Only a minute with no valid observations is GRAY.
+- The same observations are available to the AI analysis pipeline; frontend rendering is presentation only.
+- The rolling 30-minute result must never be treated as a prediction by itself.
 
-The key question is not simply `"Will price move 1%?"` but whether the expected net edge is sufficient for a controlled-risk scalp under current execution conditions.
-
-Cost-awareness must not be implemented as an arbitrary gate that makes the bot unable to operate. Thresholds must be calibrated empirically in realistic paper trading.
-
-## 4. Profit Activation Instead of a Hard Profit Ceiling
-
-A configured initial TP percentage is not automatically a mandatory full-position liquidation point.
-
-For the intended compounding-scalping model, a configurable profit threshold may act as **PROFIT ACTIVATION**:
-
-```text
-ENTRY
-  ↓
-INITIAL SL / RISK
-  ↓
-PROFIT ACTIVATION
-  ↓
-+----------------------------------+
-| Momentum still valid             |
-| → keep participating             |
-| → protect accumulated profit     |
-|                                  |
-| Momentum weakens / reverses      |
-| → exit                            |
-+----------------------------------+
-```
+## 4. Trading safety
 
-This allows an initial target such as +1% to activate profit protection while still allowing an unusually strong market move to continue beyond that level.
+Default mode is paper. Real exchange orders are locked until an explicit, separately audited live-trading implementation exists. UI controls cannot bypass server-side risk gates.
 
-The exact dynamic/trailing mechanism must be deterministic, observable, testable, and constrained by the risk engine. AI may provide context but cannot be the execution trigger or guarantee a fill.
+Paper execution must respect position limits, daily loss limits, minimum confidence, minimum confirmations, conflict thresholds, stop loss, take profit, and execution gating already defined by the core trading modules.
 
-## 5. Dynamic Position Lifecycle
+## 5. Authentication and secrets
 
-Position management is part of the automated trading lifecycle rather than a manual operator step repeated after every entry.
+Required FastAPI runtime values:
 
-```text
-NO POSITION
-    ↓
-ENTRY
-    ↓
-INITIAL SL + PROFIT MANAGEMENT
-    ↓
-PRICE MOVEMENT
-    ↓
-PROTECTION / TRAILING ADJUSTMENT
-    ↓
-EXIT
-    ↓
-ACCOUNT RECONCILIATION
-    ↓
-NEXT OPPORTUNITY
-```
+- `SUPABASE_URL`
+- `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY`
+- `JWT_SECRET_KEY` (>=32 characters)
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `CORS_ORIGINS` including the GitHub Pages origin
 
-A rapid favorable movement must not be discarded solely because an initial profit activation threshold was reached.
+These values belong on the FastAPI hosting platform, never in the React build and never in source control.
 
-A rapid adverse movement remains subject to the hard risk boundary.
+The GitHub Pages build needs only one non-secret repository variable:
 
-High volatility may require wider deterministic protection; low volatility may permit tighter protection. Any such adaptation must be explicit and testable rather than hidden in an AI prompt.
+- `VITE_API_URL` = public HTTPS base URL of the canonical FastAPI service
 
-## 6. Net Result and Execution Reality
+## 6. API contract
 
-For compounding purposes, the authoritative result of a trade is the reconciled execution result, not an idealized price movement.
+Health:
+- `GET /health`
+- `GET /ready`
 
-```text
-GROSS PRICE RESULT
-    - FEES
-    - SLIPPAGE / EXECUTION EFFECT
-    - OTHER APPLICABLE COSTS
-    = REALIZED NET RESULT
-```
+Authentication:
+- `POST /api/auth/login`
+- `POST /api/auth/refresh`
+- `GET /api/auth/verify`
+- `POST /api/auth/logout`
 
-The system must distinguish price movement, gross trade PnL, fees, execution effect, realized PnL, balance, and equity.
+Dashboard:
+- `GET /api/dashboard/status`
+- `GET /api/dashboard/positions`
+- `GET /api/dashboard/performance`
+- `GET /api/dashboard/recent-decision`
+- `GET /api/dashboard/agents`
+- `POST /api/dashboard/analyze`
 
-The bot must not become inactive merely because a nominal target is smaller than a conservative theoretical cost estimate. Realistic costs must be modeled, measured, and calibrated against actual exchange behavior.
+Paper:
+- `GET /api/dashboard/paper/status`
+- `POST /api/dashboard/paper/start`
+- `POST /api/dashboard/paper/stop`
+- `POST /api/dashboard/paper/reset`
+- `POST /api/dashboard/paper/settings`
+- `GET /api/dashboard/paper/risk`
 
-## 7. Indodax Compatibility Direction
+Market:
+- `GET /api/market/overview?pair=btc_idr`
+- `GET /api/market/insights`
 
-The system remains **Indodax-focused**.
+## 7. Deployment
 
-Compounding scalping must use the existing exchange-adapter boundary rather than embedding Indodax-specific execution logic into agents or the frontend.
+Frontend: GitHub Pages workflow `.github/workflows/github-pages.yml` builds `fronted` and deploys `fronted/dist`.
 
-```text
-AI / ANALYSIS
-      ↓
-CANDIDATE
-      ↓
-DETERMINISTIC RISK
-      ↓
-POSITION / ORDER INTENT
-      ↓
-EXCHANGE ADAPTER
-      ↓
-INDODAX
-```
+Backend: deploy `backend.api:app` from the repository root on a persistent FastAPI host. `fastapi_cloud_app.py` is retained only as a compatibility import and points to the same canonical app.
 
-Exchange constraints that affect compounding must be treated as execution inputs, including where applicable:
+CI must test Python compilation, core trading contracts, FastAPI import/health, and frontend build. Cloudflare deployment and Cloudflare runtime smoke tests are not production gates.
 
-- available balance;
-- minimum order size;
-- price/quantity precision;
-- fees;
-- order type;
-- liquidity/spread;
-- fill status;
-- partial/failed/unknown execution;
-- account reconciliation.
+## 8. Change discipline
 
-The core strategy remains exchange-independent at the domain level.
+Before changing a feature, identify its single owner:
 
-## 8. AI Responsibility
+- UI: `fronted/src`
+- HTTP/backend: `backend/routes` and `backend/api.py`
+- AI/trading logic: `agents`, `core`, `integration`, `paper_trading`
+- persistence: `backend/core/database.py` and `supabase/migrations`
+- deployment: GitHub Pages workflow / FastAPI host
 
-AI remains advisory.
-
-AI may estimate direction, confidence, short-horizon opportunity, momentum/regime, expected movement, evidence quality, and whether a position appears to be strengthening or weakening.
-
-AI does not own final risk approval, authoritative account balance, authoritative position quantity, order execution, or exchange reconciliation.
-
-Dynamic position management must remain deterministic even when external AI is unavailable.
-
-Missing/degraded evidence is excluded from directional scoring; it is not silently converted into BUY/SELL/HOLD evidence.
-
-## 9. Risk Principle
-
-Compounding is permitted only inside hard risk boundaries.
-
-The system must prevent:
-
-```text
-LOSS
- ↓
-INCREASE RISK TO RECOVER
- ↓
-LARGER LOSS
-```
-
-The intended behavior is:
-
-```text
-LOSS
- ↓
-UPDATED LOWER CAPITAL / EQUITY
- ↓
-RISK ENGINE RE-CALCULATES
- ↓
-CONTROLLED NEXT POSITION
-```
-
-A winning streak must not bypass maximum exposure, daily/weekly loss limits, or other safety controls.
-
-The risk engine remains the single authoritative deterministic control plane.
-
-## 10. Paper Trading as the Compounding Laboratory
-
-Paper trading remains the primary validation environment.
-
-Before live execution is considered, paper must demonstrate an observable and reconcilable lifecycle:
-
-```text
-ENTRY
-→ POSITION
-→ PROFIT ACTIVATION / SL / EXIT
-→ FEES + SLIPPAGE
-→ REALIZED PnL
-→ UPDATED BALANCE / EQUITY
-→ NEXT SIZING
-→ NEXT ENTRY
-```
-
-Paper execution must model relevant real-world friction rather than perfect fills. Compounding is not considered validated if it works only because costs, slippage, order failures, or execution uncertainty are ignored.
-
-## 11. Architecture Preservation
-
-All v0.3 responsibility boundaries remain in force unless explicitly superseded by a later approved architecture revision.
-
-In particular:
-
-- AI advises; deterministic trading core controls.
-- Risk is a hard boundary.
-- Paper trading is the default development path.
-- Exchange integration is an adapter.
-- One authoritative account/position state exists per environment.
-- No direct agent-to-exchange execution.
-- No duplicate risk engine.
-- Frontend does not own authoritative trading rules.
-- Persistence is an audit/state layer, not a competing trading engine.
-- Cloudflare/deployment must not change trading-domain semantics.
-
-This version adds the **COMPOUNDING SCALPING** strategic direction; implementation now proceeds under the explicit project-owner instruction.
-
-## 12. Preserved v0.3 Operational Semantics
-
-The following v0.3 runtime semantics remain authoritative unless explicitly superseded:
-
-- `HOLD_EXISTING_POSITION` is a distinct position-management state.
-- `AI_DEGRADED` is an explicit runtime/degradation state, not a normal HOLD reason.
-- `RISK_REJECTED` is an explicit deterministic risk outcome.
-- **Data failure is never represented as normal HOLD.**
-- **Missing/degraded evidence is excluded from directional scoring.**
-
-Compatibility action values may remain `BUY | SELL | HOLD`, while explicit cycle status explains why an action did or did not execute.
-
-## 13. Change-Control for Compounding Scalping
-
-Before implementation of any compounding-scalping behavior, explicitly identify:
-
-1. the existing component that should own it;
-2. whether it changes account state, risk, sizing, position lifecycle, execution, or observation;
-3. the smallest compatible implementation path;
-4. the tests needed to prove accounting and risk correctness;
-5. compatibility with Indodax execution constraints;
-6. preservation of paper/real behavioral parity.
-
-## 14. Version History
-
-- **v0.4 — COMPOUNDING SCALPING:** strategic direction established on 2026-09-02.
-- **v0.3:** previous canonical baseline, preserved unchanged in `ARCHITECTURE_v0.3.md` and Git history.
+Do not duplicate logic between frontend and backend when the result affects trading decisions. Do not add a new runtime provider merely to solve a deployment problem without amending this architecture first.
