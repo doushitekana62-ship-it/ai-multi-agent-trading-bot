@@ -22,7 +22,7 @@ jobs:
     env:
       FASTAPI_URL: ${{ vars.VITE_API_URL || 'https://ai-multi-agent-trading-bot-7ba9bcfc.fastapicloud.dev' }}
       EXPECTED_ENTRYPOINT: backend.api:app
-      EXPECTED_VERSION: 2.0.0
+      EXPECTED_VERSION: 2.0.1
     steps:
       - name: Checkout deployment contract
         uses: actions/checkout@v4
@@ -31,7 +31,6 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
           config = Path('pyproject.toml').read_text(encoding='utf-8')
           assert 'entrypoint = "backend.api:app"' in config
           assert 'entrypoint = "fastapi_cloud_app:app"' not in config
@@ -58,7 +57,7 @@ jobs:
           ok = (
               payload.get('status') == 'healthy'
               and payload.get('entrypoint') == 'backend.api:app'
-              and payload.get('version') == '2.0.0'
+              and payload.get('version') == '2.0.1'
               and payload.get('paper_mode') is True
               and payload.get('real_trading_locked') is True
           )
@@ -79,3 +78,27 @@ jobs:
         run: |
           curl --fail --silent --show-error --location --max-time 15 "${FASTAPI_URL%/}/openapi.json" >/dev/null
           echo "Live OpenAPI endpoint is reachable."
+
+      - name: Verify live market overview contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          market_url="${FASTAPI_URL%/}/api/market/overview?pair=btc_idr&_ts=$(date +%s)"
+          response="$(curl --fail --silent --show-error --location --max-time 15 -H 'Cache-Control: no-cache' "$market_url")"
+          python - "$response" <<'PY'
+          import json
+          import sys
+          payload = json.loads(sys.argv[1])
+          assert payload.get('available') is True, payload
+          assert float(payload.get('last') or 0) > 0, payload
+          segments = payload.get('pulse_segments')
+          assert isinstance(segments, list) and len(segments) == 30, payload
+          assert payload.get('market_data_quality') in {'TRADE_STREAM_PLUS_TICKER', 'TICKER_FALLBACK'}, payload
+          print('Live market overview contract OK:', {
+              'pair': payload.get('pair'),
+              'last': payload.get('last'),
+              'segments': len(segments),
+              'quality': payload.get('market_data_quality'),
+              'trades_available': payload.get('trades_available'),
+          })
+          PY
