@@ -55,6 +55,8 @@ async def root():
 
 @app.get("/health")
 async def health():
+    # Deployment identity is intentionally part of the health contract so a stale
+    # FastAPI Cloud deployment cannot be mistaken for the current backend.
     return {
         "status": "healthy",
         "service": "ai-multi-agent-trading-bot-api",
