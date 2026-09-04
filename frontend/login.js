@@ -1,4 +1,2 @@
-const $=s=>document.querySelector(s);let client;
-async function init(){const cfg=await fetch('/config').then(r=>r.json());client=window.supabase.createClient(cfg.supabase_url,cfg.supabase_anon_key);const {data}=await client.auth.getSession();if(data.session)location.href='/';}
-$('#loginForm').addEventListener('submit',async e=>{e.preventDefault();const {error}=await client.auth.signInWithPassword({email:$('#email').value.trim(),password:$('#password').value});if(error){$('#loginError').textContent=error.message;return}location.href='/';});
-init();
+const sb=supabase.createClient(APP_CONFIG.SUPABASE_URL,APP_CONFIG.SUPABASE_PUBLISHABLE_KEY);
+document.getElementById("loginForm").addEventListener("submit",async e=>{e.preventDefault();const err=document.getElementById("loginError");err.textContent="";try{const {error}=await sb.auth.signInWithPassword({email:document.getElementById("email").value,password:document.getElementById("password").value});if(error)throw error;const {data:factors}=await sb.auth.mfa.listFactors();const verified=(factors?.totp||[]).filter(x=>x.status==="verified");location.href=verified.length?"./mfa.html":"./index.html"}catch(e){err.textContent=e.message||"Login gagal"}});
