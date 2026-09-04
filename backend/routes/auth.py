@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from backend.core.security import (
     Security, create_access_token, verify_token,
-    authenticate_user, DEFAULT_USERS
+    authenticate_user, DEFAULT_USERS, ADMIN_PASSWORD
 )
 
 logger = logging.getLogger(__name__)
@@ -55,10 +55,33 @@ class UserResponse(BaseModel):
     is_authenticated: bool
 
 
+@router.get("/status")
+async def auth_status():
+    """Non-secret readiness information used to diagnose login configuration."""
+    return {
+        "login_enabled": bool(ADMIN_PASSWORD and DEFAULT_USERS),
+        "auth_scheme": "bearer-jwt",
+        "token_expire_minutes": ACCESS_EXPIRES_MINUTES,
+    }
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
+    username = str(request.username or "").strip()
+    if not username or not request.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username and password are required",
+        )
+
+    if not ADMIN_PASSWORD or not DEFAULT_USERS:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dashboard authentication is not configured on the API",
+        )
+
     try:
-        user = authenticate_user(request.username, request.password)
+        user = authenticate_user(username, request.password)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -84,9 +107,18 @@ async def login(request: LoginRequest):
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Login error: %s", e)
-        raise HTTPException(status_code=500, detail="Login failed")
+    except (ValueError, TypeError) as exc:
+        logger.warning("Login configuration error: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dashboard authentication is temporarily unavailable",
+        ) from exc
+    except Exception:
+        logger.exception("Unexpected login error")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dashboard authentication is temporarily unavailable",
+        )
 
 
 @router.post("/refresh", response_model=RefreshTokenResponse)
@@ -100,7 +132,7 @@ async def refresh_token(request: RefreshTokenRequest):
             )
 
         username = payload.get("sub")
-        if username not in DEFAULT_USERS:
+        if not username or username not in DEFAULT_USERS:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found",
@@ -116,9 +148,9 @@ async def refresh_token(request: RefreshTokenRequest):
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Refresh token error: %s", e)
-        raise HTTPException(status_code=500, detail="Refresh failed")
+    except Exception:
+        logger.exception("Refresh token error")
+        raise HTTPException(status_code=503, detail="Authentication service temporarily unavailable")
 
 
 @router.post("/logout")
@@ -146,9 +178,9 @@ async def verify(credentials: HTTPAuthorizationCredentials = Depends(security)):
         return UserResponse(username=username, is_authenticated=True)
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Verify error: %s", e)
-        raise HTTPException(status_code=500, detail="Verification failed")
+    except Exception:
+        logger.exception("Verify error")
+        raise HTTPException(status_code=503, detail="Authentication service temporarily unavailable")
 
 
 @router.post("/change-password")
@@ -170,11 +202,13 @@ async def change_password(
             old_password, DEFAULT_USERS[username]["password"]
         ):
             raise HTTPException(status_code=400, detail="Old password is incorrect")
+        if len(new_password) < 12:
+            raise HTTPException(status_code=400, detail="New password must be at least 12 characters")
 
         DEFAULT_USERS[username]["password"] = security_instance.get_password_hash(new_password)
         return {"message": "Password changed successfully", "status": "success"}
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Change password error: %s", e)
-        raise HTTPException(status_code=500, detail="Password change failed")
+    except Exception:
+        logger.exception("Change password error")
+        raise HTTPException(status_code=503, detail="Password change temporarily unavailable")

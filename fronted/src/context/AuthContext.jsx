@@ -3,8 +3,10 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 
 const AuthContext = createContext();
-const API_URL = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
-if (API_URL) axios.defaults.baseURL = API_URL;
+const DEFAULT_API_URL = 'https://ai-multi-agent-trading-bot-7ba9bcfc.fastapicloud.dev';
+const API_URL = String(import.meta.env.VITE_API_URL || DEFAULT_API_URL).trim().replace(/\/$/, '');
+axios.defaults.baseURL = API_URL;
+axios.defaults.headers.common.Accept = 'application/json';
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -76,7 +78,10 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (username, password) => {
     try {
-      const response = await axios.post('/api/auth/login', { username, password });
+      const response = await axios.post('/api/auth/login', {
+        username: String(username || '').trim(),
+        password: String(password || ''),
+      });
       applyAccessToken(response.data.access_token);
       setRefreshToken(response.data.refresh_token);
       localStorage.setItem('refresh_token', response.data.refresh_token);
@@ -85,7 +90,12 @@ export const AuthProvider = ({ children }) => {
       toast.success('Login successful!');
       return response.data;
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Login failed');
+      const statusCode = error.response?.status;
+      const detail = error.response?.data?.detail;
+      if (!error.response) toast.error('API tidak dapat dihubungi. Periksa koneksi atau deployment FastAPI.');
+      else if (statusCode === 401) toast.error('Username atau password salah.');
+      else if (statusCode === 503) toast.error(detail || 'Authentication API belum dikonfigurasi.');
+      else toast.error(detail || `Login gagal (HTTP ${statusCode}).`);
       throw error;
     }
   };

@@ -29,12 +29,25 @@ if not SECRET_KEY or SECRET_KEY in _INSECURE_JWT_VALUES or len(SECRET_KEY) < 32:
         "JWT_SECRET_KEY must be a strong random value of at least 32 characters"
     )
 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin").strip()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_USERNAME_ALIASES = {
+    value.strip().casefold()
+    for value in os.getenv("ADMIN_USERNAME_ALIASES", "aru").split(",")
+    if value.strip()
+}
+if ADMIN_USERNAME:
+    ADMIN_USERNAME_ALIASES.discard(ADMIN_USERNAME.casefold())
+
 if not ADMIN_PASSWORD:
     logger.warning(
         "ADMIN_PASSWORD is not configured; dashboard login will be unavailable until it is set"
     )
+
+
+def normalize_username(value: str) -> str:
+    """Normalize login identifiers without changing password semantics."""
+    return str(value or "").strip().casefold()
 
 
 class Security:
@@ -98,7 +111,27 @@ if ADMIN_PASSWORD:
 
 
 def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
-    user = DEFAULT_USERS.get(username)
-    if user and verify_password(password, user["password"]):
-        return {"username": username}
+    """Authenticate the configured admin, accepting configured aliases.
+
+    Aliases are identifiers only; they use the same configured admin password.
+    This keeps the single-account model while avoiding case/label mismatches in
+    the dashboard login form.
+    """
+    normalized = normalize_username(username)
+    if not normalized or not password or not ADMIN_PASSWORD:
+        return None
+
+    configured = DEFAULT_USERS.get(ADMIN_USERNAME)
+    if not configured:
+        return None
+
+    accepted = {normalize_username(ADMIN_USERNAME), *ADMIN_USERNAME_ALIASES}
+    if normalized not in accepted:
+        return None
+
+    try:
+        if pwd_context.verify(password, configured["password"]):
+            return {"username": ADMIN_USERNAME}
+    except (ValueError, TypeError):
+        logger.warning("Configured admin password hash is invalid")
     return None

@@ -29,7 +29,7 @@ Cloudflare is NOT part of the production path. There is no Cloudflare Worker, Du
 
 ## 2. Responsibilities
 
-GitHub Pages: static dashboard only. It contains no server secrets and never calls Supabase with an elevated key. Its API base is supplied at build time with the public repository variable `VITE_API_URL`.
+GitHub Pages: static dashboard only. It contains no server secrets and never calls Supabase with an elevated key. Its API base is supplied at build time with the public repository variable `VITE_API_URL` and has a safe canonical FastAPI fallback in the authentication client.
 
 FastAPI: single backend entrypoint, authentication, market API, agent orchestration, risk decisions, paper execution, reports, and API responses consumed by the dashboard.
 
@@ -46,12 +46,21 @@ The backend owns Market Pulse. A rolling window contains 30 one-minute segments.
 - Only a minute with no valid observations is GRAY.
 - The same observations are available to the AI analysis pipeline; frontend rendering is presentation only.
 - The rolling 30-minute result must never be treated as a prediction by itself.
+- Intraminute state must preserve `sample_count`, `price_changed`, `last_direction`, and the minute open/close so a price move inside one minute is not silently flattened.
 
 Data failure is never represented as normal HOLD. Missing/degraded evidence is excluded from directional scoring and produces an explicit data-quality state.
 
-## 4. Trading safety
+## 4. Trading safety and P0 hard gates
 
 Default mode is paper. Real exchange orders are locked until an explicit, separately audited live-trading implementation exists. UI controls cannot bypass server-side risk gates.
+
+Every paper/live candidate follows this mandatory order:
+
+`Market snapshot -> freshness/quality gate -> AI analysis -> deterministic risk -> execution gate -> executor`
+
+The market-data gate is mandatory before AI analysis. The canonical default is `MARKET_DATA_MAX_AGE_SECONDS=90` and minimum market quality is `0.70` for the live paper cycle. A stale, invalid, low-quality, or non-positive-price snapshot must produce an explicit `DATA_STALE`, `DATA_UNAVAILABLE`, `DATA_QUALITY_LOW`, or `INVALID_PRICE` state and cannot become a trading signal.
+
+AI agents advise; they do not execute. Risk controls are mandatory and cannot be overridden by an AI-generated recommendation. Execution remains paper-only by default.
 
 Paper execution must respect position limits, daily loss limits, minimum confidence, minimum confirmations, conflict thresholds, stop loss, take profit, and execution gating already defined by the core trading modules.
 
@@ -74,6 +83,8 @@ The GitHub Pages build needs only one non-secret repository variable:
 
 - `VITE_API_URL` = public HTTPS base URL of the canonical FastAPI service
 
+Authentication accepts the configured admin username case-insensitively and optional non-secret identifier aliases via `ADMIN_USERNAME_ALIASES`. The alias does not create another password or another account.
+
 ## 6. API contract
 
 Health:
@@ -81,6 +92,7 @@ Health:
 - `GET /ready`
 
 Authentication:
+- `GET /api/auth/status`
 - `POST /api/auth/login`
 - `POST /api/auth/refresh`
 - `GET /api/auth/verify`
@@ -106,13 +118,15 @@ Market:
 - `GET /api/market/overview?pair=btc_idr`
 - `GET /api/market/insights`
 
-## 7. Deployment
+## 7. Deployment and P1 validation
 
 Frontend: GitHub Pages workflow `.github/workflows/github-pages.yml` builds `fronted` and deploys `fronted/dist`.
 
 Backend: deploy `backend.api:app` from the repository root on a persistent FastAPI host. `fastapi_cloud_app.py` is retained only as a compatibility import and points to the same canonical app.
 
-CI must test Python compilation, core trading contracts, FastAPI import/health, deployment identity, and frontend build. Cloudflare deployment and Cloudflare runtime smoke tests are not production gates.
+CI must test Python compilation, authentication contract, core trading contracts, market-data freshness, canonical trading pipeline, FastAPI import/health, deployment identity, and frontend build. Cloudflare deployment and Cloudflare runtime smoke tests are not production gates.
+
+A production-ready build is not sufficient by itself. The live deployment gate must prove the public FastAPI service exposes the expected canonical entrypoint/version and health contract.
 
 ## 8. Change discipline
 

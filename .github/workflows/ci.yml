@@ -26,6 +26,7 @@ jobs:
       AI_ENGINE_SHARED_SECRET: ci-test-secret-1234567890-abcdefghijklmnopqrstuvwxyz
       JWT_SECRET_KEY: ci-jwt-secret-1234567890-abcdefghijklmnopqrstuvwxyz
       ADMIN_USERNAME: admin
+      ADMIN_USERNAME_ALIASES: aru
       ADMIN_PASSWORD: ci-password
     steps:
       - name: Checkout
@@ -55,6 +56,9 @@ jobs:
       - name: Verify canonical FastAPI deployment contract
         run: |
           pytest -q \
+            tests/test_auth_contract.py \
+            tests/test_market_data_freshness.py \
+            tests/test_market_pulse_contract.py \
             tests/test_deployment_contract.py \
             tests/test_canonical_architecture_guards.py \
             tests/test_fastapi_cloud_engine.py \

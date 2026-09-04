@@ -1,23 +1,24 @@
 """
-core/unified_market_data.py - MODIFIED
+core/unified_market_data.py
 
 Single Source of Truth untuk semua market data.
-Sekarang terintegrasi dengan MarketDataAdapter.
+Freshness adalah hard data-quality property, bukan sekadar dashboard metadata.
 """
 
 import logging
 import math
+import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 from core.market_data_adapter import MarketDataAdapter, get_market_data_adapter
 
 logger = logging.getLogger(__name__)
+DEFAULT_MAX_AGE_SECONDS = float(os.getenv("MARKET_DATA_MAX_AGE_SECONDS", "90"))
 
 
 def _normalize_timestamp(value: Any) -> datetime:
-    """Return a timezone-aware datetime from exchange timestamp formats."""
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
@@ -29,27 +30,25 @@ def _normalize_timestamp(value: Any) -> datetime:
         return datetime.fromtimestamp(numeric, tz=timezone.utc)
     if isinstance(value, str):
         text = value.strip()
-        if not text:
-            return datetime.now(timezone.utc)
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc)
-        except ValueError:
+        if text:
             try:
-                numeric = float(text)
-                if numeric > 1_000_000_000_000:
-                    numeric /= 1000.0
-                return datetime.fromtimestamp(numeric, tz=timezone.utc)
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
             except ValueError:
-                logger.warning("Invalid market timestamp %r; using current UTC time", value)
+                try:
+                    numeric = float(text)
+                    if numeric > 1_000_000_000_000:
+                        numeric /= 1000.0
+                    return datetime.fromtimestamp(numeric, tz=timezone.utc)
+                except ValueError:
+                    pass
     return datetime.now(timezone.utc)
 
 
 @dataclass
 class OHLCV:
-    """OHLCV data point."""
     timestamp: datetime
     open: float
     high: float
@@ -61,25 +60,14 @@ class OHLCV:
         self.timestamp = _normalize_timestamp(self.timestamp)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "timestamp": self.timestamp.isoformat(),
-            "open": self.open,
-            "high": self.high,
-            "low": self.low,
-            "close": self.close,
-            "volume": self.volume
-        }
+        return {"timestamp": self.timestamp.isoformat(), "open": self.open, "high": self.high, "low": self.low, "close": self.close, "volume": self.volume}
 
     def is_valid(self) -> bool:
-        return (
-            self.open > 0 and self.high > 0 and self.low > 0 and
-            self.close > 0 and self.volume >= 0
-        )
+        return self.open > 0 and self.high > 0 and self.low > 0 and self.close > 0 and self.volume >= 0
 
 
 @dataclass
 class UnifiedMarketSnapshot:
-    """UNIFIED MARKET SNAPSHOT - Single Source of Truth."""
     symbol: str
     timestamp: datetime
     timeframe: str
@@ -102,26 +90,22 @@ class UnifiedMarketSnapshot:
     def __post_init__(self) -> None:
         self.timestamp = _normalize_timestamp(self.timestamp)
 
+    def refresh_freshness(self, max_age_seconds: float = DEFAULT_MAX_AGE_SECONDS) -> bool:
+        self.age_seconds = max(0.0, (datetime.now(timezone.utc) - self.timestamp).total_seconds())
+        self.is_fresh = self.age_seconds <= float(max_age_seconds)
+        return self.is_fresh
+
     def to_dict(self) -> Dict[str, Any]:
+        self.refresh_freshness()
         return {
-            "symbol": self.symbol,
-            "timestamp": self.timestamp.isoformat(),
-            "timeframe": self.timeframe,
-            "current_price": self.current_price,
-            "unified_price": self.current_price,
-            "high_24h": self.high_24h,
-            "low_24h": self.low_24h,
-            "volume_24h": self.volume_24h,
-            "change_24h": self.change_24h,
-            "change_percent_24h": self.change_percent_24h,
-            "fear_greed_index": self.fear_greed_index,
-            "market_phase": self.market_phase,
-            "volatility": self.volatility,
-            "data_quality_score": self.data_quality_score,
-            "missing_fields": self.missing_fields,
-            "source": self.source,
-            "is_fresh": self.is_fresh,
-            "ohlcv": [o.to_dict() for o in self.ohlcv_data[-100:]],
+            "symbol": self.symbol, "timestamp": self.timestamp.isoformat(), "timeframe": self.timeframe,
+            "current_price": self.current_price, "unified_price": self.current_price,
+            "high_24h": self.high_24h, "low_24h": self.low_24h, "volume_24h": self.volume_24h,
+            "change_24h": self.change_24h, "change_percent_24h": self.change_percent_24h,
+            "fear_greed_index": self.fear_greed_index, "market_phase": self.market_phase,
+            "volatility": self.volatility, "data_quality_score": self.data_quality_score,
+            "missing_fields": self.missing_fields, "source": self.source, "is_fresh": self.is_fresh,
+            "age_seconds": self.age_seconds, "ohlcv": [o.to_dict() for o in self.ohlcv_data[-100:]],
             "ohlcv_count": len(self.ohlcv_data)
         }
 
@@ -129,32 +113,21 @@ class UnifiedMarketSnapshot:
         return self.current_price
 
     def get_ohlcv(self, limit: Optional[int] = None) -> List[OHLCV]:
-        if limit and limit > 0:
-            return self.ohlcv_data[-limit:]
-        return self.ohlcv_data
+        return self.ohlcv_data[-limit:] if limit and limit > 0 else self.ohlcv_data
 
     def is_valid(self) -> bool:
-        return (
-            self.current_price > 0 and
-            self.data_quality_score >= 0.3 and
-            self.timestamp is not None and
-            self.is_fresh
-        )
+        return self.current_price > 0 and self.data_quality_score >= 0.3 and self.timestamp is not None and self.refresh_freshness()
 
-    def is_stale(self, max_age_seconds: int = 60) -> bool:
-        age = (datetime.now(timezone.utc) - self.timestamp).total_seconds()
-        self.age_seconds = age
-        return age > max_age_seconds
+    def is_stale(self, max_age_seconds: float = DEFAULT_MAX_AGE_SECONDS) -> bool:
+        return not self.refresh_freshness(max_age_seconds)
 
 
 class UnifiedMarketDataProvider:
-    """PROVIDER - Single access point for all market data."""
-
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
         self._cache: Dict[str, UnifiedMarketSnapshot] = {}
         self._cache_timestamp: Dict[str, datetime] = {}
-        self._cache_ttl = self.config.get("cache_ttl", 30)
+        self._cache_ttl = float(self.config.get("cache_ttl", 30))
         self._snapshot_counter = 0
         self.adapter = get_market_data_adapter(config)
         logger.info("UnifiedMarketDataProvider initialized")
@@ -163,58 +136,45 @@ class UnifiedMarketDataProvider:
         symbol = symbol.upper()
         if not force:
             cached = self._get_cached(symbol)
-            if cached is not None and not cached.is_stale(self._cache_ttl):
-                logger.debug("Using cached snapshot for %s", symbol)
+            if cached is not None:
                 return cached
         response = self.adapter.get_market_data(symbol, timeframe, limit)
         if not response.success or response.current_price is None:
             logger.error("Failed to refresh snapshot for %s: %s", symbol, response.error)
             return None
         snapshot = self._create_snapshot_from_response(response, timeframe)
+        snapshot.refresh_freshness()
         self._cache[symbol] = snapshot
-        self._cache_timestamp[symbol] = snapshot.timestamp
-        logger.info("Refreshed snapshot for %s: price=%.2f, quality=%.2f", symbol, snapshot.current_price, snapshot.data_quality_score)
+        self._cache_timestamp[symbol] = datetime.now(timezone.utc)
+        self._snapshot_counter += 1
+        logger.info("Refreshed snapshot for %s: price=%.2f, quality=%.2f, age=%.2fs", symbol, snapshot.current_price, snapshot.data_quality_score, snapshot.age_seconds)
         return snapshot
 
     def _create_snapshot_from_response(self, response, timeframe: str) -> UnifiedMarketSnapshot:
-        self._snapshot_counter += 1
         ohlcv_list: List[OHLCV] = []
         for item in response.ohlcv or []:
             try:
-                ohlcv = OHLCV(
-                    timestamp=item.get("timestamp", datetime.now(timezone.utc)),
-                    open=float(item.get("open", 0)), high=float(item.get("high", 0)),
-                    low=float(item.get("low", 0)), close=float(item.get("close", 0)),
-                    volume=float(item.get("volume", 0))
-                )
+                ohlcv = OHLCV(timestamp=item.get("timestamp"), open=float(item.get("open", 0)), high=float(item.get("high", 0)), low=float(item.get("low", 0)), close=float(item.get("close", 0)), volume=float(item.get("volume", 0)))
                 if ohlcv.is_valid():
                     ohlcv_list.append(ohlcv)
-            except (TypeError, ValueError, OverflowError) as e:
-                logger.warning("Error parsing OHLCV: %s", e)
+            except (TypeError, ValueError, OverflowError):
+                continue
         ohlcv_list.sort(key=lambda c: c.timestamp)
-
-        change_24h = None
-        change_percent_24h = None
-        volatility = None
+        change_24h = change_percent_24h = volatility = None
         if len(ohlcv_list) > 1:
             first, last = ohlcv_list[0], ohlcv_list[-1]
             if first.close > 0:
                 change_24h = last.close - first.close
                 change_percent_24h = (change_24h / first.close) * 100
-            returns = []
-            for i in range(1, len(ohlcv_list)):
-                if ohlcv_list[i - 1].close > 0:
-                    returns.append((ohlcv_list[i].close - ohlcv_list[i - 1].close) / ohlcv_list[i - 1].close)
+            returns = [(ohlcv_list[i].close - ohlcv_list[i-1].close) / ohlcv_list[i-1].close for i in range(1, len(ohlcv_list)) if ohlcv_list[i-1].close > 0]
             if returns:
                 mean = sum(returns) / len(returns)
                 volatility = math.sqrt(sum((r - mean) ** 2 for r in returns) / len(returns))
-
         market_phase = "NEUTRAL"
         if change_percent_24h is not None:
             if change_percent_24h > 2.0: market_phase = "BULLISH"
             elif change_percent_24h < -2.0: market_phase = "BEARISH"
             elif volatility and volatility > 0.03: market_phase = "VOLATILE"
-
         quality_score = 1.0
         missing_fields: List[str] = []
         if not ohlcv_list:
@@ -227,7 +187,9 @@ class UnifiedMarketDataProvider:
             intervals = [(ohlcv_list[i].timestamp - ohlcv_list[i-1].timestamp).total_seconds() for i in range(1, len(ohlcv_list))]
             if any(interval < 30 or interval > 90 for interval in intervals):
                 missing_fields.append("ohlcv_continuity")
-
+        # response.timestamp is the exchange/source timestamp. The adapter currently
+        # reports the latest source observation, so freshness is intentionally checked
+        # against that timestamp rather than assuming a successful HTTP response is fresh.
         return UnifiedMarketSnapshot(
             symbol=response.symbol, timestamp=response.timestamp, timeframe=timeframe,
             current_price=float(response.current_price), ohlcv_data=ohlcv_list,
@@ -238,11 +200,9 @@ class UnifiedMarketDataProvider:
         )
 
     def _get_cached(self, symbol: str) -> Optional[UnifiedMarketSnapshot]:
-        symbol = symbol.upper()
-        if symbol in self._cache:
-            snapshot = self._cache[symbol]
-            if snapshot.is_valid() and not snapshot.is_stale(self._cache_ttl):
-                return snapshot
+        snapshot = self._cache.get(symbol.upper())
+        if snapshot is not None and snapshot.is_valid() and not snapshot.is_stale(self._cache_ttl):
+            return snapshot
         return None
 
     def get_snapshot(self, symbol: str) -> Optional[UnifiedMarketSnapshot]:
@@ -250,21 +210,24 @@ class UnifiedMarketDataProvider:
 
     def create_snapshot_from_market_data(self, symbol: str, market_data: Dict[str, Any]) -> UnifiedMarketSnapshot:
         symbol = symbol.upper()
-        return UnifiedMarketSnapshot(
-            symbol=symbol, timestamp=market_data.get("timestamp", datetime.now(timezone.utc)),
-            timeframe=market_data.get("timeframe", "1h"), current_price=float(market_data.get("current_price", 0)),
+        timestamp = _normalize_timestamp(market_data.get("timestamp", datetime.now(timezone.utc)))
+        snapshot = UnifiedMarketSnapshot(
+            symbol=symbol, timestamp=timestamp, timeframe=market_data.get("timeframe", "1h"),
+            current_price=float(market_data.get("current_price", 0)),
             ohlcv_data=self._parse_ohlcv_from_dict(market_data.get("ohlcv", [])),
             high_24h=market_data.get("high_24h"), low_24h=market_data.get("low_24h"), volume_24h=market_data.get("volume_24h"),
             fear_greed_index=market_data.get("fear_greed_index"), market_phase=market_data.get("market_phase", "NEUTRAL"),
             volatility=market_data.get("volatility"), data_quality_score=market_data.get("data_quality_score", 0.5),
-            missing_fields=market_data.get("missing_fields", []), source="legacy_market_data", is_fresh=True, age_seconds=0.0
+            missing_fields=market_data.get("missing_fields", []), source="market_data_input", is_fresh=True, age_seconds=0.0
         )
+        snapshot.refresh_freshness()
+        return snapshot
 
     def _parse_ohlcv_from_dict(self, data: List[Dict]) -> List[OHLCV]:
         ohlcv_list = []
         for item in data or []:
             try:
-                ohlcv = OHLCV(timestamp=item.get("timestamp", datetime.now(timezone.utc)), open=float(item.get("open", 0)), high=float(item.get("high", 0)), low=float(item.get("low", 0)), close=float(item.get("close", 0)), volume=float(item.get("volume", 0)))
+                ohlcv = OHLCV(timestamp=item.get("timestamp"), open=float(item.get("open", 0)), high=float(item.get("high", 0)), low=float(item.get("low", 0)), close=float(item.get("close", 0)), volume=float(item.get("volume", 0)))
                 if ohlcv.is_valid(): ohlcv_list.append(ohlcv)
             except (TypeError, ValueError, OverflowError): continue
         ohlcv_list.sort(key=lambda c: c.timestamp)
