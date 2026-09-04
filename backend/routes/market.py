@@ -23,7 +23,11 @@ def _pair(value: str) -> str:
 
 
 def _get(path: str) -> Any:
-    response = requests.get(f"{INDODAX_BASE}{path}", timeout=8, headers={"Accept": "application/json"})
+    response = requests.get(
+        f"{INDODAX_BASE}{path}",
+        timeout=8,
+        headers={"Accept": "application/json"},
+    )
     response.raise_for_status()
     return response.json()
 
@@ -68,7 +72,16 @@ def _pulse(points: list[dict[str, Any]], now: float) -> tuple[list[dict[str, Any
         price = float(point["price"])
         bucket = buckets.get(minute)
         if bucket is None:
-            bucket = {"minute": minute, "open": price, "high": price, "low": price, "close": price, "samples": 0, "changed": False, "last_direction": "GRAY"}
+            bucket = {
+                "minute": minute,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "samples": 0,
+                "changed": False,
+                "last_direction": "GRAY",
+            }
             buckets[minute] = bucket
         else:
             if price != bucket["close"]:
@@ -78,48 +91,110 @@ def _pulse(points: list[dict[str, Any]], now: float) -> tuple[list[dict[str, Any
             bucket["low"] = min(bucket["low"], price)
             bucket["close"] = price
         bucket["samples"] += 1
+
     segments = []
     for i in range(30):
         minute = current - (29 - i) * 60
         bucket = buckets.get(minute)
         if not bucket:
-            segments.append({"minute": minute, "status": "GRAY", "move": None, "samples": 0, "changed": False})
+            segments.append({
+                "minute": minute,
+                "status": "GRAY",
+                "move": None,
+                "samples": 0,
+                "changed": False,
+            })
             continue
         move = ((bucket["close"] - bucket["open"]) / bucket["open"] * 100) if bucket["open"] else 0.0
-        status = "GREEN" if move > 0 else "RED" if move < 0 else bucket["last_direction"] if bucket["changed"] else "GRAY"
+        status = (
+            "GREEN" if move > 0
+            else "RED" if move < 0
+            else bucket["last_direction"] if bucket["changed"] else "GRAY"
+        )
         segments.append({**bucket, "status": status, "move": move})
+
     populated = [s for s in segments if s.get("open") and s.get("close")]
     move30 = None
     if populated:
-        move30 = (float(populated[-1]["close"]) - float(populated[0]["open"])) / float(populated[0]["open"]) * 100
+        move30 = (
+            (float(populated[-1]["close"]) - float(populated[0]["open"]))
+            / float(populated[0]["open"])
+            * 100
+        )
     return segments, move30
 
 
 async def _overview(pair: str) -> dict[str, Any]:
+    """Return market overview without coupling dashboard availability to trade history.
+
+    The ticker is the required live observation. Trade history is an enrichment source:
+    if it is temporarily unavailable, the endpoint still returns the current ticker so
+    the dashboard can continue collecting observations every poll. This fallback is
+    explicitly marked lower quality and must not bypass the trading freshness/quality gate.
+    """
     try:
-        ticker, trades = await asyncio.gather(asyncio.to_thread(_get, f"/{pair}/ticker"), asyncio.to_thread(_get, f"/{pair}/trades"))
+        ticker = await asyncio.to_thread(_get, f"/{pair}/ticker")
         ticker_data = ticker.get("ticker", {}) if isinstance(ticker, dict) else {}
         if not isinstance(ticker_data, dict):
             raise ValueError("invalid ticker response")
+
         last = float(ticker_data.get("last") or 0)
         if last <= 0:
             raise ValueError("invalid market price")
-        points = _trades(trades)
+
+        trades_payload = None
+        trades_available = False
+        trades_error = None
+        try:
+            trades_payload = await asyncio.to_thread(_get, f"/{pair}/trades")
+            trades_available = True
+        except Exception as exc:  # trade history is optional for dashboard availability
+            trades_error = type(exc).__name__
+
+        points = _trades(trades_payload) if trades_payload is not None else []
         now = time.time()
-        points.append({"tid": f"ticker:{pair}:{int(now)}", "price": last, "timestamp": now, "amount": 0.0, "type": "ticker", "side": "", "source": "INDODAX public ticker", "observation_type": "TICKER"})
+        points.append({
+            "tid": f"ticker:{pair}:{int(now * 1000)}",
+            "price": last,
+            "timestamp": now,
+            "amount": 0.0,
+            "type": "ticker",
+            "side": "",
+            "source": "INDODAX public ticker",
+            "observation_type": "TICKER",
+        })
         segments, move30 = _pulse(points, now)
+        quality = "TRADE_STREAM_PLUS_TICKER" if trades_available and len(points) > 1 else "TICKER_FALLBACK"
+        quality_score = 1.0 if quality == "TRADE_STREAM_PLUS_TICKER" else 0.65
+
         return {
-            "available": True, "pair": pair, "base_currency": pair.split("_")[0].upper(), "quote_currency": pair.split("_")[1].upper(),
-            "currency": "IDR", "currency_symbol": "Rp", "last": last,
-            "buy": float(ticker_data.get("buy") or 0), "sell": float(ticker_data.get("sell") or 0),
-            "high": float(ticker_data.get("high") or 0), "low": float(ticker_data.get("low") or 0),
+            "available": True,
+            "pair": pair,
+            "base_currency": pair.split("_")[0].upper(),
+            "quote_currency": pair.split("_")[1].upper(),
+            "currency": "IDR",
+            "currency_symbol": "Rp",
+            "last": last,
+            "buy": float(ticker_data.get("buy") or 0),
+            "sell": float(ticker_data.get("sell") or 0),
+            "high": float(ticker_data.get("high") or 0),
+            "low": float(ticker_data.get("low") or 0),
             "volume": float(ticker_data.get("vol_idr") or ticker_data.get("vol") or 0),
-            "recent_move": move30, "points": points, "pulse_segments": segments,
-            "source": "INDODAX public market data", "market_data_quality": "TRADE_STREAM_PLUS_TICKER" if len(points) > 1 else "TICKER_FALLBACK",
+            "recent_move": move30,
+            "points": points,
+            "pulse_segments": segments,
+            "source": "INDODAX public market data",
+            "market_data_quality": quality,
+            "market_data_quality_score": quality_score,
+            "trades_available": trades_available,
+            "trades_error": trades_error,
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"INDODAX market data unavailable: {type(exc).__name__}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"INDODAX market data unavailable: {type(exc).__name__}",
+        ) from exc
 
 
 @router.get("/overview")
@@ -137,7 +212,10 @@ async def insights():
             if not pair.endswith("_idr") or not isinstance(ticker, dict):
                 continue
             try:
-                last = float(ticker.get("last") or 0); high = float(ticker.get("high") or 0); low = float(ticker.get("low") or 0); volume = float(ticker.get("vol_idr") or 0)
+                last = float(ticker.get("last") or 0)
+                high = float(ticker.get("high") or 0)
+                low = float(ticker.get("low") or 0)
+                volume = float(ticker.get("vol_idr") or 0)
             except (TypeError, ValueError):
                 continue
             if last <= 0:
@@ -145,8 +223,26 @@ async def insights():
             width = high - low
             position = ((last - low) / width * 100) if width > 0 else 50.0
             signal = "NEAR 24H HIGH" if position >= 80 else "NEAR 24H LOW" if position <= 20 else "MID 24H RANGE"
-            items.append({"pair": pair.upper().replace("_", "/"), "last": last, "volume_idr": volume, "high": high, "low": low, "range_position": round(position, 1), "signal": signal, "scalping_supported": pair.lower() in PAIRS})
+            items.append({
+                "pair": pair.upper().replace("_", "/"),
+                "last": last,
+                "volume_idr": volume,
+                "high": high,
+                "low": low,
+                "range_position": round(position, 1),
+                "signal": signal,
+                "scalping_supported": pair.lower() in PAIRS,
+            })
         items.sort(key=lambda item: item["volume_idr"], reverse=True)
-        return {"items": items[:20], "total_idr_pairs": len(items), "scalping_pairs": [item["pair"] for item in items if item["scalping_supported"]], "source": "INDODAX public ticker", "note": "Market-data watchlist only; it does not place trades."}
+        return {
+            "items": items[:20],
+            "total_idr_pairs": len(items),
+            "scalping_pairs": [item["pair"] for item in items if item["scalping_supported"]],
+            "source": "INDODAX public ticker",
+            "note": "Market-data watchlist only; it does not place trades.",
+        }
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"INDODAX ticker data unavailable: {type(exc).__name__}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"INDODAX ticker data unavailable: {type(exc).__name__}",
+        ) from exc
