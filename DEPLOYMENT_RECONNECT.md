@@ -42,20 +42,45 @@ The Worker must not use an `AI_ENGINE` service binding. FastAPI Cloud is an exte
 
 ## Cloudflare runtime variables/secrets
 
-Variable:
+`SUPABASE_URL` is now pinned in `fronted/wrangler.jsonc` to the production Supabase project URL.
 
-`AI_ENGINE_URL` — FastAPI Cloud HTTPS base URL without `/engine/analyze`.
+The following must exist in the Cloudflare Worker production environment:
 
-Secrets/variables:
+- Secret `SUPABASE_SECRET_KEY` — preferred current Supabase server secret key (`sb_secret_...`).
+- Legacy secret `SUPABASE_SERVICE_ROLE_KEY` is also accepted for compatibility.
 
-`AI_ENGINE_SHARED_SECRET`
-`JWT_SECRET_KEY`
-`ADMIN_USERNAME`
-`ADMIN_PASSWORD`
-`SUPABASE_URL`
-`SUPABASE_SERVICE_ROLE_KEY`
+Do not commit either secret to GitHub or put it in the frontend build.
+
+Also required by the dashboard/runtime:
+
+- `AI_ENGINE_URL` — FastAPI Cloud HTTPS base URL without `/engine/analyze`.
+- `AI_ENGINE_SHARED_SECRET`
+- `JWT_SECRET_KEY`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
 
 The AI secret must match the FastAPI Cloud secret exactly. If the AI variables are absent or the external engine fails, the Worker automatically uses the local five-agent fallback instead of disabling the paper bot.
+
+## Supabase smoke test
+
+The Worker exposes a read-only health endpoint:
+
+`GET /api/system/health`
+
+For a real database probe use:
+
+`GET /api/system/health?deep=1`
+
+Expected after the Cloudflare secret is configured:
+
+- `config.supabase_configured = true`
+- `database.configured = true`
+- `database.connected = true`
+- `database.reason = rest_probe_ok`
+
+Before the secret is configured, the expected diagnostic is `database.reason = credentials_missing`.
+
+The probe only reads one row from `public.decisions`; it does not modify the trading ledger.
 
 ## INDODAX public data
 
