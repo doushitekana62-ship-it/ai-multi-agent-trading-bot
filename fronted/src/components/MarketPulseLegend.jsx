@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Chip, Stack, Tooltip, Typography } from '@mui/material';
 import axios from 'axios';
 
-const POLL_MS = 5000;
+const POLL_MS=5000;
 const MINUTE_MS = 60 * 1000;
 const WINDOW_MINUTES = 30;
 const MAX_POINTS = 1440;
