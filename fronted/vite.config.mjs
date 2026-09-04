@@ -2,9 +2,10 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
+  base: '/ai-multi-agent-trading-bot/',
   plugins: [react()],
   build: {
-    outDir: 'build',
+    outDir: 'dist',
     emptyOutDir: true,
   },
   server: {
