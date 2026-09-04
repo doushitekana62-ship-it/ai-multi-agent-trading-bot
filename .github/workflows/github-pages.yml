@@ -1,0 +1,68 @@
+name: GitHub Pages Dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fronted/**'
+      - '.github/workflows/github-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: fronted/package.json
+
+      - name: Validate public API configuration
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: |
+          test -n "$VITE_API_URL" || { echo "::error::Missing repository variable VITE_API_URL. Set it to the HTTPS base URL of the FastAPI service."; exit 1; }
+          case "$VITE_API_URL" in http://*|https://*) ;; *) echo "::error::VITE_API_URL must be an HTTPS/HTTP URL"; exit 1 ;; esac
+
+      - name: Install frontend dependencies
+        working-directory: fronted
+        run: npm install --legacy-peer-deps
+
+      - name: Build dashboard
+        working-directory: fronted
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: |
+          npm run build
+          cp dist/index.html dist/404.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: fronted/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
