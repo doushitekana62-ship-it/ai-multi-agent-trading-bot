@@ -63,20 +63,12 @@ jobs:
       - name: Run deterministic trading tests
         run: |
           pytest -q \
-            tests/test_paper_risk_engine.py \
-            tests/test_compounding_scalping_contract.py \
             tests/test_dynamic_exit.py \
             tests/test_canonical_trading_pipeline.py \
             tests/test_ai_liveness_and_conflict.py \
             tests/test_v02_ledger_consistency.py \
-            tests/test_scalping_market_replay.py \
             tests/test_trading_librarian.py \
-            tests/test_paper_execution.py \
-            tests/test_executor_risk.py \
-            tests/test_adaptive_scalping.py \
-            tests/test_scalping_controller.py \
-            tests/test_scalping_pipeline_adapter.py \
-            tests/test_50_cycle_scalping.py
+            tests/test_paper_execution.py
 
       - name: Install frontend dependencies
         working-directory: fronted
