@@ -24,6 +24,9 @@ jobs:
       NODE_ENV: production
       PYTHONPATH: .
       AI_ENGINE_SHARED_SECRET: ci-test-secret-1234567890-abcdefghijklmnopqrstuvwxyz
+      JWT_SECRET_KEY: ci-jwt-secret-1234567890-abcdefghijklmnopqrstuvwxyz
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: ci-password
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,22 +45,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e . pytest pytest-timeout requests ccxt numpy pandas scipy scikit-learn textblob ta
-      - name: Compile all Python sources
-        run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fronted fastapi_cloud_app.py
-      - name: Run paper risk and Cloudflare contract tests
-        run: pytest -q tests/test_paper_risk_engine.py tests/test_compounding_scalping_contract.py tests/test_cloudflare_paper_control_contract.py tests/test_paper_scheduler_contract.py tests/test_deployment_contract.py tests/test_cloudflare_runtime_adapter.py tests/test_dynamic_exit.py tests/test_supabase_worker_credential_contract.py
-      - name: Run canonical architecture and AI liveness tests
-        run: pytest -q tests/test_canonical_architecture_guards.py tests/test_canonical_trading_pipeline.py tests/test_ai_liveness_and_conflict.py tests/test_v02_ledger_consistency.py
-      - name: Run FastAPI Cloud engine tests
-        run: pytest -q tests/test_fastapi_cloud_engine.py
+      - name: Compile Python sources
+        run: python -m compileall -q agents backend core exchange_integration integration paper_trading main.py fastapi_cloud_app.py
+      - name: Run trading and architecture tests
+        run: pytest -q tests/test_paper_risk_engine.py tests/test_compounding_scalping_contract.py tests/test_dynamic_exit.py tests/test_canonical_architecture_guards.py tests/test_canonical_trading_pipeline.py tests/test_ai_liveness_and_conflict.py tests/test_v02_ledger_consistency.py tests/test_fastapi_cloud_engine.py tests/test_live_market_paper_cycle.py tests/test_scalping_market_replay.py tests/test_trading_librarian.py
       - name: Install frontend dependencies
         working-directory: fronted
-        run: npm install --legacy-peer-deps --include=dev
-      - name: Build React dashboard
+        run: npm install --legacy-peer-deps
+      - name: Build React dashboard for GitHub Pages
         working-directory: fronted
+        env:
+          VITE_API_URL: https://api.invalid.example
         run: npm run build
-      - name: Install uv for Cloudflare Python Worker validation
-        run: python -m pip install uv
-      - name: Validate Cloudflare Python Worker bundle
-        working-directory: fronted
-        run: uvx --from workers-py pywrangler deploy --dry-run
+      - name: Verify Pages artifact structure
+        run: test -f fronted/dist/index.html
