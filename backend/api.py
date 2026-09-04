@@ -9,7 +9,10 @@ from backend.routes.market import router as market_router
 from backend.routes.paper_control import router as paper_control_router
 from backend.routes.reports import router as reports_router
 
-app = FastAPI(title="AI Multi-Agent Trading Bot API", version="2.0.0")
+APP_VERSION = "2.0.0"
+APP_ENTRYPOINT = "backend.api:app"
+
+app = FastAPI(title="AI Multi-Agent Trading Bot API", version=APP_VERSION)
 
 
 def _cors_origins() -> list[str]:
@@ -41,12 +44,25 @@ app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 
 @app.get("/")
 async def root():
-    return {"status": "online", "service": "AI Multi-Agent Trading Bot API", "runtime": "fastapi"}
+    return {
+        "status": "online",
+        "service": "AI Multi-Agent Trading Bot API",
+        "runtime": "fastapi",
+        "version": APP_VERSION,
+        "entrypoint": APP_ENTRYPOINT,
+    }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "service": "ai-multi-agent-trading-bot-api"}
+    return {
+        "status": "healthy",
+        "service": "ai-multi-agent-trading-bot-api",
+        "version": APP_VERSION,
+        "entrypoint": APP_ENTRYPOINT,
+        "paper_mode": True,
+        "real_trading_locked": True,
+    }
 
 
 @app.get("/ready")
@@ -57,4 +73,5 @@ async def ready():
         "supabase": db.is_connected(),
         "paper_mode": True,
         "real_trading_locked": True,
+        "entrypoint": APP_ENTRYPOINT,
     }
