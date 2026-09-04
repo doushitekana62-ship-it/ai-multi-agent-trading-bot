@@ -1,86 +1,36 @@
-# AI Multi-Agent Trading Bot — Indodax
+# AI Multi-Agent Trading Bot
 
-Bot scalping berbasis FastAPI + Supabase + Indodax dengan dua mode eksekusi:
+Implementasi arsitektur Compound Scalping Indodax dengan FastAPI, Supabase, dan mode `paper`/`live`.
 
-- `paper`: balance virtual, tanpa order nyata.
-- `live`: balance dan order nyata melalui Indodax API.
+Arsitektur tidak diubah: Dashboard -> FastAPI -> Forecast Agent -> Scalping Library Agent -> Executor Agent -> Trading Gateway -> Indodax (live) atau Paper Gateway (paper). Forecast dan Scalping Library tidak memiliki jalur order.
 
-## Prinsip arsitektur
+Paper Trading hanya mengganti eksekusi dan saldo: harga tetap berasal dari market publik Indodax, saldo virtual, fee/slippage simulasi, sedangkan lifecycle posisi, TP/SL, risk sizing, compounding bertahap, daily loss limit, logging, dan Realtime memakai struktur yang sama.
 
-Alur tetap sama:
+## Backend
 
-Dashboard → FastAPI → Forecast Agent → Scalping Library → Executor Agent → Trading Gateway → Indodax / Paper Ledger → Supabase
+`app/main.py` adalah entry point FastAPI. Jalankan `uvicorn app.main:app --host 0.0.0.0 --port 8000` setelah mengisi environment server dari `.env.example`. Default `TRADING_MODE=paper` dan bot per-user default `bot_enabled=false`.
 
-Hanya Executor Agent yang boleh meminta eksekusi. Perbedaan paper dan live berada pada trading gateway. Semua fitur strategi, validasi sinyal, TP/SL, compounding, daily loss limit, posisi, log, dan dashboard menggunakan alur yang sama.
+Agent:
+- `forecast_agent.py`: SMA, momentum, RSI, ATR dan usulan TP/SL.
+- `scalping_library.py`: validasi confidence, risk-per-trade, allocation, daily loss limit dan gradual compounding.
+- `executor_agent.py`: satu-satunya komponen yang boleh mengeksekusi gateway.
+- `paper_gateway.py`: virtual execution.
+- `live_gateway.py`: adapter private Indodax untuk tahap live.
 
-## Mode Paper Trading
+## Supabase
 
-Paper trading bukan strategi yang berbeda. Paper trading adalah mode eksekusi dengan balance virtual. Harga pasar tetap menggunakan data publik Indodax, sedangkan order tidak dikirim ke private trading API.
+Schema lengkap ada di `supabase/migrations/0001_trading_schema.sql`. Schema sudah diterapkan ke project Supabase dan diverifikasi. Tabel inti: `users_settings`, `allocated_coins`, `positions`, `forecast_signals`, `trade_logs`; tabel pendukung: `trading_accounts` dan `market_ticks`.
 
-Paper mode harus mensimulasikan perilaku order/posisi yang digunakan live sejauh yang didukung simulator: open, TP, SL, close manual, fee, slippage/configurable execution assumptions, PnL, balance, compounding, daily loss limit, dan trade logs.
+RLS aktif pada semua tabel exposed. `positions` dan `forecast_signals` masuk ke `supabase_realtime`. Backend menggunakan server secret; frontend hanya menggunakan publishable key.
 
-## Struktur
+## GitHub Pages
 
-```text
-bot-scalping/
-├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── auth/
-│   │   ├── router.py
-│   │   └── security.py
-│   ├── agents/
-│   │   ├── forecast_agent.py
-│   │   ├── scalping_library.py
-│   │   └── executor_agent.py
-│   ├── trading/
-│   │   ├── gateway.py
-│   │   ├── paper_gateway.py
-│   │   └── live_gateway.py
-│   ├── indodax/
-│   │   ├── client.py
-│   │   └── models.py
-│   ├── supabase_client.py
-│   ├── routers/
-│   │   ├── dashboard.py
-│   │   ├── coins.py
-│   │   ├── positions.py
-│   │   └── trading_mode.py
-│   └── scheduler.py
-├── .env.example
-├── .gitignore
-└── requirements.txt
-```
+`frontend/` adalah dashboard statis. Workflow `.github/workflows/pages.yml` menerbitkannya ke GitHub Pages. `frontend/config.js` berisi URL Supabase + publishable key dan placeholder URL FastAPI publik. Private Supabase/Indodax secrets tidak dimasukkan ke frontend.
 
-## Database
+## CI
 
-Inti tabel tetap `users_settings`, `allocated_coins`, `positions`, `forecast_signals`, dan `trade_logs`. Tambahkan field mode dan ledger paper agar akun paper terpisah secara jelas dari saldo live:
+`.github/workflows/ci.yml` menjalankan compile check dan unit test Python pada push/PR. Test lokal saat source dibuat: 2 passed.
 
-- `users_settings.trading_mode`: `paper` atau `live`
-- `paper_balances`: balance virtual per user/asset
-- `paper_orders`: order simulasi dan status eksekusinya
+## Secrets
 
-RLS tetap wajib. API key live tidak pernah dikirim ke frontend.
-
-## Aturan keamanan
-
-- Default mode adalah `paper`.
-- Perubahan `paper` → `live` harus eksplisit dan diawasi.
-- Live API key tidak dipakai saat mode paper.
-- API key Indodax tidak boleh memiliki permission withdrawal.
-- `.env` tidak boleh masuk Git.
-- Gunakan paper trading dan validasi sebelum live dengan modal kecil.
-
-## Roadmap
-
-1. Reset fondasi FastAPI + Supabase.
-2. Bangun Indodax market-data client read-only.
-3. Bangun Forecast Agent.
-4. Bangun dashboard realtime.
-5. Bangun Scalping Library.
-6. Bangun Paper Trading Gateway dan virtual balance.
-7. Uji seluruh lifecycle trade dalam paper mode.
-8. Tambahkan Live Trading Gateway yang memakai interface gateway yang sama.
-9. Aktifkan compounding dan daily loss limit.
-
-Paper dan live harus memakai interface executor yang sama sehingga pergantian mode tidak mengubah logika strategi.
+`.env` tidak boleh di-commit. Untuk backend gunakan secret GitHub/hosting yang sesuai. Private Indodax credentials sengaja belum diperlukan untuk Paper Trading.
