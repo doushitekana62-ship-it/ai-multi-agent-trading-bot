@@ -8,7 +8,6 @@ from fastapi import APIRouter
 
 from ..config import settings
 from ..freqtrade_runtime import runtime
-from ..supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
@@ -24,15 +23,15 @@ def _safe_error(exc: Exception) -> str:
 
 @router.get("/health")
 async def health():
-    supabase = await SupabaseClient().health()
+    # Keep the platform liveness endpoint dependency-free. Database and
+    # exchange diagnostics live under /health/dependencies.
     return {
-        "ok": bool(supabase.get("configured")),
+        "ok": True,
         "service": "fastapi",
         "engine": "freqtrade-embedded",
         "engine_runtime": runtime.status(),
         "exchange": settings.exchange_name,
         "mode": settings.trading_mode,
-        "supabase": supabase,
     }
 
 
@@ -55,26 +54,40 @@ async def _bybit_check() -> dict:
         return {"ok": False, "error": f"Expected EXCHANGE_NAME=bybit, got {settings.exchange_name}"}
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     symbol = pairs[0] if pairs else "BTC/USDT"
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            response = await client.get(
-                "https://api.bybit.com/v5/market/tickers",
-                params={"category": "spot", "symbol": symbol.replace("/", "")},
-            )
-            response.raise_for_status()
-            payload = response.json()
-        result = payload.get("result", {}).get("list", [])
-        if not result:
-            return {"ok": False, "symbol": symbol, "error": "symbol_not_found"}
-        ticker = result[0]
-        return {"ok": True, "exchange": "bybit", "symbol": symbol, "last_price": ticker.get("lastPrice"), "bid": ticker.get("bid1Price"), "ask": ticker.get("ask1Price")}
-    except httpx.HTTPStatusError as exc:
-        body = exc.response.text.replace("\n", " ").strip()[:300]
-        logger.exception("Bybit market-data dependency check returned HTTP error")
-        return {"ok": False, "symbol": symbol, "error": f"HTTPStatusError: HTTP {exc.response.status_code}: {body}"}
-    except Exception as exc:
-        logger.exception("Bybit market-data dependency check failed")
-        return {"ok": False, "symbol": symbol, "error": _safe_error(exc)}
+    params = {"category": "spot", "symbol": symbol.replace("/", "")}
+    endpoints = ("https://api.bybit.com", "https://api.bytick.com")
+    errors: list[str] = []
+
+    async with httpx.AsyncClient(timeout=8) as client:
+        for base_url in endpoints:
+            try:
+                response = await client.get(f"{base_url}/v5/market/tickers", params=params)
+                payload = response.json()
+                if response.status_code >= 400:
+                    body = response.text.replace("\n", " ").strip()[:300]
+                    errors.append(f"{base_url}: HTTP {response.status_code}: {body}")
+                    continue
+                if payload.get("retCode") not in (0, None):
+                    errors.append(f"{base_url}: retCode={payload.get('retCode')} retMsg={payload.get('retMsg')}")
+                    continue
+                result = payload.get("result", {}).get("list", [])
+                if not result:
+                    errors.append(f"{base_url}: symbol_not_found")
+                    continue
+                ticker = result[0]
+                return {
+                    "ok": True,
+                    "exchange": "bybit",
+                    "endpoint": base_url,
+                    "symbol": symbol,
+                    "last_price": ticker.get("lastPrice"),
+                    "bid": ticker.get("bid1Price"),
+                    "ask": ticker.get("ask1Price"),
+                }
+            except Exception as exc:
+                errors.append(f"{base_url}: {_safe_error(exc)}")
+
+    return {"ok": False, "symbol": symbol, "error": " | ".join(errors)[:900]}
 
 
 @router.get("/health/dependencies")
@@ -85,5 +98,9 @@ async def dependency_health():
         "fastapi": True,
         "supabase_postgres": database,
         "bybit_market_data": bybit,
-        "freqtrade": {"embedded": True, "paper_mode": not settings.is_live, "runtime": runtime.status()},
+        "freqtrade": {
+            "embedded": True,
+            "paper_mode": not settings.is_live,
+            "runtime": runtime.status(),
+        },
     }
