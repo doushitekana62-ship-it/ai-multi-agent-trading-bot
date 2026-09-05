@@ -27,8 +27,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
-if not origins or "*" in origins: origins = ["https://doushitekana62-ship-it.github.io"]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Diagnostic mode: when CORS_ORIGINS=* is explicitly configured, allow every
+# browser origin. The API uses Bearer authorization headers rather than browser
+# cookies, so credentials can remain disabled for this diagnostic test.
+if "*" in origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    if not origins:
+        origins = ["https://doushitekana62-ship-it.github.io"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
