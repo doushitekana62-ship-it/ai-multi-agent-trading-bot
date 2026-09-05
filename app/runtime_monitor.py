@@ -52,9 +52,14 @@ class RuntimeMonitor:
         status = runtime.status()
         running = bool(status["running"])
         exitcode = status.get("exitcode")
+
+        # Do not open a database connection every 15 seconds while the engine
+        # is intentionally stopped. This also keeps platform startup cheap.
+        if not running and exitcode is None:
+            return
+
         last_error = None
         state = "RUNNING" if running else "STOPPED"
-
         if exitcode not in (None, 0) and exitcode != self._last_exitcode:
             state = "CRASHED"
             last_error = f"Freqtrade child exited with code {exitcode}"
