@@ -1,28 +1,17 @@
-from app.config import settings
+import httpx
+from typing import Any
+from ..config import settings
 
+class SupabaseClient:
+    def __init__(self) -> None:
+        self.url = settings.supabase_url.rstrip("/")
+        self.key = settings.supabase_service_role_key
 
-def get_supabase():
-    from supabase import create_client
-    key = settings.supabase_secret_key or settings.supabase_service_role_key
-    if not settings.supabase_url or not key:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_SECRET_KEY are required")
-    return create_client(settings.supabase_url, key)
-
-
-def response_data(response, default=None):
-    """Safely extract data from a Supabase response, including None responses."""
-    data = getattr(response, "data", None)
-    return default if data is None else data
-
-
-def execute_data(query, default=None):
-    """Execute a Supabase query without assuming the response object exists."""
-    return response_data(query.execute(), default)
-
-
-def execute_one(query):
-    """Return zero or one row without relying on maybe_single()."""
-    data = execute_data(query.limit(1), [])
-    if isinstance(data, list):
-        return data[0] if data else None
-    return data
+    async def health(self) -> dict[str, Any]:
+        if not self.url or not self.key:
+            return {"configured": False}
+        headers = {"apikey": self.key, "Authorization": f"Bearer {self.key}"}
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{self.url}/rest/v1/", headers=headers)
+            response.raise_for_status()
+            return {"configured": True, "status": response.status_code}
