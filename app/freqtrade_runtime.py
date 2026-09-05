@@ -21,8 +21,6 @@ def _supabase_db_url() -> str:
     db_url = settings.supabase_db_url.strip()
     if not db_url:
         raise RuntimeError("SUPABASE_DB_URL is required before starting Freqtrade")
-
-    # Keep Freqtrade persistence in its own non-Data-API schema.
     parts = urlsplit(db_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["options"] = "-csearch_path=freqtrade,public"
@@ -73,7 +71,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
             "heartbeat_interval": settings.heartbeat_interval,
             "sd_notify": False,
         },
-        "logfile": None,
+        "logfile": "/app/logs/freqtrade.log",
         "verbosity": 0,
         "cancel_open_orders_on_exit": True,
         "force_entry_enable": False,
