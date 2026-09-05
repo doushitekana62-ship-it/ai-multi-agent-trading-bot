@@ -1,10 +1,27 @@
+from __future__ import annotations
+
+import logging
+
 from fastapi import APIRouter
+
+from ..config import settings
+from ..freqtrade_runtime import runtime
 from ..supabase_client import SupabaseClient
-from ..freqtrade_client import FreqtradeClient
-router=APIRouter(tags=['health'])
-@router.get('/health')
+
+logger = logging.getLogger(__name__)
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health")
 async def health():
-    supabase=await SupabaseClient().health()
-    try: freqtrade=await FreqtradeClient().ping()
-    except Exception as exc: freqtrade={'ok':False,'error':str(exc)}
-    return {'ok':True,'supabase':supabase,'freqtrade':freqtrade}
+    supabase = await SupabaseClient().health()
+    runtime_status = runtime.status()
+    return {
+        "ok": bool(supabase.get("configured")),
+        "service": "fastapi",
+        "engine": "freqtrade-embedded",
+        "engine_runtime": runtime_status,
+        "exchange": settings.exchange_name,
+        "mode": settings.trading_mode,
+        "supabase": supabase,
+    }

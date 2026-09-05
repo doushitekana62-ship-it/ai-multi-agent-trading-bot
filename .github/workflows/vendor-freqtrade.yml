@@ -1,0 +1,57 @@
+name: Vendor Freqtrade Core
+
+on:
+  push:
+    branches: [main, integrate/freqtrade-core]
+    paths-ignore:
+      - "vendor/freqtrade/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    env:
+      FREQTRADE_REPO: https://github.com/doushitekana62-ship-it/freqtrade.git
+      FREQTRADE_COMMIT: 29186a9a0e62af7e52a0f0d386c8b02a0d4b2206
+    steps:
+      - name: Checkout bot repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch pinned Freqtrade source
+        run: |
+          rm -rf /tmp/freqtrade-src
+          git clone --filter=blob:none --no-checkout "$FREQTRADE_REPO" /tmp/freqtrade-src
+          git -C /tmp/freqtrade-src checkout --detach "$FREQTRADE_COMMIT"
+
+      - name: Vendor runtime source
+        run: |
+          rm -rf vendor/freqtrade
+          mkdir -p vendor/freqtrade
+          cp -R /tmp/freqtrade-src/freqtrade vendor/freqtrade/freqtrade
+          cp /tmp/freqtrade-src/pyproject.toml vendor/freqtrade/pyproject.toml
+          cp /tmp/freqtrade-src/requirements.txt vendor/freqtrade/requirements.txt
+          cp /tmp/freqtrade-src/LICENSE vendor/freqtrade/LICENSE
+          printf '%s\n' "$FREQTRADE_COMMIT" > vendor/freqtrade/SOURCE_COMMIT
+
+      - name: Verify vendored source
+        run: |
+          test -f vendor/freqtrade/freqtrade/__init__.py
+          test -f vendor/freqtrade/freqtrade/freqtradebot.py
+          test -f vendor/freqtrade/freqtrade/worker.py
+
+      - name: Commit vendored source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vendor/freqtrade
+          if git diff --cached --quiet; then
+            echo "Freqtrade vendor is already up to date."
+          else
+            git commit -m "chore: vendor Freqtrade core $FREQTRADE_COMMIT"
+            git push
+          fi

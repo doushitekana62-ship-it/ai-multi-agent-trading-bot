@@ -1,0 +1,23 @@
+name: Test Trading Bot
+
+on:
+  push:
+    branches: [main, integrate/freqtrade-core]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python sources
+        run: python -m compileall -q app user_data/strategies vendor/freqtrade/freqtrade
+      - name: Validate vendored Freqtrade commit marker
+        run: test "$(cat vendor/freqtrade/SOURCE_COMMIT)" = "29186a9a0e62af7e52a0f0d386c8b02a0d4b2206"

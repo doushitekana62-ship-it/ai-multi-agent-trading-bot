@@ -2,35 +2,64 @@
 
 Architecture:
 
-Cloudflare Workers dashboard -> FastAPI -> Freqtrade -> Exchange
-                                      -> Supabase Auth / Postgres / Realtime
+GitHub Pages (static dashboard) -> FastAPI -> embedded Freqtrade Worker -> CCXT -> Indodax
+                                      -> Supabase Auth / Data API
+                                      -> Supabase PostgreSQL
 
-Cloudflare serves the dashboard and proxies `/api/*` to FastAPI. Browser authentication uses Supabase Auth with the publishable/anon key. FastAPI validates the Supabase access token and uses the user's token for RLS-protected database reads. The service-role key is backend-only.
+The repository contains the Freqtrade source under `vendor/freqtrade`. FastAPI starts the Freqtrade Worker directly in a child process. There is no separate Freqtrade HTTP/API service and the application does not call `FREQTRADE_URL`.
 
-## Cloudflare
+## Static website
 
-Connect this repository to Cloudflare Workers. Build command: leave empty. Deploy command: `npx wrangler deploy`.
+The frontend lives in `public/` and is compatible with GitHub Pages. Configure `public/config.js` with only:
 
-Configure these Worker variables:
-- `FASTAPI_URL`: public HTTPS URL of FastAPI
-- `SUPABASE_URL`: Supabase project URL
-- `SUPABASE_ANON_KEY`: Supabase publishable/anon key
+- `supabaseUrl`: Supabase project URL
+- `supabaseAnonKey`: publishable/legacy anon key
+- `apiBaseUrl`: public HTTPS base URL of FastAPI, ending in `/api`
 
-The dashboard is in `public/` and the Worker proxy is `cloudflare/worker.js`.
+No Indodax secret, database password, or Supabase service-role key belongs in `public/`.
 
 ## FastAPI / Docker
 
-Copy `.env.example` to `.env`, fill the values, then run `docker compose up --build`.
+Copy `.env.example` to `.env` on the server that runs FastAPI. Run:
 
-API: `http://localhost:8000`
+`docker compose up --build`
+
+The container installs Freqtrade from `vendor/freqtrade` and exposes FastAPI on port 8000. Use one Uvicorn worker because the embedded trading runtime is process-owned by the FastAPI instance.
+
 Health: `http://localhost:8000/api/health`
+Engine status: `GET /api/engine/status` (authenticated owner only)
+Engine start: `POST /api/engine/start` (authenticated owner only)
+Engine stop: `POST /api/engine/stop` (authenticated owner only)
 
 ## Supabase
 
-Run `supabase/schema.sql` in the Supabase SQL Editor. It creates the initial settings, positions, signal decisions, trade logs, bot health tables and RLS policies.
+The application data tables remain in `public` with RLS. Freqtrade persistence is placed in a separate `freqtrade` PostgreSQL schema. That schema is revoked from `anon` and `authenticated`, while the server database connection can use it.
 
-Never put `SUPABASE_SERVICE_ROLE_KEY` in Cloudflare or browser code.
+The connected Supabase project is PostgreSQL 17. The repository's `supabase/schema.sql` documents the schema separation; the actual project contains the expanded application tables used by the scalping dashboard.
 
-## Freqtrade
+## Secrets
 
-Freqtrade remains the trading engine. Run it from the separate Freqtrade repository or another server and set `FREQTRADE_URL`, username and password in the FastAPI environment.
+Keep `.env` only on the FastAPI host. Never commit it.
+
+Server-only secrets:
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_DB_URL` (contains the database password)
+- `INDODAX_API_KEY`
+- `INDODAX_API_SECRET`
+
+Browser-safe values:
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY` / publishable key
+- public FastAPI URL
+
+See `DEPLOYMENT_SECRETS.md` for the complete setup order and safety checks.
+
+## Freqtrade source pin
+
+The source vendor workflow pins the project-owned Freqtrade repository to commit:
+
+`29186a9a0e62af7e52a0f0d386c8b02a0d4b2206`
+
+The Freqtrade package itself is GPLv3 licensed. Keep the vendored `LICENSE` file with the source.

@@ -3,9 +3,8 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
-    environment:
-      FREQTRADE_URL: ${FREQTRADE_URL:-http://host.docker.internal:8080/api/v1}
     ports:
       - "8000:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+      - ./user_data:/app/user_data
