@@ -1,18 +1,10 @@
 from fastapi import APIRouter
-from ..freqtrade_client import FreqtradeClient
 from ..supabase_client import SupabaseClient
-
-router = APIRouter(tags=["health"])
-
-@router.get("/health")
+from ..freqtrade_client import FreqtradeClient
+router=APIRouter(tags=['health'])
+@router.get('/health')
 async def health():
-    ft = FreqtradeClient()
-    try:
-        freqtrade = await ft.ping()
-    except Exception as exc:
-        freqtrade = {"status": "unreachable", "error": str(exc)}
-    try:
-        supabase = await SupabaseClient().health()
-    except Exception as exc:
-        supabase = {"configured": True, "status": "unreachable", "error": str(exc)}
-    return {"status": "ok", "freqtrade": freqtrade, "supabase": supabase}
+    supabase=await SupabaseClient().health()
+    try: freqtrade=await FreqtradeClient().ping()
+    except Exception as exc: freqtrade={'ok':False,'error':str(exc)}
+    return {'ok':True,'supabase':supabase,'freqtrade':freqtrade}
