@@ -24,31 +24,34 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+fastapi_app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 
-# Never use a wildcard origin with credentialed requests. Also protect against
-# an old CORS_ORIGINS=* environment variable overriding the code default.
 configured_origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
 if not configured_origins or "*" in configured_origins:
     configured_origins = ["https://doushitekana62-ship-it.github.io"]
 
-app.add_middleware(
-    CORSMiddleware,
+fastapi_app.include_router(auth_router, prefix=settings.api_prefix)
+fastapi_app.include_router(dashboard_router, prefix=settings.api_prefix)
+fastapi_app.include_router(coins_router, prefix=settings.api_prefix)
+fastapi_app.include_router(positions_router, prefix=settings.api_prefix)
+
+@fastapi_app.get("/")
+def root():
+    return {"service": settings.app_name, "status": "ok", "mode": settings.trading_mode}
+
+@fastapi_app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "mode": settings.trading_mode,
+        "supabase_configured": bool(settings.supabase_url and (settings.supabase_secret_key or settings.supabase_service_role_key)),
+    }
+
+# Wrap the complete ASGI app so CORS headers are also present on unhandled errors.
+app = CORSMiddleware(
+    app=fastapi_app,
     allow_origins=configured_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.include_router(auth_router, prefix=settings.api_prefix)
-app.include_router(dashboard_router, prefix=settings.api_prefix)
-app.include_router(coins_router, prefix=settings.api_prefix)
-app.include_router(positions_router, prefix=settings.api_prefix)
-
-@app.get("/")
-def root():
-    return {"service": settings.app_name, "status": "ok", "mode": settings.trading_mode}
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "mode": settings.trading_mode}
