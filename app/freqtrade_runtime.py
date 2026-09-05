@@ -8,24 +8,31 @@ import signal
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
 
-
 _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping"))
-_CONFIG_PATH = _RUNTIME_DIR / "config.json"
+
+
+def _supabase_db_url() -> str:
+    db_url = settings.supabase_db_url.strip()
+    if not db_url:
+        raise RuntimeError("SUPABASE_DB_URL is required before starting Freqtrade")
+
+    # Keep Freqtrade persistence in its own non-Data-API schema.
+    parts = urlsplit(db_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["options"] = "-csearch_path=freqtrade,public"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _build_freqtrade_config() -> dict[str, Any]:
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     if not pairs:
         pairs = ["BTC/IDR"]
-
-    db_url = settings.supabase_db_url.strip()
-    if not db_url:
-        raise RuntimeError("SUPABASE_DB_URL is required before starting Freqtrade")
 
     exchange_config: dict[str, Any] = {
         "name": settings.exchange_name,
@@ -37,11 +44,11 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "pair_blacklist": [],
     }
 
-    config: dict[str, Any] = {
+    return {
         "bot_name": settings.bot_name,
-        "dry_run": settings.trading_mode != "live",
+        "dry_run": not settings.is_live,
         "dry_run_wallet": settings.paper_initial_balance,
-        "db_url": db_url,
+        "db_url": _supabase_db_url(),
         "exchange": exchange_config,
         "stake_currency": settings.stake_currency,
         "stake_amount": settings.stake_amount,
@@ -54,10 +61,17 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "user_data_dir": "/app/user_data",
         "entry_pricing": {"price_side": "same", "use_order_book": False},
         "exit_pricing": {"price_side": "same", "use_order_book": False},
-        "order_types": {"entry": "market", "exit": "market", "stoploss": "market", "stoploss_on_exchange": False},
+        "order_types": {
+            "entry": "market",
+            "exit": "market",
+            "stoploss": "market",
+            "stoploss_on_exchange": False,
+        },
+        "initial_state": "running",
         "internals": {
             "process_throttle_secs": settings.process_throttle_secs,
             "heartbeat_interval": settings.heartbeat_interval,
+            "sd_notify": False,
         },
         "logfile": None,
         "verbosity": 0,
@@ -65,7 +79,6 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "force_entry_enable": False,
         "api_server": {"enabled": False},
     }
-    return config
 
 
 def _write_config() -> Path:
@@ -78,10 +91,9 @@ def _write_config() -> Path:
 
 
 def _worker_main(config_path: str) -> None:
-    # The Freqtrade source is vendored under /app/vendor/freqtrade by the repository workflow.
     try:
-        from freqtrade.enums import RunMode
         from freqtrade.configuration import Configuration
+        from freqtrade.enums import RunMode
         from freqtrade.worker import Worker
 
         args: dict[str, Any] = {
@@ -124,7 +136,7 @@ class FreqtradeRuntime:
             return {"running": True, "pid": self.pid, "message": "already_running"}
 
         self._config_path = _write_config()
-        logger.info("Starting embedded Freqtrade runtime with config %s", self._config_path)
+        logger.info("Starting embedded Freqtrade runtime config=%s mode=%s", self._config_path, settings.trading_mode)
         ctx = mp.get_context("spawn")
         self._process = ctx.Process(
             target=_worker_main,
