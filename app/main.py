@@ -10,6 +10,7 @@ from app.routers.dashboard import router as dashboard_router
 from app.routers.coins import router as coins_router
 from app.routers.positions import router as positions_router
 from app.scheduler import TradingScheduler
+from app.supabase_client import execute_data, get_supabase
 
 log = logging.getLogger(__name__)
 scheduler = TradingScheduler()
@@ -20,34 +21,19 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        scheduler.stop()
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        scheduler.stop(); task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
-
-configured_origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
-if not configured_origins or "*" in configured_origins:
-    configured_origins = ["https://doushitekana62-ship-it.github.io"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=configured_origins,
-    allow_credentials=True,
-    allow_methods=["*"] ,
-    allow_headers=["*"] ,
-)
+origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
+if not origins or "*" in origins: origins = ["https://doushitekana62-ship-it.github.io"]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
     log.exception("Unhandled API error: %s %s", request.method, request.url.path, exc_info=exc)
-    return JSONResponse(
-        status_code=500,
-        content={"error": "Internal server error", "detail": str(exc)},
-    )
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(dashboard_router, prefix=settings.api_prefix)
@@ -60,8 +46,13 @@ def root():
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "mode": settings.trading_mode,
-        "supabase_configured": bool(settings.supabase_url and (settings.supabase_secret_key or settings.supabase_service_role_key)),
-    }
+    configured = bool(settings.supabase_url and (settings.supabase_secret_key or settings.supabase_service_role_key))
+    db_ok = False
+    if configured:
+        try:
+            execute_data(get_supabase().table("users_settings").select("id").limit(1), [])
+            db_ok = True
+        except Exception:
+            log.exception("health database check failed")
+    return {"status": "ok" if db_ok else "degraded", "mode": settings.trading_mode,
+            "supabase_configured": configured, "database_healthy": db_ok}
