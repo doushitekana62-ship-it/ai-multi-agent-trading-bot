@@ -16,6 +16,8 @@ def require_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
     try:
         user = _auth_client().auth.get_user(credentials.credentials).user
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session") from exc
     if not user:
