@@ -15,13 +15,8 @@ router = APIRouter(tags=["health"])
 
 
 def _safe_error(exc: Exception) -> str:
-    """Return useful dependency diagnostics without exposing credentials."""
     message = str(exc).replace("\n", " ").strip()
-    for secret in (
-        settings.supabase_db_url,
-        settings.supabase_service_role_key,
-        settings.supabase_anon_key,
-    ):
+    for secret in (settings.supabase_db_url, settings.supabase_service_role_key, settings.supabase_anon_key):
         if secret:
             message = message.replace(secret, "[redacted]")
     return f"{type(exc).__name__}: {message[:300]}"
@@ -30,12 +25,11 @@ def _safe_error(exc: Exception) -> str:
 @router.get("/health")
 async def health():
     supabase = await SupabaseClient().health()
-    runtime_status = runtime.status()
     return {
         "ok": bool(supabase.get("configured")),
         "service": "fastapi",
         "engine": "freqtrade-embedded",
-        "engine_runtime": runtime_status,
+        "engine_runtime": runtime.status(),
         "exchange": settings.exchange_name,
         "mode": settings.trading_mode,
         "supabase": supabase,
@@ -46,10 +40,7 @@ async def _database_check() -> dict:
     if not settings.supabase_db_url:
         return {"ok": False, "error": "DATABASE_URL/SUPABASE_DB_URL is not configured"}
     try:
-        async with await psycopg.AsyncConnection.connect(
-            settings.supabase_db_url,
-            connect_timeout=8,
-        ) as conn:
+        async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
             async with conn.cursor() as cur:
                 await cur.execute("select current_database(), current_schema()")
                 row = await cur.fetchone()
@@ -61,10 +52,7 @@ async def _database_check() -> dict:
 
 async def _bybit_check() -> dict:
     if settings.exchange_name.lower() != "bybit":
-        return {
-            "ok": False,
-            "error": f"Expected EXCHANGE_NAME=bybit, got {settings.exchange_name}",
-        }
+        return {"ok": False, "error": f"Expected EXCHANGE_NAME=bybit, got {settings.exchange_name}"}
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     symbol = pairs[0] if pairs else "BTC/USDT"
     try:
@@ -79,22 +67,11 @@ async def _bybit_check() -> dict:
         if not result:
             return {"ok": False, "symbol": symbol, "error": "symbol_not_found"}
         ticker = result[0]
-        return {
-            "ok": True,
-            "exchange": "bybit",
-            "symbol": symbol,
-            "last_price": ticker.get("lastPrice"),
-            "bid": ticker.get("bid1Price"),
-            "ask": ticker.get("ask1Price"),
-        }
+        return {"ok": True, "exchange": "bybit", "symbol": symbol, "last_price": ticker.get("lastPrice"), "bid": ticker.get("bid1Price"), "ask": ticker.get("ask1Price")}
     except httpx.HTTPStatusError as exc:
         body = exc.response.text.replace("\n", " ").strip()[:300]
         logger.exception("Bybit market-data dependency check returned HTTP error")
-        return {
-            "ok": False,
-            "symbol": symbol,
-            "error": f"HTTPStatusError: HTTP {exc.response.status_code}: {body}",
-        }
+        return {"ok": False, "symbol": symbol, "error": f"HTTPStatusError: HTTP {exc.response.status_code}: {body}"}
     except Exception as exc:
         logger.exception("Bybit market-data dependency check failed")
         return {"ok": False, "symbol": symbol, "error": _safe_error(exc)}
@@ -102,16 +79,11 @@ async def _bybit_check() -> dict:
 
 @router.get("/health/dependencies")
 async def dependency_health():
-    """Non-trading smoke test for PostgreSQL and public Bybit market data."""
     database, bybit = await _database_check(), await _bybit_check()
     return {
         "ok": database["ok"] and bybit["ok"],
         "fastapi": True,
         "supabase_postgres": database,
         "bybit_market_data": bybit,
-        "freqtrade": {
-            "embedded": True,
-            "paper_mode": not settings.is_live,
-            "runtime": runtime.status(),
-        },
+        "freqtrade": {"embedded": True, "paper_mode": not settings.is_live, "runtime": runtime.status()},
     }
