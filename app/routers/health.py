@@ -14,6 +14,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
 
 
+def _safe_error(exc: Exception) -> str:
+    """Return useful dependency diagnostics without exposing credentials."""
+    message = str(exc).replace("\n", " ").strip()
+    for secret in (
+        settings.supabase_db_url,
+        settings.supabase_service_role_key,
+        settings.supabase_anon_key,
+    ):
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return f"{type(exc).__name__}: {message[:300]}"
+
+
 @router.get("/health")
 async def health():
     supabase = await SupabaseClient().health()
@@ -33,19 +46,25 @@ async def _database_check() -> dict:
     if not settings.supabase_db_url:
         return {"ok": False, "error": "DATABASE_URL/SUPABASE_DB_URL is not configured"}
     try:
-        async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
+        async with await psycopg.AsyncConnection.connect(
+            settings.supabase_db_url,
+            connect_timeout=8,
+        ) as conn:
             async with conn.cursor() as cur:
                 await cur.execute("select current_database(), current_schema()")
                 row = await cur.fetchone()
         return {"ok": True, "database": row[0], "schema": row[1]}
     except Exception as exc:
         logger.exception("Supabase PostgreSQL dependency check failed")
-        return {"ok": False, "error": type(exc).__name__}
+        return {"ok": False, "error": _safe_error(exc)}
 
 
 async def _bybit_check() -> dict:
     if settings.exchange_name.lower() != "bybit":
-        return {"ok": False, "error": f"Expected EXCHANGE_NAME=bybit, got {settings.exchange_name}"}
+        return {
+            "ok": False,
+            "error": f"Expected EXCHANGE_NAME=bybit, got {settings.exchange_name}",
+        }
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     symbol = pairs[0] if pairs else "BTC/USDT"
     try:
@@ -68,9 +87,17 @@ async def _bybit_check() -> dict:
             "bid": ticker.get("bid1Price"),
             "ask": ticker.get("ask1Price"),
         }
+    except httpx.HTTPStatusError as exc:
+        body = exc.response.text.replace("\n", " ").strip()[:300]
+        logger.exception("Bybit market-data dependency check returned HTTP error")
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "error": f"HTTPStatusError: HTTP {exc.response.status_code}: {body}",
+        }
     except Exception as exc:
         logger.exception("Bybit market-data dependency check failed")
-        return {"ok": False, "symbol": symbol, "error": type(exc).__name__}
+        return {"ok": False, "symbol": symbol, "error": _safe_error(exc)}
 
 
 @router.get("/health/dependencies")
