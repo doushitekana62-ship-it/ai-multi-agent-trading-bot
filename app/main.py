@@ -37,8 +37,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"] ,
+    allow_headers=["*"] ,
 )
 
 @app.exception_handler(Exception)
