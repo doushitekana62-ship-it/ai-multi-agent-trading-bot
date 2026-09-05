@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
     app_name: str = "AI Multi-Agent Trading Bot"
@@ -25,9 +26,16 @@ class Settings(BaseSettings):
     paper_slippage_percent: float = 0.05
     scheduler_interval_seconds: int = 5
     min_signal_confidence: float = 0.62
+    signal_min_score: float = 80.0
+    max_drawdown_percent: float = 5.0
+    max_total_open_risk_percent: float = 1.5
+    max_loss_streak: int = 3
+    cooldown_minutes: int = 30
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
 
 settings = get_settings()
