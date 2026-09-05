@@ -1,4 +1,4 @@
-const BUILD_ID="2026-09-05.03";
+const BUILD_ID="2026-09-05.04";
 const sb=supabase.createClient(APP_CONFIG.SUPABASE_URL,APP_CONFIG.SUPABASE_PUBLISHABLE_KEY);
 let session=null,mode="paper",channel=null;
 const $=s=>document.querySelector(s);
