@@ -1,31 +1,11 @@
 services:
   api:
     build: .
+    restart: unless-stopped
+    env_file: .env
     environment:
-      APP_NAME: Compound Scalping API
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      FREQTRADE_URL: ${FREQTRADE_URL:-http://freqtrade:8080/api/v1}
-      FREQTRADE_USERNAME: ${FREQTRADE_USERNAME:-}
-      FREQTRADE_PASSWORD: ${FREQTRADE_PASSWORD:-}
-      SUPABASE_URL: ${SUPABASE_URL:-}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      FREQTRADE_URL: ${FREQTRADE_URL:-http://host.docker.internal:8080/api/v1}
     ports:
       - "8000:8000"
-    depends_on:
-      - freqtrade
-
-  freqtrade:
-    image: freqtradeorg/freqtrade:stable
-    restart: unless-stopped
-    command: >-
-      trade
-      --config /freqtrade/user_data/config.json
-      --strategy CompoundScalping
-      --api-server
-      --api-server-listen-address 0.0.0.0
-      --api-server-username ${FREQTRADE_USERNAME:-admin}
-      --api-server-password ${FREQTRADE_PASSWORD:-change-me}
-    volumes:
-      - ./freqtrade/user_data:/freqtrade/user_data
-    ports:
-      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
