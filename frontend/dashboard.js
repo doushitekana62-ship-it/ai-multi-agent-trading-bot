@@ -1,10 +1,23 @@
+const BUILD_ID="2026-09-05.03";
 const sb=supabase.createClient(APP_CONFIG.SUPABASE_URL,APP_CONFIG.SUPABASE_PUBLISHABLE_KEY);
 let session=null,mode="paper",channel=null;
 const $=s=>document.querySelector(s);
 const money=v=>new Intl.NumberFormat("id-ID",{style:"currency",currency:"IDR",maximumFractionDigits:0}).format(Number(v||0));
 const num=v=>Number(v||0).toLocaleString("id-ID",{maximumFractionDigits:8});
 const time=v=>v?new Date(v).toLocaleString("id-ID",{dateStyle:"short",timeStyle:"short"}):"-";
-async function api(path,opts={}){if(!APP_CONFIG.API_BASE_URL||APP_CONFIG.API_BASE_URL.includes("YOUR-"))throw Error("API_BASE_URL belum dikonfigurasi");let r;try{r=await fetch(APP_CONFIG.API_BASE_URL.replace(/\/$/,"")+path,{...opts,headers:{"Content-Type":"application/json",Authorization:`Bearer ${session.access_token}`,...(opts.headers||{})}})}catch(e){throw Error(`API tidak dapat dihubungi: ${e.message}`)}let body;try{body=await r.json()}catch{body=null}if(r.status===401){await sb.auth.signOut();location.href="./login.html";throw Error("Session expired")}if(!r.ok)throw Error(body?.detail||body?.message||`API error ${r.status}`);return body}
+async function api(path,opts={}){
+  if(!APP_CONFIG.API_BASE_URL||APP_CONFIG.API_BASE_URL.includes("YOUR-"))throw Error("API_BASE_URL belum dikonfigurasi");
+  const url=APP_CONFIG.API_BASE_URL.replace(/\/$/,"")+path;
+  const headers={Authorization:`Bearer ${session.access_token}`,...(opts.headers||{})};
+  if(opts.body!==undefined)headers["Content-Type"]="application/json";
+  let r;
+  try{r=await fetch(url,{...opts,headers,cache:"no-store"})}
+  catch(e){throw Error(`API tidak dapat dihubungi: ${e.message}. Build ${BUILD_ID}. Periksa FastAPI Cloud.`)}
+  let body=null;try{body=await r.json()}catch{}
+  if(r.status===401){await sb.auth.signOut();location.href="./login.html";throw Error("Session expired")}
+  if(!r.ok)throw Error(body?.detail||body?.message||body?.error||`API error ${r.status}`);
+  return body;
+}
 async function load(){const d=await api(`/dashboard/summary?mode=${mode}`);$("#balance").textContent=money(d.balance);$("#dailyPnl").textContent=money(d.today_pnl);$("#dailyPnl").className=Number(d.today_pnl)>=0?"profit":"loss";$("#dailyPnlPct").textContent=`${Number(d.today_pnl_percent||0).toFixed(2)}%`;$("#openCount").textContent=d.open_positions.length;$("#balanceMode").textContent=mode==="paper"?"Paper balance":"Indodax balance";$("#positionMode").textContent=mode==="paper"?"Paper Trading":"Live Trading";$("#botStatus").textContent=d.bot_enabled?"Aktif":"Berhenti";$("#botStatus").className="status "+(d.bot_enabled?"active":"stopped");$("#botToggle").textContent=d.bot_enabled?"Hentikan Bot":"Mulai Bot";renderAllocations(await api("/coins/allocated"));renderPositions(d.open_positions);renderSignals(d.signals);renderHistory(d.transactions)}
 function renderAllocations(a){$("#allocationList").innerHTML=a?.length?a.map(x=>`<div class="coin"><strong>${x.symbol}</strong><small>${Number(x.allocation_percent).toFixed(2)}% alokasi</small></div>`).join(""):`<div class="empty">Belum ada coin.</div>`}
 function renderPositions(a){$("#positionsBody").innerHTML=a?.length?a.map(x=>`<tr><td><strong>${x.symbol}</strong></td><td>${num(x.entry_price)}</td><td>${num(x.tp_price)}</td><td>${num(x.sl_price)}</td><td>${num(x.quantity)}</td><td>${x.status}</td></tr>`).join(""):`<tr><td colspan="6" class="empty">Tidak ada posisi aktif.</td></tr>`}
