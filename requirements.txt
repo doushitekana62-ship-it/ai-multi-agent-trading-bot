@@ -1,2 +1,3 @@
 -e ./vendor/freqtrade
 httpx>=0.28.1
+psycopg[binary]==3.3.5
