@@ -4,9 +4,10 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+import psycopg
+
 from .config import settings
 from .freqtrade_runtime import runtime
-from .supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -60,26 +61,43 @@ class RuntimeMonitor:
             logger.error(last_error)
         self._last_exitcode = exitcode
 
-        if not settings.bot_owner_user_id or not settings.supabase_service_role_key:
+        if not settings.bot_owner_user_id or not settings.supabase_db_url:
             return
 
-        now = datetime.now(UTC).isoformat()
-        payload = {
-            "user_id": settings.bot_owner_user_id,
-            "mode": settings.trading_mode,
-            "state": state,
-            "websocket_healthy": running,
-            "market_data_healthy": running,
-            "private_stream_healthy": running if settings.is_live else False,
-            "db_healthy": True,
-            "last_cycle_at": now,
-            "last_error": last_error,
-        }
-        await SupabaseClient().upsert(
-            "bot_health",
-            payload,
-            on_conflict="user_id,mode",
-        )
+        now = datetime.now(UTC)
+        async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    insert into public.bot_health (
+                        user_id, mode, state, websocket_healthy,
+                        market_data_healthy, private_stream_healthy,
+                        db_healthy, last_cycle_at, last_error
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    on conflict (user_id, mode) do update set
+                        state = excluded.state,
+                        websocket_healthy = excluded.websocket_healthy,
+                        market_data_healthy = excluded.market_data_healthy,
+                        private_stream_healthy = excluded.private_stream_healthy,
+                        db_healthy = excluded.db_healthy,
+                        last_cycle_at = excluded.last_cycle_at,
+                        last_error = excluded.last_error,
+                        updated_at = now()
+                    """,
+                    (
+                        settings.bot_owner_user_id,
+                        settings.trading_mode,
+                        state,
+                        running,
+                        running,
+                        running if settings.is_live else False,
+                        True,
+                        now,
+                        last_error,
+                    ),
+                )
+            await conn.commit()
 
 
 monitor = RuntimeMonitor()
