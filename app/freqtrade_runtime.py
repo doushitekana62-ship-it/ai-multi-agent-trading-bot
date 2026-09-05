@@ -20,7 +20,7 @@ _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping")
 def _supabase_db_url() -> str:
     db_url = settings.supabase_db_url.strip()
     if not db_url:
-        raise RuntimeError("SUPABASE_DB_URL is required before starting Freqtrade")
+        raise RuntimeError("SUPABASE_DB_URL or DATABASE_URL is required before starting Freqtrade")
     parts = urlsplit(db_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["options"] = "-csearch_path=freqtrade,public"
@@ -30,12 +30,12 @@ def _supabase_db_url() -> str:
 def _build_freqtrade_config() -> dict[str, Any]:
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     if not pairs:
-        pairs = ["BTC/IDR"]
+        pairs = ["BTC/USDT"]
 
+    # Bybit public market data is sufficient for paper trading. Credentials are
+    # intentionally omitted so this runtime cannot trade on Bybit by accident.
     exchange_config: dict[str, Any] = {
         "name": settings.exchange_name,
-        "key": settings.indodax_api_key,
-        "secret": settings.indodax_api_secret,
         "ccxt_config": {},
         "ccxt_async_config": {},
         "pair_whitelist": pairs,
@@ -44,7 +44,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
 
     return {
         "bot_name": settings.bot_name,
-        "dry_run": not settings.is_live,
+        "dry_run": True,
         "dry_run_wallet": settings.paper_initial_balance,
         "db_url": _supabase_db_url(),
         "exchange": exchange_config,
@@ -52,7 +52,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "stake_amount": settings.stake_amount,
         "tradable_balance_ratio": 0.99,
         "max_open_trades": settings.max_open_trades,
-        "fiat_display_currency": "IDR",
+        "fiat_display_currency": "USD",
         "timeframe": settings.timeframe,
         "strategy": settings.strategy_name,
         "strategy_path": str(Path("/app/user_data/strategies").resolve()),
@@ -132,23 +132,16 @@ class FreqtradeRuntime:
     def start(self) -> dict[str, Any]:
         if self.running:
             return {"running": True, "pid": self.pid, "message": "already_running"}
-
         self._config_path = _write_config()
-        logger.info("Starting embedded Freqtrade runtime config=%s mode=%s", self._config_path, settings.trading_mode)
+        logger.info("Starting embedded Freqtrade runtime config=%s exchange=%s mode=%s", self._config_path, settings.exchange_name, settings.trading_mode)
         ctx = mp.get_context("spawn")
-        self._process = ctx.Process(
-            target=_worker_main,
-            args=(str(self._config_path),),
-            daemon=True,
-            name="freqtrade-engine",
-        )
+        self._process = ctx.Process(target=_worker_main, args=(str(self._config_path),), daemon=True, name="freqtrade-engine")
         self._process.start()
         return {"running": True, "pid": self.pid, "message": "started"}
 
     def stop(self) -> dict[str, Any]:
         if not self._process:
             return {"running": False, "pid": None, "message": "not_running"}
-
         if self._process.is_alive():
             logger.info("Stopping embedded Freqtrade runtime pid=%s", self._process.pid)
             self._process.terminate()
@@ -157,7 +150,6 @@ class FreqtradeRuntime:
                 logger.error("Freqtrade child did not stop gracefully; killing pid=%s", self._process.pid)
                 self._process.kill()
                 self._process.join(timeout=5)
-
         pid = self._process.pid
         self._process = None
         if self._config_path:
@@ -168,11 +160,7 @@ class FreqtradeRuntime:
     def status(self) -> dict[str, Any]:
         if not self._process:
             return {"running": False, "pid": None, "exitcode": None}
-        return {
-            "running": self._process.is_alive(),
-            "pid": self._process.pid,
-            "exitcode": self._process.exitcode,
-        }
+        return {"running": self._process.is_alive(), "pid": self._process.pid, "exitcode": self._process.exitcode}
 
     def shutdown(self) -> None:
         try:
