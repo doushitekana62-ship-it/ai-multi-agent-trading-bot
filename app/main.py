@@ -28,9 +28,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
 
-# Diagnostic mode: when CORS_ORIGINS=* is explicitly configured, allow every
-# browser origin. The API uses Bearer authorization headers rather than browser
-# cookies, so credentials can remain disabled for this diagnostic test.
+# Diagnostic mode: CORS_ORIGINS=* is intentionally broad for troubleshooting.
+# The API authenticates with Bearer headers, not browser cookies, so credentials
+# are disabled in wildcard mode. Restore an explicit origin after diagnosis.
 if "*" in origins:
     app.add_middleware(
         CORSMiddleware,
