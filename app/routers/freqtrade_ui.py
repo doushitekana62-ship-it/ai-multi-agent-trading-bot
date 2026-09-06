@@ -44,7 +44,7 @@ def _forward_headers(request: Request) -> dict[str, str]:
 
 
 def _basic_header() -> str:
-    raw = f"{settings.freqtrade_api_username}:{settings.dashboard_token}".encode("utf-8")
+    raw = f"{settings.freqtrade_api_username}:{runtime.api_password}".encode("utf-8")
     return f"Basic {base64.b64encode(raw).decode('ascii')}"
 
 
