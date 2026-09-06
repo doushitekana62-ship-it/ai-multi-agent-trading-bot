@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from collections import deque
 from datetime import UTC, datetime
 
 from .config import settings
-from .freqtrade_runtime import runtime
+from .freqtrade_runtime import _writable_sqlite_path, runtime
 from .market_snapshot import collector
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,16 @@ class RuntimeMonitor:
             self._restart_times.popleft()
         return len(self._restart_times) < 3
 
+    @staticmethod
+    def _db_healthy() -> bool:
+        try:
+            path = _writable_sqlite_path()
+            with sqlite3.connect(path, timeout=2) as conn:
+                conn.execute("PRAGMA quick_check")
+            return True
+        except Exception:
+            return False
+
     async def _publish_health(self) -> None:
         status = runtime.status()
         running = bool(status["running"])
@@ -69,22 +80,24 @@ class RuntimeMonitor:
             if row.get("captured_at")
         )
         state = "RUNNING" if running else "STOPPED"
-        last_error = None
+        last_error = status.get("error")
         crashed = exitcode not in (None, 0)
         if crashed and exitcode != self._last_exitcode:
             state = "CRASHED"
-            last_error = f"Freqtrade child exited with code {exitcode}"
+            last_error = status.get("error") or f"Freqtrade worker exited with code {exitcode}"
             logger.error(last_error)
         elif running and not market_data_healthy:
             state = "RUNNING_UNVERIFIED"
-            last_error = "Engine is alive but no fresh market snapshot has been confirmed"
+            last_error = last_error or "Engine is alive but no fresh market snapshot has been confirmed"
+        db_healthy = await asyncio.to_thread(self._db_healthy)
         self._last_exitcode = exitcode
         self.health = {
             "state": state,
             "market_data_healthy": market_data_healthy,
-            "websocket_healthy": market_data_healthy,
-            "private_stream_healthy": not settings.is_live,
-            "db_healthy": True,
+            "market_data_source": "rest_snapshot",
+            "websocket_healthy": None,
+            "private_stream_healthy": None if settings.is_live else True,
+            "db_healthy": db_healthy,
             "last_cycle_at": now.isoformat(),
             "last_error": last_error,
             "updated_at": now.isoformat(),
