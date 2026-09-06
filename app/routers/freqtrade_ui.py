@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -67,7 +69,6 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
         content=upstream.content,
         status_code=upstream.status_code,
         headers=response_headers,
-        media_type=upstream.headers.get("content-type"),
     )
 
 
@@ -99,8 +100,6 @@ async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
                     else:
                         await websocket.send_text(message)
 
-            import asyncio
-
             forward_client = asyncio.create_task(client_to_upstream())
             forward_server = asyncio.create_task(upstream_to_client())
             done, pending = await asyncio.wait(
@@ -112,7 +111,7 @@ async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
             for task in done:
                 task.result()
     except (WebSocketDisconnect, Exception):
-        # The browser will reconnect through FreqUI's normal websocket retry logic.
+        # FreqUI reconnects automatically after a websocket failure.
         try:
             await websocket.close()
         except Exception:
