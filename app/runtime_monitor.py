@@ -63,8 +63,8 @@ class RuntimeMonitor:
         try:
             path = _writable_sqlite_path()
             with sqlite3.connect(path, timeout=2) as conn:
-                conn.execute("PRAGMA quick_check")
-            return True
+                result = conn.execute("PRAGMA quick_check").fetchone()
+            return bool(result and result[0] == "ok")
         except Exception:
             return False
 
@@ -79,6 +79,7 @@ class RuntimeMonitor:
             for row in latest
             if row.get("captured_at")
         )
+        ws_healthy = bool(collector.ws_healthy and collector.ws_last_message_at)
         state = "RUNNING" if running else "STOPPED"
         last_error = status.get("error")
         crashed = exitcode not in (None, 0)
@@ -89,13 +90,18 @@ class RuntimeMonitor:
         elif running and not market_data_healthy:
             state = "RUNNING_UNVERIFIED"
             last_error = last_error or "Engine is alive but no fresh market snapshot has been confirmed"
+        elif running and not ws_healthy:
+            state = "RUNNING_DEGRADED"
+            last_error = last_error or "Indodax market websocket is not healthy; REST fallback remains active"
         db_healthy = await asyncio.to_thread(self._db_healthy)
         self._last_exitcode = exitcode
         self.health = {
             "state": state,
             "market_data_healthy": market_data_healthy,
-            "market_data_source": "rest_snapshot",
-            "websocket_healthy": None,
+            "market_data_source": "websocket_with_rest_fallback",
+            "websocket_healthy": ws_healthy,
+            "websocket_last_message_at": collector.ws_last_message_at,
+            "websocket_reconnects": collector.ws_reconnects,
             "private_stream_healthy": None if settings.is_live else True,
             "db_healthy": db_healthy,
             "last_cycle_at": now.isoformat(),
