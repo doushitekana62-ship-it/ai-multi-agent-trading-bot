@@ -58,15 +58,23 @@ jobs:
 
           login = Path("src/components/BotLogin.vue")
           text = login.read_text()
-          url_old = "const defaultURL = window.location.origin || 'http://localhost:3000';"
-          url_new = "const defaultURL = import.meta.env.VITE_BOT_API_URL || window.location.origin || 'http://localhost:3000';"
-          if url_old in text:
-              text = text.replace(url_old, url_new, 1)
-          elif url_new not in text:
-              raise SystemExit("Could not locate FreqUI default API URL")
-
+          text = text.replace(
+              "const defaultURL = window.location.origin || 'http://localhost:3000';",
+              "const defaultURL = import.meta.env.VITE_BOT_API_URL || window.location.origin || 'http://localhost:3000';",
+              1,
+          )
+          text = text.replace("botName: '',", "botName: 'compound-scalper',", 1)
           text = text.replace("username: '',", "username: 'doushitekana',", 1)
+          text = text.replace("auth.value.botName = '';", "auth.value.botName = 'compound-scalper';", 1)
           text = text.replace("auth.value.username = '';", "auth.value.username = 'doushitekana';", 1)
+          text = text.replace("      urlState.value = false;", "      urlState.value = true;", 1)
+
+          # Keep the upstream FreqUI logic, but expose only the password field.
+          text = text.replace('<UFormField class="mb-4" label="Bot Name">', '<UFormField class="hidden" label="Bot Name">', 1)
+          text = text.replace('      class="mb-4"\n      label="API Url"', '      class="hidden"\n      label="API Url"', 1)
+          text = text.replace('      class="mb-4"\n      label="Username"', '      class="hidden"\n      label="Username"', 1)
+          text = text.replace('      <UButton label="Reset" color="error" type="reset" />', '      <UButton label="Reset" color="error" type="reset" />', 1)
+          text = text.replace('label="Submit" color="primary" type="submit"', 'label="Login" color="primary" type="submit"', 1)
           login.write_text(text)
           PY
           pnpm install --frozen-lockfile
