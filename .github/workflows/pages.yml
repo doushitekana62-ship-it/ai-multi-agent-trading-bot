@@ -57,12 +57,20 @@ jobs:
 
           login = Path("src/components/BotLogin.vue")
           text = login.read_text()
-          old = "const defaultURL = window.location.origin || 'http://localhost:3000';"
-          new = "const defaultURL = import.meta.env.VITE_BOT_API_URL || window.location.origin || 'http://localhost:3000';"
-          if old in text:
-              login.write_text(text.replace(old, new, 1))
-          elif new not in text:
+          url_old = "const defaultURL = window.location.origin || 'http://localhost:3000';"
+          url_new = "const defaultURL = import.meta.env.VITE_BOT_API_URL || window.location.origin || 'http://localhost:3000';"
+          if url_old in text:
+              text = text.replace(url_old, url_new, 1)
+          elif url_new not in text:
               raise SystemExit("Could not locate FreqUI default API URL")
+
+          username_old = "placeholder=\"Freqtrader\""
+          username_new = "placeholder=\"doushitekana\""
+          if username_old in text:
+              text = text.replace(username_old, username_new, 1)
+          elif username_new not in text:
+              raise SystemExit("Could not locate FreqUI username placeholder")
+          login.write_text(text)
           PY
           pnpm install --frozen-lockfile
           pnpm run build
