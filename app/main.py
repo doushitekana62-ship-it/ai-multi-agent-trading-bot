@@ -11,7 +11,6 @@ from .config import settings
 from .freqtrade_runtime import runtime
 from .logging_config import configure_logging
 from .market_snapshot import collector
-from .reconciliation import reconciler
 from .routers import dashboard, health, trading
 from .runtime_monitor import monitor
 
@@ -23,12 +22,10 @@ async def lifespan(_: FastAPI):
     configure_logging()
     logger.info("FastAPI runtime booting version=%s mode=%s", settings.app_version, settings.trading_mode)
     await collector.start()
-    await reconciler.start()
     await monitor.start()
     yield
     logger.info("FastAPI runtime shutting down")
     await monitor.stop()
-    await reconciler.stop()
     await collector.stop()
     runtime.shutdown()
 
@@ -40,7 +37,7 @@ if origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
@@ -71,8 +68,8 @@ async def root():
         "name": "compound-scalping",
         "engine": "freqtrade-embedded",
         "api": "fastapi",
-        "database": "supabase-postgres",
-        "frontend": "github-static",
+        "database": "local-sqlite",
+        "frontend": "github-pages",
         "status": "ready",
         "trading_mode": settings.trading_mode,
         "live_ready": settings.live_ready,
