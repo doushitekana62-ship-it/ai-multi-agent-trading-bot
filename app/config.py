@@ -5,14 +5,10 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Compound Scalping API")
-    app_version: str = os.getenv("APP_VERSION", "2.3.0")
+    app_version: str = os.getenv("APP_VERSION", "2.4.0")
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
-
-    supabase_url: str = os.getenv("SUPABASE_URL", "")
-    supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY", "")
-    supabase_service_role_key: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    supabase_db_url: str = os.getenv("SUPABASE_DB_URL", os.getenv("DATABASE_URL", ""))
-    bot_owner_user_id: str = os.getenv("BOT_OWNER_USER_ID", "")
+    dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
+    freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", "/app/data/tradesv3.sqlite")
 
     exchange_name: str = os.getenv("EXCHANGE_NAME", "indodax").lower()
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
