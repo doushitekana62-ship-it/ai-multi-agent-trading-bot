@@ -67,32 +67,6 @@ jobs:
 
           text = text.replace("username: '',", "username: 'doushitekana',", 1)
           text = text.replace("auth.value.username = '';", "auth.value.username = 'doushitekana';", 1)
-
-          old_validation = """function checkFormValidity() {
-  const valid = formRef.value?.checkValidity();
-  nameState.value = valid || auth.value.username !== '';
-  pwdState.value = valid || auth.value.password !== '';
-  urlState.value = valid || auth.value.url !== '';
-  return valid;
-}"""
-          new_validation = """function checkFormValidity() {
-  const url = auth.value.url.trim();
-  const username = auth.value.username.trim();
-  const password = auth.value.password;
-  const valid = url !== '' && username !== '' && password !== '';
-
-  nameState.value = username !== '';
-  pwdState.value = password !== '';
-  urlState.value = url !== '';
-  return valid;
-}"""
-          if old_validation not in text:
-              raise SystemExit("Could not locate FreqUI login validation block")
-          text = text.replace(old_validation, new_validation, 1)
-
-          text = text.replace("        required\n        trim\n", "        trim\n", 1)
-          text = text.replace("        required\n        placeholder=\"Freqtrader\"\n", "        placeholder=\"Freqtrader\"\n", 1)
-          text = text.replace("        required\n        type=\"password\"\n", "        type=\"password\"\n", 1)
           login.write_text(text)
           PY
           pnpm install --frozen-lockfile
