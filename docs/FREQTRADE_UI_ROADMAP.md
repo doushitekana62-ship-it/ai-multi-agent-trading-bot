@@ -25,6 +25,8 @@ GitHub Pages
 
 FastAPI is a transport/authentication boundary for the remote browser. FreqUI remains the source of dashboard behavior and calls the native Freqtrade API.
 
+The embedded Freqtrade process is booted in `initial_state=stopped`. This makes the native API available without automatically starting trading. The login bridge can boot the process on demand if necessary and waits for `/api/v1/ping` before forwarding the native login request. Trading is started only through the native Freqtrade `/api/v1/start` command, such as the official FreqUI Start control.
+
 ## Main navigation room tour
 
 | Menu | Official FreqUI route | Function | Native Freqtrade dependency | Status in this project |
@@ -160,6 +162,8 @@ The project contract is:
 - Password: the existing `DASHBOARD_TOKEN` environment variable in FastAPI Cloud.
 - Freqtrade generates access and refresh JWT tokens using its native authentication implementation.
 - FreqUI stores and refreshes those tokens using its own login store.
+- The browser never receives or stores a new custom login credential; the dashboard token remains the native Freqtrade API password.
+- If the embedded worker is not currently running, the FastAPI login bridge boots it in `stopped` state and waits for `/api/v1/ping`. It does not call `/start` during login.
 
 The dashboard token is never committed to this repository.
 
@@ -181,6 +185,8 @@ The implementation must be verified in this order. Do not mark a later item comp
 - [x] Proxy `/api/v1/message/ws` through FastAPI.
 - [x] Use `doushitekana` as Freqtrade API username.
 - [x] Use `DASHBOARD_TOKEN` as the Freqtrade API password.
+- [x] Boot the worker in `stopped` state so login cannot auto-start trading.
+- [x] Keep the official FreqUI validation/login implementation unchanged.
 - [ ] Verify login from the deployed GitHub Pages UI against the live FastAPI deployment.
 
 ### Phase 3 - Core live UI
