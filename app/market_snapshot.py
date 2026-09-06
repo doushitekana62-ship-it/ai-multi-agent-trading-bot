@@ -4,8 +4,6 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-import psycopg
-
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -16,6 +14,7 @@ class MarketSnapshotCollector:
         self.interval_seconds = interval_seconds
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
+        self.latest: dict[str, dict] = {}
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -35,7 +34,6 @@ class MarketSnapshotCollector:
             self._task = None
 
     async def _loop(self) -> None:
-        # Collect once immediately so health does not wait a full interval.
         while not self._stop.is_set():
             try:
                 await self._collect_once()
@@ -51,8 +49,6 @@ class MarketSnapshotCollector:
         return [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
 
     async def _collect_once(self) -> None:
-        if not settings.supabase_db_url:
-            return
         import ccxt
 
         symbols = self._symbols()
@@ -79,7 +75,7 @@ class MarketSnapshotCollector:
                 rows.append({
                     "symbol": symbol,
                     "timeframe": settings.timeframe,
-                    "captured_at": datetime.now(UTC),
+                    "captured_at": datetime.now(UTC).isoformat(),
                     "last_price": ticker.get("last"),
                     "bid": bid,
                     "ask": ask,
@@ -87,27 +83,12 @@ class MarketSnapshotCollector:
                     "volume": ticker.get("baseVolume"),
                     "orderbook_imbalance": imbalance,
                     "data_quality": 1.0 if bid and ask and book.get("bids") and book.get("asks") else 0.5,
-                    "raw": {"timestamp": ticker.get("timestamp")},
                 })
             return rows
 
         rows = await asyncio.to_thread(fetch)
-        if not rows:
-            return
-
-        async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
-            async with conn.cursor() as cur:
-                for row in rows:
-                    await cur.execute(
-                        """
-                        insert into public.market_snapshots
-                        (symbol, timeframe, captured_at, last_price, bid, ask, spread_bps,
-                         volume, orderbook_imbalance, data_quality, raw)
-                        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        """,
-                        tuple(row.values()),
-                    )
-            await conn.commit()
+        for row in rows:
+            self.latest[row["symbol"]] = row
 
 
 collector = MarketSnapshotCollector()
