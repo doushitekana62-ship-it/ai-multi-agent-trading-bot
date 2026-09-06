@@ -18,6 +18,9 @@ from .config import DEFAULT_FREQTRADE_DB_PATH, settings
 
 logger = logging.getLogger(__name__)
 _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping"))
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+_USER_DATA_DIR = Path(os.getenv("FREQTRADE_USER_DATA_DIR", str(_PROJECT_DIR / "user_data"))).resolve()
+_STRATEGY_DIR = _USER_DATA_DIR / "strategies"
 
 
 def _writable_sqlite_path() -> Path:
@@ -48,6 +51,9 @@ def _build_freqtrade_config() -> dict[str, Any]:
         raise RuntimeError("TRADING_PAIRS must contain at least one pair")
     api_password = _internal_api_password()
 
+    if not _STRATEGY_DIR.is_dir():
+        raise RuntimeError(f"Freqtrade strategy directory not found: {_STRATEGY_DIR}")
+
     exchange_config: dict[str, Any] = {
         "name": settings.exchange_name,
         "ccxt_config": {},
@@ -72,8 +78,8 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "fiat_display_currency": "USD",
         "timeframe": settings.timeframe,
         "strategy": settings.strategy_name,
-        "strategy_path": str(Path("/app/user_data/strategies").resolve()),
-        "user_data_dir": "/app/user_data",
+        "strategy_path": str(_STRATEGY_DIR),
+        "user_data_dir": str(_USER_DATA_DIR),
         "entry_pricing": {"price_side": "same", "use_order_book": False},
         "exit_pricing": {"price_side": "same", "use_order_book": False},
         "order_types": {"entry": "market", "exit": "market", "stoploss": "market", "stoploss_on_exchange": False},
