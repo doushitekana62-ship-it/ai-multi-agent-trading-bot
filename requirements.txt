@@ -1,3 +1,4 @@
 fastapi[standard]>=0.115.0
 ./vendor/freqtrade
 httpx>=0.28.1
+websockets>=15.0
