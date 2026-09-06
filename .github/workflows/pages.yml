@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "public/**"
       - ".github/workflows/pages.yml"
+      - "**"
   workflow_dispatch:
 
 permissions:
@@ -25,6 +25,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - name: Build official FreqUI
+        env:
+          VITE_BOT_API_URL: https://ai-multi-agent-trading-bot-e5328952.fastapicloud.dev
+        run: |
+          git clone --depth 1 --branch 3.1.2 https://github.com/freqtrade/frequi.git /tmp/frequi
+          cd /tmp/frequi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          vite = Path("vite.config.ts")
+          text = vite.read_text()
+          marker = "export default defineConfig({\n"
+          replacement = "export default defineConfig({\n  base: '/ai-multi-agent-trading-bot/',\n"
+          if replacement not in text:
+              if marker not in text:
+                  raise SystemExit("Could not locate Vite config marker")
+              text = text.replace(marker, replacement, 1)
+              vite.write_text(text)
+
+          login = Path("src/components/BotLogin.vue")
+          text = login.read_text()
+          old = "const defaultURL = window.location.origin || 'http://localhost:3000';"
+          new = "const defaultURL = import.meta.env.VITE_BOT_API_URL || window.location.origin || 'http://localhost:3000';"
+          if old in text:
+              login.write_text(text.replace(old, new, 1))
+          elif new not in text:
+              raise SystemExit("Could not locate FreqUI default API URL")
+          PY
+          pnpm install --frozen-lockfile
+          pnpm run build
+          cd -
+          rm -rf public
+          cp -R /tmp/frequi/dist public
+          cp public/index.html public/404.html
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
