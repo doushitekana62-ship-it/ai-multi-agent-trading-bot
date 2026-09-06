@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import secrets
 
 import httpx
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from websockets.asyncio.client import connect as ws_connect
 
 from ..config import settings
 from ..freqtrade_runtime import runtime
 
 router = APIRouter()
-
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
 _HOP_BY_HOP_HEADERS = {
@@ -41,48 +43,85 @@ def _forward_headers(request: Request) -> dict[str, str]:
     }
 
 
-async def _ensure_login_api_ready() -> bool:
-    """Ensure Freqtrade's native API is booted, but do not start trading."""
-    if not runtime.running:
-        try:
-            runtime.boot()
-        except Exception:
-            return False
+def _basic_header() -> str:
+    raw = f"{settings.freqtrade_api_username}:{settings.dashboard_token}".encode("utf-8")
+    return f"Basic {base64.b64encode(raw).decode('ascii')}"
 
-    ping_url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/ping"
-    deadline = asyncio.get_running_loop().time() + 30.0
-    async with httpx.AsyncClient(timeout=2.0) as client:
-        while asyncio.get_running_loop().time() < deadline:
-            if not runtime.running:
-                return False
-            try:
-                response = await client.get(ping_url)
-                if response.status_code == 200:
-                    return True
-            except httpx.HTTPError:
-                pass
-            await asyncio.sleep(0.5)
-    return False
+
+def _login_valid(request: Request) -> bool:
+    if not settings.dashboard_token:
+        return False
+    value = request.headers.get("authorization", "")
+    if not value.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(value[6:].strip()).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+    return username == settings.freqtrade_api_username and secrets.compare_digest(password, settings.dashboard_token)
+
+
+def _dashboard_bearer(request: Request) -> bool:
+    value = request.headers.get("authorization", "")
+    prefix = "Bearer "
+    return bool(
+        settings.dashboard_token
+        and value.startswith(prefix)
+        and secrets.compare_digest(value[len(prefix) :], settings.dashboard_token)
+    )
+
+
+async def _ensure_api_ready() -> None:
+    """Ensure Freqtrade's native API is available without starting trading."""
+    try:
+        await runtime.wait_for_api(timeout=30.0)
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 @router.api_route("/api/v1/{path:path}", methods=_PROXY_METHODS)
 async def freqtrade_api_proxy(path: str, request: Request) -> Response:
     """Bridge the public FastAPI origin to Freqtrade's native REST API."""
-    if path == "token/login" and not await _ensure_login_api_ready():
-        return Response(
-            content='{"detail":"Freqtrade API did not become ready for login"}',
-            status_code=503,
-            media_type="application/json",
+    if path == "token/login":
+        if not _login_valid(request):
+            return JSONResponse({"detail": "Invalid username or dashboard token"}, status_code=401)
+        return JSONResponse(
+            {
+                "access_token": settings.dashboard_token,
+                "refresh_token": settings.dashboard_token,
+                "token_type": "bearer",
+            }
         )
 
+    if path == "token/refresh":
+        if not _dashboard_bearer(request):
+            return JSONResponse({"detail": "Invalid dashboard session"}, status_code=401)
+        return JSONResponse(
+            {
+                "access_token": settings.dashboard_token,
+                "refresh_token": settings.dashboard_token,
+                "token_type": "bearer",
+            }
+        )
+
+    try:
+        await _ensure_api_ready()
+    except RuntimeError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+
     body = await request.body()
+    headers = _forward_headers(request)
+    if _dashboard_bearer(request):
+        headers["authorization"] = _basic_header()
+
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
             upstream = await client.request(
                 request.method,
                 _upstream_url(path),
                 params=list(request.query_params.multi_items()),
-                headers=_forward_headers(request),
+                headers=headers,
                 content=body,
             )
     except httpx.HTTPError as exc:
@@ -114,7 +153,12 @@ async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
         upstream_url = f"{upstream_url}?{query}"
 
     try:
-        async with ws_connect(upstream_url, open_timeout=10, close_timeout=5) as upstream:
+        async with ws_connect(
+            upstream_url,
+            open_timeout=30,
+            close_timeout=5,
+            additional_headers={"Authorization": _basic_header()},
+        ) as upstream:
             async def client_to_upstream() -> None:
                 while True:
                     message = await websocket.receive()
@@ -143,7 +187,6 @@ async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
             for task in done:
                 task.result()
     except (WebSocketDisconnect, Exception):
-        # FreqUI reconnects automatically after a websocket failure.
         try:
             await websocket.close()
         except Exception:
