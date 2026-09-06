@@ -21,6 +21,7 @@ _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping")
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
 _USER_DATA_DIR = Path(os.getenv("FREQTRADE_USER_DATA_DIR", str(_PROJECT_DIR / "user_data"))).resolve()
 _STRATEGY_DIR = _USER_DATA_DIR / "strategies"
+_LOG_PATH = _RUNTIME_DIR / "freqtrade.log"
 
 
 def _writable_sqlite_path() -> Path:
@@ -71,6 +72,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "dry_run_wallet": settings.paper_initial_balance,
         "db_url": f"sqlite:///{_writable_sqlite_path()}",
         "exchange": exchange_config,
+        "pairlists": [{"method": "StaticPairList"}],
         "stake_currency": settings.stake_currency,
         "stake_amount": settings.stake_amount,
         "tradable_balance_ratio": 0.99,
@@ -82,13 +84,25 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "user_data_dir": str(_USER_DATA_DIR),
         "entry_pricing": {"price_side": "same", "use_order_book": False},
         "exit_pricing": {"price_side": "same", "use_order_book": False},
-        "order_types": {"entry": "market", "exit": "market", "stoploss": "market", "stoploss_on_exchange": False},
+        "order_types": {
+            "entry": "market",
+            "exit": "market",
+            "force_entry": "market",
+            "force_exit": "market",
+            "emergency_exit": "market",
+            "stoploss": "market",
+            "stoploss_on_exchange": False,
+        },
         "initial_state": "stopped",
-        "internals": {"process_throttle_secs": settings.process_throttle_secs, "heartbeat_interval": settings.heartbeat_interval, "sd_notify": False},
-        "logfile": "/tmp/compound-scalping/freqtrade.log",
+        "force_entry_enable": True,
+        "internals": {
+            "process_throttle_secs": settings.process_throttle_secs,
+            "heartbeat_interval": settings.heartbeat_interval,
+            "sd_notify": False,
+        },
+        "logfile": str(_LOG_PATH),
         "verbosity": 0,
         "cancel_open_orders_on_exit": True,
-        "force_entry_enable": False,
         "api_server": {
             "enabled": True,
             "listen_ip_address": "127.0.0.1",
@@ -118,8 +132,9 @@ def _worker_main(config_path: str) -> None:
     from freqtrade.enums import RunMode
     from freqtrade.worker import Worker
 
-    args: dict[str, Any] = {"config": [config_path], "command": "trade", "runmode": RunMode.OTHER}
-    config = Configuration(args, RunMode.OTHER).get_config()
+    runmode = RunMode.LIVE if settings.live_ready else RunMode.DRY_RUN
+    args: dict[str, Any] = {"config": [config_path], "command": "trade", "runmode": runmode}
+    config = Configuration(args, runmode).get_config()
     worker = Worker(args, config=config)
     runtime._worker = worker
     worker.run()
@@ -147,7 +162,12 @@ class FreqtradeRuntime:
         self._error = None
         self._worker = None
         self._config_path = _write_config()
-        self._thread = threading.Thread(target=self._thread_entry, args=(str(self._config_path),), daemon=True, name="freqtrade-engine")
+        self._thread = threading.Thread(
+            target=self._thread_entry,
+            args=(str(self._config_path),),
+            daemon=True,
+            name="freqtrade-engine",
+        )
         self._thread.start()
         return {"running": True, "message": "booted", "dry_run": not settings.live_ready}
 
@@ -155,7 +175,7 @@ class FreqtradeRuntime:
         try:
             _worker_main(config_path)
         except Exception as exc:
-            self._error = str(exc)
+            self._error = f"{type(exc).__name__}: {exc}"
             logger.exception("Embedded Freqtrade worker crashed")
 
     async def wait_for_api(self, timeout: float = 30.0) -> None:
@@ -200,7 +220,9 @@ class FreqtradeRuntime:
         with httpx.Client(timeout=10.0) as client:
             response = client.post(url, auth=(settings.freqtrade_api_username, self.api_password))
         if response.status_code >= 400:
-            raise RuntimeError(f"Freqtrade /{command} returned HTTP {response.status_code}: {response.text[:300]}")
+            raise RuntimeError(
+                f"Freqtrade /{command} returned HTTP {response.status_code}: {response.text[:300]}"
+            )
         return response.json()
 
     def start(self) -> dict[str, Any]:
@@ -220,6 +242,27 @@ class FreqtradeRuntime:
 
     def status(self) -> dict[str, Any]:
         return {"running": self.running, "error": self._error}
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return safe runtime diagnostics, including the latest Freqtrade log lines."""
+        tail: list[str] = []
+        try:
+            if _LOG_PATH.exists():
+                tail = _LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+        except OSError as exc:
+            tail = [f"log_read_error: {type(exc).__name__}: {exc}"]
+        return {
+            "runtime": self.status(),
+            "api_port": settings.freqtrade_api_port,
+            "dry_run": not settings.live_ready,
+            "exchange": settings.exchange_name,
+            "pairs": [item.strip() for item in settings.trading_pairs.split(",") if item.strip()],
+            "strategy": settings.strategy_name,
+            "strategy_dir_exists": _STRATEGY_DIR.is_dir(),
+            "sqlite_path": str(_writable_sqlite_path()),
+            "log_path": str(_LOG_PATH),
+            "log_tail": tail,
+        }
 
     def shutdown(self) -> None:
         self._thread = None
