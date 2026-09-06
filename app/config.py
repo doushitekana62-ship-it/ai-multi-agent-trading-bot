@@ -4,13 +4,16 @@ from dataclasses import dataclass
 
 DEFAULT_FREQTRADE_DB_PATH = "/tmp/compound-scalping/tradesv3.sqlite"
 SUPPORTED_EXCHANGE = "indodax"
+DEFAULT_CORS_ORIGINS = "https://doushitekana62-ship-it.github.io"
 
 
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Compound Scalping API")
     app_version: str = os.getenv("APP_VERSION", "2.4.0")
-    cors_origins: str = os.getenv("CORS_ORIGINS", "")
+    # GitHub Pages is the production frontend. Keep the known origin enabled
+    # by default so a missing CORS env var cannot break the dashboard.
+    cors_origins: str = os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
     freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
 
