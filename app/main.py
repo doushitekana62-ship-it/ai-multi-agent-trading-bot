@@ -11,7 +11,7 @@ from .config import settings
 from .freqtrade_runtime import runtime
 from .logging_config import configure_logging
 from .market_snapshot import collector
-from .routers import dashboard, health, trading
+from .routers import dashboard, freqtrade_ui, health, trading
 from .runtime_monitor import monitor
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ if origins:
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -60,6 +60,7 @@ async def request_logging(request: Request, call_next):
 app.include_router(health.router, prefix="/api")
 app.include_router(trading.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(freqtrade_ui.router)
 
 
 @app.get("/")
