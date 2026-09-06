@@ -40,7 +40,7 @@ class Settings:
     indodax_api_secret: str = os.getenv("INDODAX_API_SECRET", "")
     live_trading_enabled: bool = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
 
-    runtime_restart_enabled: bool = os.getenv("RUNTIME_RESTART_ENABLED", "false").lower() == "true"
+    runtime_restart_enabled: bool = os.getenv("RUNTIME_RESTART_ENABLED", "true").lower() == "true"
     runtime_restart_delay: int = int(os.getenv("RUNTIME_RESTART_DELAY", "30"))
 
     @property
