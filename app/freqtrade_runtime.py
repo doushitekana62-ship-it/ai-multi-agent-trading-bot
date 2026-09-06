@@ -7,8 +7,11 @@ import os
 import signal
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from .config import DEFAULT_FREQTRADE_DB_PATH, settings
 
@@ -81,7 +84,8 @@ def _build_freqtrade_config() -> dict[str, Any]:
             "stoploss": "market",
             "stoploss_on_exchange": False,
         },
-        "initial_state": "running",
+        # Keep the API available without starting trading automatically.
+        "initial_state": "stopped",
         "internals": {
             "process_throttle_secs": settings.process_throttle_secs,
             "heartbeat_interval": settings.heartbeat_interval,
@@ -152,15 +156,70 @@ class FreqtradeRuntime:
     def pid(self) -> int | None:
         return self._process.pid if self._process else None
 
-    def start(self) -> dict[str, Any]:
+    def boot(self) -> dict[str, Any]:
+        """Start the Freqtrade process without starting trading."""
         if self.running:
             return {"running": True, "pid": self.pid, "message": "already_running"}
         self._config_path = _write_config()
-        logger.info("Starting embedded Freqtrade runtime exchange=%s mode=%s dry_run=%s", settings.exchange_name, settings.trading_mode, not settings.live_ready)
+        logger.info(
+            "Booting embedded Freqtrade runtime exchange=%s mode=%s dry_run=%s",
+            settings.exchange_name,
+            settings.trading_mode,
+            not settings.live_ready,
+        )
         ctx = mp.get_context("spawn")
-        self._process = ctx.Process(target=_worker_main, args=(str(self._config_path),), daemon=True, name="freqtrade-engine")
+        self._process = ctx.Process(
+            target=_worker_main,
+            args=(str(self._config_path),),
+            daemon=True,
+            name="freqtrade-engine",
+        )
         self._process.start()
-        return {"running": True, "pid": self.pid, "message": "started", "dry_run": not settings.live_ready}
+        return {"running": True, "pid": self.pid, "message": "booted", "dry_run": not settings.live_ready}
+
+    def _wait_for_api(self, timeout: float = 30.0) -> None:
+        deadline = time.monotonic() + timeout
+        url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/ping"
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            if not self.running:
+                raise RuntimeError("Freqtrade process exited before its API became ready")
+            try:
+                with httpx.Client(timeout=2.0) as client:
+                    response = client.get(url)
+                if response.status_code == 200:
+                    return
+                last_error = RuntimeError(f"Freqtrade API ping returned HTTP {response.status_code}")
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.5)
+        raise RuntimeError("Freqtrade API did not become ready") from last_error
+
+    def _api_command(self, command: str) -> dict[str, Any]:
+        self._wait_for_api()
+        url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/{command}"
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(
+                url,
+                auth=(settings.freqtrade_api_username, settings.dashboard_token),
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Freqtrade /{command} returned HTTP {response.status_code}: {response.text[:300]}")
+        try:
+            return response.json()
+        except ValueError:
+            return {"status_code": response.status_code, "text": response.text}
+
+    def start(self) -> dict[str, Any]:
+        """Start the process if needed, then tell native Freqtrade to start trading."""
+        boot_result = self.boot()
+        api_result = self._api_command("start")
+        return {
+            **boot_result,
+            "message": "started",
+            "trading": True,
+            "api": api_result,
+        }
 
     def stop(self) -> dict[str, Any]:
         if not self._process:
