@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -17,11 +18,17 @@ import httpx
 from .config import DEFAULT_FREQTRADE_DB_PATH, settings
 
 logger = logging.getLogger(__name__)
-_RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping"))
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
+# FastAPI Cloud may install requirements differently from Docker. Keep the vendored
+# source importable as a runtime fallback; Docker still installs the package normally.
+_VENDOR_FREQTRADE = _PROJECT_DIR / "vendor" / "freqtrade"
+if _VENDOR_FREQTRADE.is_dir() and str(_VENDOR_FREQTRADE) not in sys.path:
+    sys.path.insert(0, str(_VENDOR_FREQTRADE))
+
+_RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", str(_PROJECT_DIR / "runtime"))).resolve()
 _USER_DATA_DIR = Path(os.getenv("FREQTRADE_USER_DATA_DIR", str(_PROJECT_DIR / "user_data"))).resolve()
 _STRATEGY_DIR = _USER_DATA_DIR / "strategies"
-_LOG_PATH = _RUNTIME_DIR / "freqtrade.log"
+_LOG_PATH = Path(os.getenv("FREQTRADE_LOG_PATH", str(_PROJECT_DIR / "logs" / "freqtrade.log"))).resolve()
 
 
 def _writable_sqlite_path() -> Path:
@@ -41,9 +48,7 @@ def _writable_sqlite_path() -> Path:
 def _internal_api_password() -> str:
     if not settings.dashboard_token:
         raise RuntimeError("DASHBOARD_TOKEN must be configured before starting Freqtrade")
-    return hashlib.sha256(
-        f"{settings.dashboard_token}:freqtrade-api".encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(f"{settings.dashboard_token}:freqtrade-api".encode("utf-8")).hexdigest()
 
 
 def _build_freqtrade_config() -> dict[str, Any]:
@@ -51,7 +56,6 @@ def _build_freqtrade_config() -> dict[str, Any]:
     if not pairs:
         raise RuntimeError("TRADING_PAIRS must contain at least one pair")
     api_password = _internal_api_password()
-
     if not _STRATEGY_DIR.is_dir():
         raise RuntimeError(f"Freqtrade strategy directory not found: {_STRATEGY_DIR}")
 
@@ -61,6 +65,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "ccxt_async_config": {},
         "pair_whitelist": pairs,
         "pair_blacklist": [],
+        "enable_ws": False,
     }
     if settings.live_ready:
         exchange_config["key"] = settings.indodax_api_key
@@ -120,6 +125,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
 
 def _write_config() -> Path:
     _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, path = tempfile.mkstemp(prefix="freqtrade-", suffix=".json", dir=_RUNTIME_DIR)
     os.close(fd)
     config_path = Path(path)
@@ -146,6 +152,7 @@ class FreqtradeRuntime:
         self._worker: Any | None = None
         self._config_path: Path | None = None
         self._error: str | None = None
+        self._exitcode: int | None = None
 
     @property
     def running(self) -> bool:
@@ -156,10 +163,10 @@ class FreqtradeRuntime:
         return _internal_api_password()
 
     def boot(self) -> dict[str, Any]:
-        """Run Freqtrade in-process so FastAPI Cloud can keep its native API alive."""
         if self.running:
             return {"running": True, "message": "already_running"}
         self._error = None
+        self._exitcode = None
         self._worker = None
         self._config_path = _write_config()
         self._thread = threading.Thread(
@@ -174,8 +181,10 @@ class FreqtradeRuntime:
     def _thread_entry(self, config_path: str) -> None:
         try:
             _worker_main(config_path)
+            self._exitcode = 0
         except Exception as exc:
             self._error = f"{type(exc).__name__}: {exc}"
+            self._exitcode = 1
             logger.exception("Embedded Freqtrade worker crashed")
 
     async def wait_for_api(self, timeout: float = 30.0) -> None:
@@ -220,9 +229,7 @@ class FreqtradeRuntime:
         with httpx.Client(timeout=10.0) as client:
             response = client.post(url, auth=(settings.freqtrade_api_username, self.api_password))
         if response.status_code >= 400:
-            raise RuntimeError(
-                f"Freqtrade /{command} returned HTTP {response.status_code}: {response.text[:300]}"
-            )
+            raise RuntimeError(f"Freqtrade /{command} returned HTTP {response.status_code}: {response.text[:300]}")
         return response.json()
 
     def start(self) -> dict[str, Any]:
@@ -241,10 +248,9 @@ class FreqtradeRuntime:
             return {"running": True, "message": "stop_failed", "error": str(exc)}
 
     def status(self) -> dict[str, Any]:
-        return {"running": self.running, "error": self._error}
+        return {"running": self.running, "error": self._error, "exitcode": self._exitcode}
 
     def diagnostics(self) -> dict[str, Any]:
-        """Return safe runtime diagnostics, including the latest Freqtrade log lines."""
         tail: list[str] = []
         try:
             if _LOG_PATH.exists():
