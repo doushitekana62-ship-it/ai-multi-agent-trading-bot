@@ -53,9 +53,9 @@ class RuntimeMonitor:
         running = bool(status["running"])
         exitcode = status.get("exitcode")
 
-        # Do not open a database connection every 15 seconds while the engine
-        # is intentionally stopped. This also keeps platform startup cheap.
         if not running and exitcode is None:
+            return
+        if not settings.bot_owner_user_id or not settings.supabase_db_url:
             return
 
         last_error = None
@@ -66,43 +66,71 @@ class RuntimeMonitor:
             logger.error(last_error)
         self._last_exitcode = exitcode
 
-        if not settings.bot_owner_user_id or not settings.supabase_db_url:
-            return
-
         now = datetime.now(UTC)
-        async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    insert into public.bot_health (
-                        user_id, mode, state, websocket_healthy,
-                        market_data_healthy, private_stream_healthy,
-                        db_healthy, last_cycle_at, last_error
+        db_healthy = False
+        market_data_healthy = False
+        websocket_healthy = False
+        private_stream_healthy = False
+
+        try:
+            async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
+                db_healthy = True
+                async with conn.cursor() as cur:
+                    # A fresh snapshot is the only evidence we accept for market-data health.
+                    await cur.execute(
+                        "select captured_at from public.market_snapshots order by captured_at desc limit 1"
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    on conflict (user_id, mode) do update set
-                        state = excluded.state,
-                        websocket_healthy = excluded.websocket_healthy,
-                        market_data_healthy = excluded.market_data_healthy,
-                        private_stream_healthy = excluded.private_stream_healthy,
-                        db_healthy = excluded.db_healthy,
-                        last_cycle_at = excluded.last_cycle_at,
-                        last_error = excluded.last_error,
-                        updated_at = now()
-                    """,
-                    (
-                        settings.bot_owner_user_id,
-                        settings.trading_mode,
-                        state,
-                        running,
-                        running,
-                        running if settings.is_live else False,
-                        True,
-                        now,
-                        last_error,
-                    ),
-                )
-            await conn.commit()
+                    row = await cur.fetchone()
+                    if row and row[0]:
+                        age = (now - row[0]).total_seconds()
+                        market_data_healthy = age <= max(30.0, settings.process_throttle_secs * 6)
+                        websocket_healthy = market_data_healthy
+                    if settings.is_live:
+                        # Private-stream health cannot be inferred from process liveness.
+                        # It remains false until the exchange reconciliation layer confirms it.
+                        private_stream_healthy = False
+                    else:
+                        private_stream_healthy = True
+
+                    if running and not market_data_healthy:
+                        state = "RUNNING_UNVERIFIED"
+                        last_error = "Engine is alive but no fresh market snapshot has been confirmed"
+
+                    await cur.execute(
+                        """
+                        insert into public.bot_health (
+                            user_id, mode, state, websocket_healthy,
+                            market_data_healthy, private_stream_healthy,
+                            db_healthy, last_cycle_at, last_error
+                        )
+                        values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        on conflict (user_id, mode) do update set
+                            state = excluded.state,
+                            websocket_healthy = excluded.websocket_healthy,
+                            market_data_healthy = excluded.market_data_healthy,
+                            private_stream_healthy = excluded.private_stream_healthy,
+                            db_healthy = excluded.db_healthy,
+                            last_cycle_at = excluded.last_cycle_at,
+                            last_error = excluded.last_error,
+                            updated_at = now()
+                        """,
+                        (
+                            settings.bot_owner_user_id,
+                            settings.trading_mode,
+                            state,
+                            websocket_healthy,
+                            market_data_healthy,
+                            private_stream_healthy,
+                            db_healthy,
+                            now,
+                            last_error,
+                        ),
+                    )
+                await conn.commit()
+        except Exception as exc:
+            logger.exception("Health database check failed")
+            # Do not claim the database is healthy when the write/check itself failed.
+            logger.error("Health check error: %s", exc)
 
 
 monitor = RuntimeMonitor()
