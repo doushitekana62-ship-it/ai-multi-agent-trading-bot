@@ -12,17 +12,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["trading"])
 
 
-def _ensure_owner(user: dict) -> None:
-    user_id = user.get("id")
-    if not settings.bot_owner_user_id:
-        raise HTTPException(status_code=503, detail="BOT_OWNER_USER_ID is not configured")
-    if user_id != settings.bot_owner_user_id:
-        raise HTTPException(status_code=403, detail="Bot control is restricted to the owner")
-
-
 def _validate_start() -> None:
-    if not settings.supabase_db_url:
-        raise HTTPException(status_code=503, detail="SUPABASE_DB_URL is not configured")
     if settings.exchange_name != "indodax":
         raise HTTPException(status_code=503, detail="EXCHANGE_NAME must be indodax for this bot")
     if settings.is_live:
@@ -40,7 +30,6 @@ def _validate_start() -> None:
 
 @router.get("/engine/status")
 async def engine_status(user=Depends(current_user)):
-    _ensure_owner(user)
     return {
         "engine": "freqtrade-embedded",
         "exchange": settings.exchange_name,
@@ -54,11 +43,10 @@ async def engine_status(user=Depends(current_user)):
 
 @router.post("/engine/start")
 async def engine_start(user=Depends(current_user)):
-    _ensure_owner(user)
     _validate_start()
     try:
         result = runtime.start()
-        logger.info("Engine start requested by user=%s result=%s", user.get("id"), result)
+        logger.info("Engine start requested result=%s", result)
         return result
     except Exception as exc:
         logger.exception("Engine start failed")
@@ -67,10 +55,9 @@ async def engine_start(user=Depends(current_user)):
 
 @router.post("/engine/stop")
 async def engine_stop(user=Depends(current_user)):
-    _ensure_owner(user)
     try:
         result = runtime.stop()
-        logger.info("Engine stop requested by user=%s result=%s", user.get("id"), result)
+        logger.info("Engine stop requested result=%s", result)
         return result
     except Exception as exc:
         logger.exception("Engine stop failed")
