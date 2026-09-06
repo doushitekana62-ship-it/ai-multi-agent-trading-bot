@@ -8,6 +8,7 @@ from fastapi.responses import Response
 from websockets.asyncio.client import connect as ws_connect
 
 from ..config import settings
+from ..freqtrade_runtime import runtime
 
 router = APIRouter()
 
@@ -40,9 +41,40 @@ def _forward_headers(request: Request) -> dict[str, str]:
     }
 
 
+async def _ensure_login_api_ready() -> bool:
+    """Ensure Freqtrade's native API is booted, but do not start trading."""
+    if not runtime.running:
+        try:
+            runtime.boot()
+        except Exception:
+            return False
+
+    ping_url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/ping"
+    deadline = asyncio.get_running_loop().time() + 30.0
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        while asyncio.get_running_loop().time() < deadline:
+            if not runtime.running:
+                return False
+            try:
+                response = await client.get(ping_url)
+                if response.status_code == 200:
+                    return True
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(0.5)
+    return False
+
+
 @router.api_route("/api/v1/{path:path}", methods=_PROXY_METHODS)
 async def freqtrade_api_proxy(path: str, request: Request) -> Response:
     """Bridge the public FastAPI origin to Freqtrade's native REST API."""
+    if path == "token/login" and not await _ensure_login_api_ready():
+        return Response(
+            content='{"detail":"Freqtrade API did not become ready for login"}',
+            status_code=503,
+            media_type="application/json",
+        )
+
     body = await request.body()
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
