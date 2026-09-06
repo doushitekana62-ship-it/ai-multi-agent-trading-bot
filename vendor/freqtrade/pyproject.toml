@@ -29,6 +29,7 @@ classifiers = [
 ]
 
 dependencies = [
+  # from requirements.txt
   "ccxt>=4.5.76",
   "SQLAlchemy>=2.0.6",
   "python-telegram-bot>=20.1",
@@ -77,6 +78,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Requirements used for submodules
 plot = ["plotly>=4.0"]
 hyperopt = [
   "cmaes",
@@ -111,13 +113,12 @@ develop = [
   "pytest",
   "ruff",
   "scipy-stubs",
+  "time-machine",
   "types-cachetools",
   "types-filelock",
   "types-python-dateutil",
   "types-requests",
   "types-tabulate",
-  "time-machine",
-  "pytest-asyncio",
 ]
 jupyter = [
   "ipykernel",
@@ -137,6 +138,7 @@ Homepage = "https://github.com/freqtrade/freqtrade"
 Documentation = "https://freqtrade.io"
 "Bug Tracker" = "https://github.com/freqtrade/freqtrade/issues"
 
+
 [project.scripts]
 freqtrade = "freqtrade.main:main"
 
@@ -150,14 +152,18 @@ include = ["freqtrade*"]
 exclude = ["tests", "tests.*", "user_data", "user_data*"]
 namespaces = true
 
+
 [tool.pytest]
 log_format = "%(asctime)s %(levelname)s %(message)s"
 log_date_format = "%Y-%m-%d %H:%M:%S"
 addopts = ["--dist", "loadscope"]
+
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 filterwarnings = [
+    # aiohttp warns that enable_cleanup_closed is a no-op on Python 3.14+
+    # It's set internally by ccxt/aiohttp and out of our control.
     "ignore:enable_cleanup_closed ignored:DeprecationWarning:aiohttp.connector",
 ]
 
@@ -182,6 +188,7 @@ module = [
   "freqtrade.templates.*",
   "tests.strategy.strats"
 ]
+# Disable attr-defined check due to ta-lib not having type stubs
 disable_error_code = "attr-defined"
 
 [tool.pyright]
@@ -197,23 +204,25 @@ pythonPlatform = "All"
 pythonVersion = "3.11"
 
 typeCheckingMode = "off"
-reportArgumentType = false
-reportAssignmentType = false
-reportAttributeAccessIssue = false
-reportCallIssue = false
-reportGeneralTypeIssues = false
-reportIncompatibleMethodOverride = false
-reportIncompatibleVariableOverride = false
-reportIndexIssue = false
-reportMissingImports = false
-reportOperatorIssue = false
-reportOptionalMemberAccess = false
-reportOptionalOperand = false
-reportPossiblyUnboundVariable = false
-reportPrivateImportUsage = false
-reportRedeclaration = false
-reportReturnType = false
-reportTypedDictNotRequiredAccess = false
+# analyzeUnannotatedFunctions = false
+
+reportArgumentType = false  # 155
+reportAssignmentType = false  # 12
+reportAttributeAccessIssue = false  # 255
+reportCallIssue = false  # 23
+reportGeneralTypeIssues = false  # 48
+reportIncompatibleMethodOverride = false  # 15
+reportIncompatibleVariableOverride = false  # 5
+reportIndexIssue = false  # 22
+reportMissingImports = false  # 5
+reportOperatorIssue = false  # 7
+reportOptionalMemberAccess = false  # 35
+reportOptionalOperand = false  # 7
+reportPossiblyUnboundVariable = false  # 36
+reportPrivateImportUsage = false  # 5
+reportRedeclaration = false  # 1
+reportReturnType = false  # 28
+reportTypedDictNotRequiredAccess = false  # 27
 
 [tool.uv]
 exclude-newer = "1 week"
@@ -225,27 +234,85 @@ cryptography = "5 days"
 
 [tool.ruff]
 line-length = 100
+# TODO: markdown files should be linted.
 extend-exclude = [".env", ".venv", "*.md"]
 
 [tool.ruff.lint]
 extend-select = [
-  "C90", "B", "F", "E", "W", "UP", "I", "A", "TID", "YTT", "S", "PTH", "RUF", "ASYNC", "NPY",
+  "C90",    # mccabe
+  "B",      # bugbear
+  # "N",    # pep8-naming
+  "F",      # pyflakes
+  "E",      # pycodestyle
+  "W",      # pycodestyle
+  "UP",     # pyupgrade
+  "I",      # isort
+  "A",      # flake8-builtins
+  "TID",    # flake8-tidy-imports
+  # "C4",     # flake8-comprehensions
+  "YTT",    # flake8-2020
+  "S",      # flake8-bandit
+  # "RSE",  # flake8-raise
+  # "TCH",  # flake8-type-checking
+  "PTH",    # flake8-use-pathlib
+  "RUF",    # ruff
+  "ASYNC",  # flake8-async
+  "NPY",    # numpy
 ]
 
 extend-ignore = [
-  "E241", "E272", "E221", "B904", "S603", "S607", "S608", "NPY002", "RUF010", "RUF012", "RUF022", "RUF005", "BLE001", "SIM117", "N999", "DTZ007", "TRY401", "TRY004",
+  "E241",  # Multiple spaces after comma
+  "E272",  # Multiple spaces before keyword
+  "E221",  # Multiple spaces before operator
+  "B904",  # BugBear - except raise from
+  "S603",  # `subprocess` call: check for execution of untrusted input
+  "S607",  # Starting a process with a partial executable path
+  "S608",  # Possible SQL injection vector through string-based query construction
+  "NPY002",  # Numpy legacy random generator
+  "RUF010",  # Use explicit conversion flag
+  "RUF012",  # mutable-class-default
+  "RUF022",  # unsorted-dunder-all
+  "RUF005",  # list concatenation
+  "BLE001",  # Do not catch blind exception: `Exception`
+  "SIM117",  # Multiple with statements
+  # TODO: the below rules are in the default now and should be reconsidered.
+  "N999",  # Invalid module name
+  # "DTZ",  # Use timezone-aware datetime objects
+  "DTZ007",  # Use timezone-aware datetime objects
+  "TRY401",  # Redundant exception object in logging.exception call
+  "TRY004",  # Wrong exception type when raising for type error
 ]
 
+
 [tool.ruff.lint.per-file-ignores]
-"freqtrade/freqai/**/*.py" = ["S311"]
-"tests/**.py" = ["S101", "S104", "S311", "S105", "S106", "S110", "TRY002", "DTZ005", "DTZ"]
-"freqtrade/templates/**.py" = ["RUF100"]
-"ft_client/test_client/**.py" = ["S101"]
+"freqtrade/freqai/**/*.py" = [
+  "S311",  # Standard pseudo-random generators are not suitable for cryptographic purposes
+]
+"tests/**.py" = [
+  "S101",  # allow assert in tests
+  "S104",  #  Possible binding to all interfaces
+  "S311",  # Standard pseudo-random generators are not suitable for cryptographic purposes
+  "S105",  # Possible hardcoded password assigned to: "secret"
+  "S106",  # Possible hardcoded password assigned to argument: "token_type"
+  "S110",  # `try`-`except`-`pass` detected, consider logging the exception
+  "TRY002", # create your own Exception
+  "DTZ005",  # Use timezone-aware datetime objects
+  "DTZ", # Use timezone-aware datetime objects
+  ]
+
+"freqtrade/templates/**.py" = [
+  "RUF100",  # Allow unused noqa
+]
+
+"ft_client/test_client/**.py" = [
+  "S101",  # allow assert in tests
+]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12
 
 [tool.ruff.lint.flake8-bugbear]
+# Allow default arguments like, e.g., `data: List[str] = fastapi.Query(None)`.
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
 
 [tool.ruff.lint.isort]
@@ -253,6 +320,8 @@ lines-after-imports = 2
 known-first-party = ["freqtrade_client"]
 
 [tool.flake8]
+# Default from https://flake8.pycqa.org/en/latest/user/options.html#cmdoption-flake8-ignore
+# minus E226
 ignore = ["E121","E123","E126","E24", "E203","E704","W503","W504"]
 max-line-length = 100
 max-complexity = 12
@@ -264,3 +333,7 @@ exclude = [
     ".venv",
     ".env",
 ]
+
+[tool.codespell]
+ignore-words-list = "coo,fo,strat,zar,selectin"
+skip="*.svg,./user_data,freqtrade/rpc/api_server/ui/installed,freqtrade/exchange/*.json"
