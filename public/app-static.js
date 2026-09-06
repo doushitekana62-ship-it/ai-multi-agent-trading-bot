@@ -18,7 +18,7 @@ async function api(path, options = {}) {
 
 async function load() {
   try {
-    const d = await api("/dashboard");
+    const d = await api("/api/dashboard");
     state.textContent = d.engine?.runtime?.running ? "RUNNING" : "READY";
     apiEl.textContent = "OK";
     engine.textContent = d.engine?.name || "Unavailable";
@@ -39,7 +39,7 @@ async function connect() {
   }
   localStorage.setItem(TOKEN_KEY, token);
   try {
-    await api("/me");
+    await api("/api/me");
     show();
   } catch (e) {
     localStorage.removeItem(TOKEN_KEY);
@@ -49,14 +49,14 @@ async function connect() {
 
 async function startEngine() {
   try {
-    await api("/engine/start", { method: "POST" });
+    await api("/api/engine/start", { method: "POST" });
     await load();
   } catch (e) { data.textContent = e.message; }
 }
 
 async function stopEngine() {
   try {
-    await api("/engine/stop", { method: "POST" });
+    await api("/api/engine/stop", { method: "POST" });
     await load();
   } catch (e) { data.textContent = e.message; }
 }
@@ -90,5 +90,5 @@ if (!apiBaseUrl) {
   state.textContent = "ERROR";
   loginMsg.textContent = "FastAPI URL is not configured.";
 } else if (localStorage.getItem(TOKEN_KEY)) {
-  api("/me").then(show).catch(() => localStorage.removeItem(TOKEN_KEY));
+  api("/api/me").then(show).catch(() => localStorage.removeItem(TOKEN_KEY));
 }
