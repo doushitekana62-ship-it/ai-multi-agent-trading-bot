@@ -1,9 +1,11 @@
 import hashlib
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
-DEFAULT_FREQTRADE_DB_PATH = "/tmp/compound-scalping/tradesv3.sqlite"
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_FREQTRADE_DB_PATH = str(_PROJECT_DIR / "data" / "tradesv3.sqlite")
 SUPPORTED_EXCHANGE = "indodax"
 DEFAULT_TRADING_PAIR = "BTC/IDR"
 FREQTRADE_API_USERNAME = "doushitekana"
@@ -13,17 +15,14 @@ DEFAULT_CORS_ORIGINS = "https://doushitekana62-ship-it.github.io"
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Compound Scalping API")
-    app_version: str = os.getenv("APP_VERSION", "2.4.0")
+    app_version: str = os.getenv("APP_VERSION", "2.5.0")
     cors_origins: str = os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
     freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
     freqtrade_api_port: int = int(os.getenv("FREQTRADE_API_PORT", "8080"))
-    # This dashboard has one fixed Freqtrade API identity. Ignore stale env values.
     freqtrade_api_username: str = FREQTRADE_API_USERNAME
     freqtrade_jwt_secret: str = os.getenv("FREQTRADE_JWT_SECRET", "")
 
-    # Dry-run baseline is intentionally fixed to Indodax BTC/IDR.
-    # Broker/pair selection will be reopened after the dry-run path is proven stable.
     exchange_name: str = SUPPORTED_EXCHANGE
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
     bot_name: str = os.getenv("BOT_NAME", "compound-scalper")
@@ -54,9 +53,6 @@ class Settings:
 
     @property
     def effective_freqtrade_jwt_secret(self) -> str:
-        # Freqtrade requires a JWT secret of at least 32 characters. A dedicated
-        # secret is preferred; otherwise derive a fixed 64-character secret from
-        # the existing dashboard token without exposing the token itself.
         if self.freqtrade_jwt_secret:
             return self.freqtrade_jwt_secret
         if not self.dashboard_token:
