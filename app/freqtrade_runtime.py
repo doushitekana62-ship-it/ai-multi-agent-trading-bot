@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import multiprocessing as mp
 import os
-import signal
 import sqlite3
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -22,24 +22,15 @@ _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping")
 def _writable_sqlite_path() -> Path:
     configured = Path(settings.freqtrade_db_path).expanduser()
     fallback = Path(DEFAULT_FREQTRADE_DB_PATH)
-
     for path in (configured, fallback):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with sqlite3.connect(path, timeout=2) as conn:
                 conn.execute("select 1")
-            if path != configured:
-                logger.warning("Configured SQLite path is not writable; using fallback %s", path)
             return path
         except (OSError, sqlite3.Error) as exc:
             logger.warning("SQLite path unavailable %s: %s", path, exc)
-
     raise RuntimeError("No writable SQLite path is available")
-
-
-def _sqlite_db_url() -> str:
-    path = _writable_sqlite_path()
-    return f"sqlite:///{path}"
 
 
 def _build_freqtrade_config() -> dict[str, Any]:
@@ -60,12 +51,11 @@ def _build_freqtrade_config() -> dict[str, Any]:
         exchange_config["key"] = settings.indodax_api_key
         exchange_config["secret"] = settings.indodax_api_secret
 
-    dry_run = not settings.live_ready
     return {
         "bot_name": settings.bot_name,
-        "dry_run": dry_run,
+        "dry_run": not settings.live_ready,
         "dry_run_wallet": settings.paper_initial_balance,
-        "db_url": _sqlite_db_url(),
+        "db_url": f"sqlite:///{_writable_sqlite_path()}",
         "exchange": exchange_config,
         "stake_currency": settings.stake_currency,
         "stake_amount": settings.stake_amount,
@@ -78,19 +68,9 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "user_data_dir": "/app/user_data",
         "entry_pricing": {"price_side": "same", "use_order_book": False},
         "exit_pricing": {"price_side": "same", "use_order_book": False},
-        "order_types": {
-            "entry": "market",
-            "exit": "market",
-            "stoploss": "market",
-            "stoploss_on_exchange": False,
-        },
-        # Keep the API available without starting trading automatically.
+        "order_types": {"entry": "market", "exit": "market", "stoploss": "market", "stoploss_on_exchange": False},
         "initial_state": "stopped",
-        "internals": {
-            "process_throttle_secs": settings.process_throttle_secs,
-            "heartbeat_interval": settings.heartbeat_interval,
-            "sd_notify": False,
-        },
+        "internals": {"process_throttle_secs": settings.process_throttle_secs, "heartbeat_interval": settings.heartbeat_interval, "sd_notify": False},
         "logfile": "/tmp/compound-scalping/freqtrade.log",
         "verbosity": 0,
         "cancel_open_orders_on_exit": True,
@@ -120,135 +100,116 @@ def _write_config() -> Path:
 
 
 def _worker_main(config_path: str) -> None:
-    try:
-        from freqtrade.configuration import Configuration
-        from freqtrade.enums import RunMode
-        from freqtrade.worker import Worker
+    from freqtrade.configuration import Configuration
+    from freqtrade.enums import RunMode
+    from freqtrade.worker import Worker
 
-        args: dict[str, Any] = {"config": [config_path], "command": "trade", "runmode": RunMode.OTHER}
-        config = Configuration(args, RunMode.OTHER).get_config()
-        worker = Worker(args, config=config)
-
-        def _stop(_signum: int, _frame: Any) -> None:
-            logger.info("Freqtrade child received stop signal")
-            raise KeyboardInterrupt()
-
-        signal.signal(signal.SIGTERM, _stop)
-        signal.signal(signal.SIGINT, _stop)
-        worker.run()
-    except KeyboardInterrupt:
-        logger.info("Freqtrade child stopped")
-    except Exception:
-        logger.exception("Freqtrade child crashed")
-        raise
+    args: dict[str, Any] = {"config": [config_path], "command": "trade", "runmode": RunMode.OTHER}
+    config = Configuration(args, RunMode.OTHER).get_config()
+    worker = Worker(args, config=config)
+    runtime._worker = worker
+    worker.run()
 
 
 class FreqtradeRuntime:
     def __init__(self) -> None:
-        self._process: mp.Process | None = None
+        self._thread: threading.Thread | None = None
+        self._worker: Any | None = None
         self._config_path: Path | None = None
+        self._error: str | None = None
 
     @property
     def running(self) -> bool:
-        return bool(self._process and self._process.is_alive())
-
-    @property
-    def pid(self) -> int | None:
-        return self._process.pid if self._process else None
+        return bool(self._thread and self._thread.is_alive())
 
     def boot(self) -> dict[str, Any]:
-        """Start the Freqtrade process without starting trading."""
+        """Run Freqtrade in-process so FastAPI Cloud can keep its native API alive."""
         if self.running:
-            return {"running": True, "pid": self.pid, "message": "already_running"}
+            return {"running": True, "message": "already_running"}
+        self._error = None
+        self._worker = None
         self._config_path = _write_config()
-        logger.info(
-            "Booting embedded Freqtrade runtime exchange=%s mode=%s dry_run=%s",
-            settings.exchange_name,
-            settings.trading_mode,
-            not settings.live_ready,
-        )
-        ctx = mp.get_context("spawn")
-        self._process = ctx.Process(
-            target=_worker_main,
-            args=(str(self._config_path),),
-            daemon=True,
-            name="freqtrade-engine",
-        )
-        self._process.start()
-        return {"running": True, "pid": self.pid, "message": "booted", "dry_run": not settings.live_ready}
+        self._thread = threading.Thread(target=self._thread_entry, args=(str(self._config_path),), daemon=True, name="freqtrade-engine")
+        self._thread.start()
+        return {"running": True, "message": "booted", "dry_run": not settings.live_ready}
 
-    def _wait_for_api(self, timeout: float = 30.0) -> None:
+    def _thread_entry(self, config_path: str) -> None:
+        try:
+            _worker_main(config_path)
+        except Exception as exc:
+            self._error = str(exc)
+            logger.exception("Embedded Freqtrade worker crashed")
+
+    async def wait_for_api(self, timeout: float = 30.0) -> None:
         deadline = time.monotonic() + timeout
         url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/ping"
         last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            if not self.running:
-                raise RuntimeError("Freqtrade process exited before its API became ready")
-            try:
-                with httpx.Client(timeout=2.0) as client:
-                    response = client.get(url)
-                if response.status_code == 200:
-                    return
-                last_error = RuntimeError(f"Freqtrade API ping returned HTTP {response.status_code}")
-            except Exception as exc:
-                last_error = exc
-            time.sleep(0.5)
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            while time.monotonic() < deadline:
+                if self._error:
+                    raise RuntimeError(f"Freqtrade failed to boot: {self._error}")
+                if not self.running:
+                    raise RuntimeError("Freqtrade worker exited before its API became ready")
+                try:
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        return
+                    last_error = RuntimeError(f"Freqtrade API ping returned HTTP {response.status_code}")
+                except Exception as exc:
+                    last_error = exc
+                await asyncio.sleep(0.5)
         raise RuntimeError("Freqtrade API did not become ready") from last_error
 
+    def _wait_for_api_sync(self, timeout: float = 30.0) -> None:
+        deadline = time.monotonic() + timeout
+        url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/ping"
+        while time.monotonic() < deadline:
+            if self._error:
+                raise RuntimeError(f"Freqtrade failed to boot: {self._error}")
+            if not self.running:
+                raise RuntimeError("Freqtrade worker exited before its API became ready")
+            try:
+                if httpx.get(url, timeout=2.0).status_code == 200:
+                    return
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.5)
+        raise RuntimeError("Freqtrade API did not become ready")
+
     def _api_command(self, command: str) -> dict[str, Any]:
-        self._wait_for_api()
+        self._wait_for_api_sync()
         url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/{command}"
         with httpx.Client(timeout=10.0) as client:
-            response = client.post(
-                url,
-                auth=(settings.freqtrade_api_username, settings.dashboard_token),
-            )
+            response = client.post(url, auth=(settings.freqtrade_api_username, settings.dashboard_token))
         if response.status_code >= 400:
             raise RuntimeError(f"Freqtrade /{command} returned HTTP {response.status_code}: {response.text[:300]}")
-        try:
-            return response.json()
-        except ValueError:
-            return {"status_code": response.status_code, "text": response.text}
+        return response.json()
 
     def start(self) -> dict[str, Any]:
-        """Start the process if needed, then tell native Freqtrade to start trading."""
         boot_result = self.boot()
         api_result = self._api_command("start")
-        return {
-            **boot_result,
-            "message": "started",
-            "trading": True,
-            "api": api_result,
-        }
+        return {**boot_result, "message": "started", "trading": True, "api": api_result}
 
     def stop(self) -> dict[str, Any]:
-        if not self._process:
-            return {"running": False, "pid": None, "message": "not_running"}
-        if self._process.is_alive():
-            logger.info("Stopping embedded Freqtrade runtime pid=%s", self._process.pid)
-            self._process.terminate()
-            self._process.join(timeout=20)
-            if self._process.is_alive():
-                logger.error("Freqtrade child did not stop gracefully; killing pid=%s", self._process.pid)
-                self._process.kill()
-                self._process.join(timeout=5)
-        pid = self._process.pid
-        self._process = None
+        if not self.running:
+            return {"running": False, "message": "not_running"}
+        try:
+            result = self._api_command("stop")
+            return {"running": True, "message": "trading_stopped", "api": result}
+        except Exception as exc:
+            logger.exception("Native Freqtrade stop failed")
+            return {"running": True, "message": "stop_failed", "error": str(exc)}
+
+    def status(self) -> dict[str, Any]:
+        return {"running": self.running, "error": self._error}
+
+    def shutdown(self) -> None:
+        # The worker thread is daemonized; the platform terminates it with the FastAPI process.
+        self._thread = None
+        self._worker = None
         if self._config_path:
             self._config_path.unlink(missing_ok=True)
             self._config_path = None
-        return {"running": False, "pid": pid, "message": "stopped"}
-
-    def status(self) -> dict[str, Any]:
-        if not self._process:
-            return {"running": False, "pid": None, "exitcode": None}
-        return {"running": self._process.is_alive(), "pid": self._process.pid, "exitcode": self._process.exitcode}
-
-    def shutdown(self) -> None:
-        try:
-            self.stop()
-        except Exception:
-            logger.exception("Failed to shut down Freqtrade runtime")
 
 
 runtime = FreqtradeRuntime()
