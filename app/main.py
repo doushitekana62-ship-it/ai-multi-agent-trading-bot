@@ -11,6 +11,7 @@ from .config import settings
 from .freqtrade_runtime import runtime
 from .logging_config import configure_logging
 from .market_snapshot import collector
+from .reconciliation import reconciler
 from .routers import dashboard, health, trading
 from .runtime_monitor import monitor
 
@@ -22,10 +23,12 @@ async def lifespan(_: FastAPI):
     configure_logging()
     logger.info("FastAPI runtime booting version=%s mode=%s", settings.app_version, settings.trading_mode)
     await collector.start()
+    await reconciler.start()
     await monitor.start()
     yield
     logger.info("FastAPI runtime shutting down")
     await monitor.stop()
+    await reconciler.stop()
     await collector.stop()
     runtime.shutdown()
 
