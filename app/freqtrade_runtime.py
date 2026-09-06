@@ -13,7 +13,6 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from .config import settings
 
 logger = logging.getLogger(__name__)
-
 _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping"))
 
 
@@ -30,10 +29,8 @@ def _supabase_db_url() -> str:
 def _build_freqtrade_config() -> dict[str, Any]:
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     if not pairs:
-        pairs = ["BTC/USDT"]
+        raise RuntimeError("TRADING_PAIRS must contain at least one pair")
 
-    # Bybit public market data is sufficient for paper trading. Credentials are
-    # intentionally omitted so this runtime cannot trade on Bybit by accident.
     exchange_config: dict[str, Any] = {
         "name": settings.exchange_name,
         "ccxt_config": {},
@@ -41,10 +38,14 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "pair_whitelist": pairs,
         "pair_blacklist": [],
     }
+    if settings.live_ready:
+        exchange_config["key"] = settings.indodax_api_key
+        exchange_config["secret"] = settings.indodax_api_secret
 
+    dry_run = not settings.live_ready
     return {
         "bot_name": settings.bot_name,
-        "dry_run": True,
+        "dry_run": dry_run,
         "dry_run_wallet": settings.paper_initial_balance,
         "db_url": _supabase_db_url(),
         "exchange": exchange_config,
@@ -94,11 +95,7 @@ def _worker_main(config_path: str) -> None:
         from freqtrade.enums import RunMode
         from freqtrade.worker import Worker
 
-        args: dict[str, Any] = {
-            "config": [config_path],
-            "command": "trade",
-            "runmode": RunMode.OTHER,
-        }
+        args: dict[str, Any] = {"config": [config_path], "command": "trade", "runmode": RunMode.OTHER}
         config = Configuration(args, RunMode.OTHER).get_config()
         worker = Worker(args, config=config)
 
@@ -133,11 +130,11 @@ class FreqtradeRuntime:
         if self.running:
             return {"running": True, "pid": self.pid, "message": "already_running"}
         self._config_path = _write_config()
-        logger.info("Starting embedded Freqtrade runtime config=%s exchange=%s mode=%s", self._config_path, settings.exchange_name, settings.trading_mode)
+        logger.info("Starting embedded Freqtrade runtime exchange=%s mode=%s dry_run=%s", settings.exchange_name, settings.trading_mode, not settings.live_ready)
         ctx = mp.get_context("spawn")
         self._process = ctx.Process(target=_worker_main, args=(str(self._config_path),), daemon=True, name="freqtrade-engine")
         self._process.start()
-        return {"running": True, "pid": self.pid, "message": "started"}
+        return {"running": True, "pid": self.pid, "message": "started", "dry_run": not settings.live_ready}
 
     def stop(self) -> dict[str, Any]:
         if not self._process:
