@@ -54,9 +54,12 @@ alter table public.fills enable row level security;
 alter table public.market_snapshots enable row level security;
 alter table public.strategy_metrics enable row level security;
 
-create policy if not exists fills_own on public.fills for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy if not exists market_snapshots_read on public.market_snapshots for select to authenticated using (true);
-create policy if not exists strategy_metrics_own on public.strategy_metrics for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists fills_own on public.fills;
+drop policy if exists market_snapshots_read on public.market_snapshots;
+drop policy if exists strategy_metrics_own on public.strategy_metrics;
+create policy fills_own on public.fills for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy market_snapshots_read on public.market_snapshots for select to authenticated using (true);
+create policy strategy_metrics_own on public.strategy_metrics for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 
 grant select,insert,update,delete on public.fills, public.market_snapshots, public.strategy_metrics to authenticated;
 create index if not exists idx_orders_exchange_order_id on public.orders (exchange_order_id);
