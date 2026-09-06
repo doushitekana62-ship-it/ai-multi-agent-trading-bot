@@ -8,7 +8,6 @@ import signal
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .config import settings
 
@@ -16,14 +15,10 @@ logger = logging.getLogger(__name__)
 _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping"))
 
 
-def _supabase_db_url() -> str:
-    db_url = settings.supabase_db_url.strip()
-    if not db_url:
-        raise RuntimeError("SUPABASE_DB_URL or DATABASE_URL is required before starting Freqtrade")
-    parts = urlsplit(db_url)
-    query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query["options"] = "-csearch_path=freqtrade,public"
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+def _sqlite_db_url() -> str:
+    path = Path(settings.freqtrade_db_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{path}"
 
 
 def _build_freqtrade_config() -> dict[str, Any]:
@@ -47,7 +42,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "bot_name": settings.bot_name,
         "dry_run": dry_run,
         "dry_run_wallet": settings.paper_initial_balance,
-        "db_url": _supabase_db_url(),
+        "db_url": _sqlite_db_url(),
         "exchange": exchange_config,
         "stake_currency": settings.stake_currency,
         "stake_amount": settings.stake_amount,
