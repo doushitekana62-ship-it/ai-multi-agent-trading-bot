@@ -43,6 +43,8 @@ def _build_freqtrade_config() -> dict[str, Any]:
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     if not pairs:
         raise RuntimeError("TRADING_PAIRS must contain at least one pair")
+    if not settings.dashboard_token:
+        raise RuntimeError("DASHBOARD_TOKEN must be configured before starting Freqtrade")
 
     exchange_config: dict[str, Any] = {
         "name": settings.exchange_name,
@@ -89,7 +91,18 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "verbosity": 0,
         "cancel_open_orders_on_exit": True,
         "force_entry_enable": False,
-        "api_server": {"enabled": False},
+        "api_server": {
+            "enabled": True,
+            "listen_ip_address": "127.0.0.1",
+            "listen_port": settings.freqtrade_api_port,
+            "verbosity": "error",
+            "enable_openapi": False,
+            "jwt_secret_key": settings.effective_freqtrade_jwt_secret,
+            "CORS_origins": [],
+            "username": settings.freqtrade_api_username,
+            "password": settings.dashboard_token,
+            "ws_token": settings.dashboard_token,
+        },
     }
 
 
