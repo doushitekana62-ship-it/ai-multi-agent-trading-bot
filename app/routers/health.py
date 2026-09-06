@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 
-import psycopg
 from fastapi import APIRouter
 
 from ..config import settings
@@ -15,7 +15,7 @@ router = APIRouter(tags=["health"])
 
 def _safe_error(exc: Exception) -> str:
     message = str(exc).replace("\n", " ").strip()
-    for secret in (settings.supabase_db_url, settings.supabase_service_role_key, settings.supabase_anon_key, settings.indodax_api_key, settings.indodax_api_secret):
+    for secret in (settings.dashboard_token, settings.indodax_api_key, settings.indodax_api_secret):
         if secret:
             message = message.replace(secret, "[redacted]")
     return f"{type(exc).__name__}: {message[:300]}"
@@ -31,21 +31,21 @@ async def health():
         "exchange": settings.exchange_name,
         "mode": settings.trading_mode,
         "live_ready": settings.live_ready,
+        "database": "local-sqlite",
     }
 
 
 async def _database_check() -> dict:
-    if not settings.supabase_db_url:
-        return {"ok": False, "error": "DATABASE_URL/SUPABASE_DB_URL is not configured"}
-    try:
-        async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
-            async with conn.cursor() as cur:
-                await cur.execute("select current_database(), current_schema()")
-                row = await cur.fetchone()
-        return {"ok": True, "database": row[0], "schema": row[1]}
-    except Exception as exc:
-        logger.exception("Supabase PostgreSQL dependency check failed")
-        return {"ok": False, "error": _safe_error(exc)}
+    def check() -> dict:
+        try:
+            with sqlite3.connect(settings.freqtrade_db_path, timeout=2) as conn:
+                conn.execute("select 1")
+                tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'")}
+            return {"ok": True, "path": settings.freqtrade_db_path, "tables": len(tables)}
+        except Exception as exc:
+            logger.exception("Local SQLite dependency check failed")
+            return {"ok": False, "error": _safe_error(exc)}
+    return await asyncio.to_thread(check)
 
 
 def _indodax_public_check() -> dict:
@@ -95,7 +95,7 @@ async def dependency_health():
     return {
         "ok": database["ok"] and indodax["ok"],
         "fastapi": True,
-        "supabase_postgres": database,
+        "local_sqlite": database,
         "indodax_ccxt_market_data": indodax,
         "freqtrade": {
             "embedded": True,
