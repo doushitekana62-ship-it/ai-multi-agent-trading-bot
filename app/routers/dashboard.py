@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from ..auth import current_user
 from ..config import settings
 from ..freqtrade_runtime import _writable_sqlite_path, runtime
+from ..runtime_monitor import monitor
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["dashboard"])
@@ -56,12 +57,13 @@ async def me(user=Depends(current_user)):
 async def dashboard(user=Depends(current_user)):
     trades = _rows("trades")
     orders = _rows("orders")
+    runtime_status = runtime.status()
     return {
         "engine": {
             "name": "freqtrade-embedded",
             "exchange": settings.exchange_name,
             "mode": settings.trading_mode,
-            "runtime": runtime.status(),
+            "runtime": runtime_status,
             "strategy": settings.strategy_name,
             "database": "local-sqlite",
         },
@@ -70,5 +72,12 @@ async def dashboard(user=Depends(current_user)):
         "orders": orders,
         "signals": [],
         "risk_events": [],
-        "health": "ok",
+        "health": {
+            "state": monitor.health.get("state"),
+            "runtime_ok": runtime_status["running"] and not runtime_status["error"],
+            "market_data_healthy": monitor.health.get("market_data_healthy"),
+            "database_healthy": monitor.health.get("db_healthy"),
+            "last_error": monitor.health.get("last_error"),
+            "updated_at": monitor.health.get("updated_at"),
+        },
     }

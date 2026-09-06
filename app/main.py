@@ -21,12 +21,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     configure_logging()
     logger.info("FastAPI runtime booting version=%s mode=%s", settings.app_version, settings.trading_mode)
+    boot_error = None
     try:
         runtime.boot()
-    except Exception:
+    except Exception as exc:
+        boot_error = f"{type(exc).__name__}: {exc}"
         logger.exception("Embedded Freqtrade API boot failed")
     await collector.start()
     await monitor.start()
+    if boot_error:
+        logger.error("FastAPI remains available for diagnostics; engine is unhealthy: %s", boot_error)
     yield
     logger.info("FastAPI runtime shutting down")
     await monitor.stop()
@@ -69,13 +73,15 @@ app.include_router(freqtrade_ui.router)
 
 @app.get("/")
 async def root():
+    runtime_status = runtime.status()
     return {
         "name": "compound-scalping",
         "engine": "freqtrade-embedded",
         "api": "fastapi",
         "database": "local-sqlite",
         "frontend": "github-pages",
-        "status": "ready",
+        "status": "ready" if runtime_status["running"] and not runtime_status["error"] else "degraded",
         "trading_mode": settings.trading_mode,
         "live_ready": settings.live_ready,
+        "engine_runtime": runtime_status,
     }

@@ -23,15 +23,18 @@ def _safe_error(exc: Exception) -> str:
 
 @router.get("/health")
 async def health():
+    runtime_status = runtime.status()
+    engine_ok = runtime_status["running"] and not runtime_status["error"]
     return {
-        "ok": True,
+        "ok": engine_ok,
         "service": "fastapi",
         "engine": "freqtrade-embedded",
-        "engine_runtime": runtime.status(),
+        "engine_runtime": runtime_status,
         "exchange": settings.exchange_name,
         "mode": settings.trading_mode,
         "live_ready": settings.live_ready,
         "database": "local-sqlite",
+        "database_path": settings.freqtrade_db_path,
     }
 
 
@@ -93,14 +96,16 @@ async def _indodax_check() -> dict:
 @router.get("/health/dependencies")
 async def dependency_health():
     database, indodax = await asyncio.gather(_database_check(), _indodax_check())
+    runtime_status = runtime.status()
+    runtime_ok = runtime_status["running"] and not runtime_status["error"]
     return {
-        "ok": database["ok"] and indodax["ok"],
+        "ok": database["ok"] and indodax["ok"] and runtime_ok,
         "fastapi": True,
         "local_sqlite": database,
         "indodax_ccxt_market_data": indodax,
         "freqtrade": {
             "embedded": True,
             "paper_mode": not settings.live_ready,
-            "runtime": runtime.status(),
+            "runtime": runtime_status,
         },
     }

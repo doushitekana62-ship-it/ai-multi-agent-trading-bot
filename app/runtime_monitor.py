@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from collections import deque
 from datetime import UTC, datetime
 
 from .config import settings
-from .freqtrade_runtime import runtime
+from .freqtrade_runtime import _writable_sqlite_path, runtime
 from .market_snapshot import collector
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,16 @@ class RuntimeMonitor:
             self._restart_times.popleft()
         return len(self._restart_times) < 3
 
+    @staticmethod
+    def _db_healthy() -> bool:
+        try:
+            path = _writable_sqlite_path()
+            with sqlite3.connect(path, timeout=2) as conn:
+                result = conn.execute("PRAGMA quick_check").fetchone()
+            return bool(result and result[0] == "ok")
+        except Exception:
+            return False
+
     async def _publish_health(self) -> None:
         status = runtime.status()
         running = bool(status["running"])
@@ -68,23 +79,31 @@ class RuntimeMonitor:
             for row in latest
             if row.get("captured_at")
         )
+        ws_healthy = bool(collector.ws_healthy and collector.ws_last_message_at)
         state = "RUNNING" if running else "STOPPED"
-        last_error = None
+        last_error = status.get("error")
         crashed = exitcode not in (None, 0)
         if crashed and exitcode != self._last_exitcode:
             state = "CRASHED"
-            last_error = f"Freqtrade child exited with code {exitcode}"
+            last_error = status.get("error") or f"Freqtrade worker exited with code {exitcode}"
             logger.error(last_error)
         elif running and not market_data_healthy:
             state = "RUNNING_UNVERIFIED"
-            last_error = "Engine is alive but no fresh market snapshot has been confirmed"
+            last_error = last_error or "Engine is alive but no fresh market snapshot has been confirmed"
+        elif running and not ws_healthy:
+            state = "RUNNING_DEGRADED"
+            last_error = last_error or "Indodax market websocket is not healthy; REST fallback remains active"
+        db_healthy = await asyncio.to_thread(self._db_healthy)
         self._last_exitcode = exitcode
         self.health = {
             "state": state,
             "market_data_healthy": market_data_healthy,
-            "websocket_healthy": market_data_healthy,
-            "private_stream_healthy": not settings.is_live,
-            "db_healthy": True,
+            "market_data_source": "websocket_with_rest_fallback",
+            "websocket_healthy": ws_healthy,
+            "websocket_last_message_at": collector.ws_last_message_at,
+            "websocket_reconnects": collector.ws_reconnects,
+            "private_stream_healthy": None if settings.is_live else True,
+            "db_healthy": db_healthy,
             "last_cycle_at": now.isoformat(),
             "last_error": last_error,
             "updated_at": now.isoformat(),

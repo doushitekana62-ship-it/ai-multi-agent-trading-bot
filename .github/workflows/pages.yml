@@ -5,7 +5,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/pages.yml"
-      - "**"
+      - "public/**"
+      - "docs/**"
   workflow_dispatch:
 
 permissions:
@@ -39,10 +40,13 @@ jobs:
       - name: Build official FreqUI
         env:
           VITE_BOT_API_URL: https://ai-multi-agent-trading-bot-e5328952.fastapicloud.dev
+          FREQUI_COMMIT: 5cade05d3fef32dee505609eff1a374d80939083
         run: |
-          git clone --depth 1 https://github.com/freqtrade/frequi.git /tmp/frequi
+          git init /tmp/frequi
           cd /tmp/frequi
-          git checkout 5cade05d3fef32dee505609eff1a374d80939083
+          git remote add origin https://github.com/freqtrade/frequi.git
+          git fetch --depth 1 origin "${FREQUI_COMMIT}"
+          git checkout --detach "${FREQUI_COMMIT}"
           python3 - <<'PY'
           from pathlib import Path
 
@@ -68,12 +72,9 @@ jobs:
           text = text.replace("auth.value.botName = '';", "auth.value.botName = 'compound-scalper';", 1)
           text = text.replace("auth.value.username = '';", "auth.value.username = 'doushitekana';", 1)
           text = text.replace("      urlState.value = false;", "      urlState.value = true;", 1)
-
-          # Keep the upstream FreqUI logic, but expose only the password field.
           text = text.replace('<UFormField class="mb-4" label="Bot Name">', '<UFormField class="hidden" label="Bot Name">', 1)
           text = text.replace('      class="mb-4"\n      label="API Url"', '      class="hidden"\n      label="API Url"', 1)
           text = text.replace('      class="mb-4"\n      label="Username"', '      class="hidden"\n      label="Username"', 1)
-          text = text.replace('      <UButton label="Reset" color="error" type="reset" />', '      <UButton label="Reset" color="error" type="reset" />', 1)
           text = text.replace('label="Submit" color="primary" type="submit"', 'label="Login" color="primary" type="submit"', 1)
           login.write_text(text)
           PY
