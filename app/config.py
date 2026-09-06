@@ -16,6 +16,9 @@ class Settings:
     cors_origins: str = os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
     freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
+    freqtrade_api_port: int = int(os.getenv("FREQTRADE_API_PORT", "8080"))
+    freqtrade_api_username: str = os.getenv("FREQTRADE_API_USERNAME", "Freqtrader")
+    freqtrade_jwt_secret: str = os.getenv("FREQTRADE_JWT_SECRET", "")
 
     # This project is Indodax-only. Ignore stale exchange environment values
     # (for example BYBIT) so a deployment cannot silently target another venue.
@@ -46,6 +49,13 @@ class Settings:
     @property
     def live_ready(self) -> bool:
         return self.is_live and self.live_trading_enabled and bool(self.indodax_api_key and self.indodax_api_secret)
+
+    @property
+    def effective_freqtrade_jwt_secret(self) -> str:
+        # Freqtrade requires a JWT secret. Prefer a dedicated secret, but keep
+        # the existing dashboard token as the deployment-safe fallback so the
+        # current environment does not require another secret to be introduced.
+        return self.freqtrade_jwt_secret or self.dashboard_token
 
 
 settings = Settings()
