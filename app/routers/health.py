@@ -7,7 +7,7 @@ import sqlite3
 from fastapi import APIRouter
 
 from ..config import settings
-from ..freqtrade_runtime import runtime
+from ..freqtrade_runtime import _writable_sqlite_path, runtime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
@@ -38,10 +38,11 @@ async def health():
 async def _database_check() -> dict:
     def check() -> dict:
         try:
-            with sqlite3.connect(settings.freqtrade_db_path, timeout=2) as conn:
+            path = _writable_sqlite_path()
+            with sqlite3.connect(path, timeout=2) as conn:
                 conn.execute("select 1")
                 tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'")}
-            return {"ok": True, "path": settings.freqtrade_db_path, "tables": len(tables)}
+            return {"ok": True, "path": str(path), "tables": len(tables)}
         except Exception as exc:
             logger.exception("Local SQLite dependency check failed")
             return {"ok": False, "error": _safe_error(exc)}
