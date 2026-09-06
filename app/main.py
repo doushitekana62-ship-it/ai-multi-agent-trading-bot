@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .freqtrade_runtime import runtime
 from .logging_config import configure_logging
+from .market_snapshot import collector
 from .routers import dashboard, health, trading
 from .runtime_monitor import monitor
 
@@ -19,23 +20,17 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging()
-    logger.info(
-        "FastAPI runtime booting version=%s mode=%s",
-        settings.app_version,
-        settings.trading_mode,
-    )
+    logger.info("FastAPI runtime booting version=%s mode=%s", settings.app_version, settings.trading_mode)
+    await collector.start()
     await monitor.start()
     yield
     logger.info("FastAPI runtime shutting down")
     await monitor.stop()
+    await collector.stop()
     runtime.shutdown()
 
 
-app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
-    lifespan=lifespan,
-)
+app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
 
 origins = [item.strip() for item in settings.cors_origins.split(",") if item.strip()]
 if origins:
@@ -54,22 +49,11 @@ async def request_logging(request: Request, call_next):
     try:
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - started) * 1000
-        logger.info(
-            "request method=%s path=%s status=%s duration_ms=%.2f",
-            request.method,
-            request.url.path,
-            response.status_code,
-            elapsed_ms,
-        )
+        logger.info("request method=%s path=%s status=%s duration_ms=%.2f", request.method, request.url.path, response.status_code, elapsed_ms)
         return response
     except Exception:
         elapsed_ms = (time.perf_counter() - started) * 1000
-        logger.exception(
-            "request_failed method=%s path=%s duration_ms=%.2f",
-            request.method,
-            request.url.path,
-            elapsed_ms,
-        )
+        logger.exception("request_failed method=%s path=%s duration_ms=%.2f", request.method, request.url.path, elapsed_ms)
         raise
 
 
@@ -88,4 +72,5 @@ async def root():
         "frontend": "github-static",
         "status": "ready",
         "trading_mode": settings.trading_mode,
+        "live_ready": settings.live_ready,
     }
