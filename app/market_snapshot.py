@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import UTC, datetime
+
+from websockets.asyncio.client import connect as ws_connect
 
 from .config import settings
 
@@ -11,7 +14,10 @@ logger = logging.getLogger(__name__)
 INDODAX_WS_URL = "wss://ws3.indodax.com/ws/"
 # INDODAX documents a public market-data token for this endpoint. Override it in
 # deployment if the venue rotates the token without requiring a code change.
-INDODAX_WS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE5NDY2MTg0MTV9.UR1lBM6Eqh0yWz-PVirw1uPCxe60FdchR8eNVdsskeo"
+INDODAX_WS_TOKEN = os.getenv(
+    "INDODAX_WS_TOKEN",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE5NDY2MTg0MTV9.UR1lBM6Eqh0yWz-PVirw1uPCxe60FdchR8eNVdsskeo",
+)
 
 
 class MarketSnapshotCollector:
@@ -106,11 +112,9 @@ class MarketSnapshotCollector:
             self.latest[row["symbol"]] = row
 
     async def _websocket_loop(self) -> None:
-        import websockets
-
         while not self._stop.is_set():
             try:
-                async with websockets.asyncio.client.connect(
+                async with ws_connect(
                     INDODAX_WS_URL,
                     open_timeout=15,
                     close_timeout=5,
