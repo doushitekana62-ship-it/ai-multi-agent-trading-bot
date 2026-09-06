@@ -12,17 +12,14 @@ DEFAULT_CORS_ORIGINS = "https://doushitekana62-ship-it.github.io"
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Compound Scalping API")
     app_version: str = os.getenv("APP_VERSION", "2.4.0")
-    # GitHub Pages is the production frontend. Keep the known origin enabled
-    # by default so a missing CORS env var cannot break the dashboard.
     cors_origins: str = os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
     freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
     freqtrade_api_port: int = int(os.getenv("FREQTRADE_API_PORT", "8080"))
-    freqtrade_api_username: str = os.getenv("FREQTRADE_API_USERNAME", "Freqtrader")
+    freqtrade_api_username: str = os.getenv("FREQTRADE_API_USERNAME", "doushitekana")
     freqtrade_jwt_secret: str = os.getenv("FREQTRADE_JWT_SECRET", "")
 
-    # This project is Indodax-only. Ignore stale exchange environment values
-    # (for example BYBIT) so a deployment cannot silently target another venue.
+    # This project is Indodax-only. Ignore stale exchange environment values.
     exchange_name: str = SUPPORTED_EXCHANGE
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
     bot_name: str = os.getenv("BOT_NAME", "compound-scalper")
