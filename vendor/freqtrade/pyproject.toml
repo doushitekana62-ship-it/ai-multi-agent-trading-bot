@@ -29,7 +29,6 @@ classifiers = [
 ]
 
 dependencies = [
-  # from requirements.txt
   "ccxt>=4.5.76",
   "SQLAlchemy>=2.0.6",
   "python-telegram-bot>=20.1",
@@ -78,7 +77,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Requirements used for submodules
 plot = ["plotly>=4.0"]
 hyperopt = [
   "cmaes",
@@ -96,23 +94,13 @@ freqai = [
 ]
 freqai_rl = [
   "gymnasium",
-  "sb3-contrib; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-  "stable-baselines3; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-  "torch; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+  "sb3-contrib; sys_platform != 'darwin' or sys_platform != 'x86_64'",
+  "stable-baselines3; sys_platform != 'darwin' or sys_platform != 'x86_64'",
+  "torch; sys_platform != 'darwin' or sys_platform != 'x86_64'",
   "tqdm",
 ]
 develop = [
   "mypy",
-  "pre-commit",
-  "pytest-asyncio",
-  "pytest-cov",
-  "pytest-mock",
-  "pytest-random-order",
-  "pytest-timeout",
-  "pytest-xdist",
-  "pytest",
-  "ruff",
-  "scipy-stubs",
   "pre-commit",
   "pytest-asyncio",
   "pytest-cov",
@@ -148,7 +136,6 @@ Homepage = "https://github.com/freqtrade/freqtrade"
 Documentation = "https://freqtrade.io"
 "Bug Tracker" = "https://github.com/freqtrade/freqtrade/issues"
 
-
 [project.scripts]
 freqtrade = "freqtrade.main:main"
 
@@ -171,8 +158,6 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 filterwarnings = [
-    # aiohttp warns that enable_cleanup_closed is a no-op on Python 3.14+
-    # It's set internally by ccxt/aiohttp and out of our control.
     "ignore:enable_cleanup_closed ignored:DeprecationWarning:aiohttp.connector",
 ]
 
@@ -181,8 +166,8 @@ ignore_missing_imports = true
 namespace_packages = false
 warn_unused_ignores = true
 exclude = [
-  '^build_helpers\\.py$',
-  '^ft_client/build/.*$',
+    '^build_helpers\\.py$',
+    '^ft_client/build/.*$',
 ]
 plugins = [
   "sqlalchemy.ext.mypy.plugin"
@@ -197,7 +182,6 @@ module = [
   "freqtrade.templates.*",
   "tests.strategy.strats"
 ]
-# Disable attr-defined check due to ta-lib not having type stubs
 disable_error_code = "attr-defined"
 
 [tool.pyright]
@@ -213,52 +197,75 @@ pythonPlatform = "All"
 pythonVersion = "3.11"
 
 typeCheckingMode = "off"
-# analyzeUnannotatedFunctions = false
 
-reportArgumentType = false  # 155
-reportAssignmentType = false  # 12
-reportAttributeAccessIssue = false  # 255
-reportCallIssue = false  # 23
-reportGeneralTypeIssues = false  # 15
-reportIncompatibleMethodOverride = false  # 15
-reportIncompatibleVariableOverride = false  # 5
-reportIndexIssue = false  # 22
-reportMissingImports = false  # 5
-reportOperatorIssue = false  # 7
-reportOptionalMemberAccess = false  # 35
-reportOptionalOperand = false  # 7
-reportPossiblyUnboundVariable = false  # 36
-reportPrivateImportUsage = false  # 5
-reportRedeclaration = false  # 1
-reportReturnType = false  # 28
-reportTypedDictNotRequiredAccess = false  # 35
+reportArgumentType = false
+reportAssignmentType = false
+reportAttributeAccessIssue = false
+reportCallIssue = false
+reportGeneralTypeIssues = false
+reportIncompatibleMethodOverride = false
+reportIncompatibleVariableOverride = false
+reportIndexIssue = false
+reportMissingImports = false
+reportOperatorIssue = false
+reportOptionalMemberAccess = false
+reportOptionalOperand = false
+reportPossiblyUnboundVariable = false
+reportPrivateImportUsage = false
+reportRedeclaration = false
+reportReturnType = false
+reportTypedDictNotRequiredAccess = false
+
+[tool.uv]
+exclude-newer = "1 week"
+
+[tool.uv.exclude-newer-package]
+ccxt = false
+ruff = "5 days"
+cryptography = "5 days"
 
 [tool.ruff]
 line-length = 100
-# TODO: markdown files should be linted.
 extend-exclude = [".env", ".venv", "*.md"]
 
 [tool.ruff.lint]
 extend-select = [
-  "C90",    # mccabe
-  "B",      # bugbear
-  "F",      # pyflakes
-  "E",      # pycodestyle
-  "W",      # pycodestyle
-  "UP",     # pyupgrade
-  "I",      # isort
-  "A",      # flake8-builtins
-  "TID",    # flake8-tidy-imports
-  "YTT",    # flake8-2020
-  "S",      # flake8-bandit
-  "PTH",    # flake8-use-pathlib
-  "RUF",    # ruff
-  "ASYNC",  # flake8-async
-  "NPY",    # numpy
+  "C90",
+  "B",
+  "F",
+  "E",
+  "W",
+  "UP",
+  "I",
+  "A",
+  "TID",
+  "YTT",
+  "S",
+  "PTH",
+  "RUF",
+  "ASYNC",
+  "NPY",
 ]
 
 extend-ignore = [
-  "E241", "E272", "E221", "B904", "S603", "S607", "S608", "NPY002", "RUF010", "RUF012", "RUF022", "RUF005", "BLE001", "SIM117", "N999", "DTZ007", "TRY401", "TRY004"
+  "E241",
+  "E272",
+  "E221",
+  "B904",
+  "S603",
+  "S607",
+  "S608",
+  "NPY002",
+  "RUF010",
+  "RUF012",
+  "RUF022",
+  "RUF005",
+  "BLE001",
+  "SIM117",
+  "N999",
+  "DTZ007",
+  "TRY401",
+  "TRY004",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -281,8 +288,15 @@ known-first-party = ["freqtrade_client"]
 ignore = ["E121","E123","E126","E24", "E203","E704","W503","W504"]
 max-line-length = 100
 max-complexity = 12
-exclude = [".git", "__pycache__", ".eggs", "user_data", ".venv", ".env"]
+exclude = [
+    ".git",
+    "__pycache__",
+    ".eggs",
+    "user_data",
+    ".venv",
+    ".env",
+]
 
 [tool.codespell]
 ignore-words-list = "coo,fo,strat,zar,selectin"
-skip="*.svg,./user_data,freqtrade/freqtrade/rpc/api_server/ui/installed,freqtrade/exchange/*.json"
+skip="*.svg,./user_data,freqtrade/rpc/api_server/ui/installed,freqtrade/exchange/*.json"
