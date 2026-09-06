@@ -5,10 +5,9 @@ import logging
 from collections import deque
 from datetime import UTC, datetime
 
-import psycopg
-
 from .config import settings
 from .freqtrade_runtime import runtime
+from .market_snapshot import collector
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +19,7 @@ class RuntimeMonitor:
         self._stop = asyncio.Event()
         self._last_exitcode: int | None = None
         self._restart_times: deque[datetime] = deque()
+        self.health: dict = {"state": "STARTING", "market_data_healthy": False, "updated_at": None}
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -61,62 +61,34 @@ class RuntimeMonitor:
         status = runtime.status()
         running = bool(status["running"])
         exitcode = status.get("exitcode")
-        if not running and exitcode is None:
-            return
-        if not settings.bot_owner_user_id or not settings.supabase_db_url:
-            return
-
-        last_error = None
+        now = datetime.now(UTC)
+        latest = list(collector.latest.values())
+        market_data_healthy = any(
+            (now - datetime.fromisoformat(row["captured_at"])).total_seconds() <= max(30.0, settings.process_throttle_secs * 6)
+            for row in latest
+            if row.get("captured_at")
+        )
         state = "RUNNING" if running else "STOPPED"
+        last_error = None
         crashed = exitcode not in (None, 0)
         if crashed and exitcode != self._last_exitcode:
             state = "CRASHED"
             last_error = f"Freqtrade child exited with code {exitcode}"
             logger.error(last_error)
+        elif running and not market_data_healthy:
+            state = "RUNNING_UNVERIFIED"
+            last_error = "Engine is alive but no fresh market snapshot has been confirmed"
         self._last_exitcode = exitcode
-
-        now = datetime.now(UTC)
-        market_data_healthy = False
-        websocket_healthy = False
-        private_stream_healthy = not settings.is_live
-
-        try:
-            async with await psycopg.AsyncConnection.connect(settings.supabase_db_url, connect_timeout=8) as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute("select captured_at from public.market_snapshots order by captured_at desc limit 1")
-                    row = await cur.fetchone()
-                    if row and row[0]:
-                        age = (now - row[0]).total_seconds()
-                        market_data_healthy = age <= max(30.0, settings.process_throttle_secs * 6)
-                        websocket_healthy = market_data_healthy
-                    if running and not market_data_healthy:
-                        state = "RUNNING_UNVERIFIED"
-                        last_error = "Engine is alive but no fresh market snapshot has been confirmed"
-
-                    await cur.execute(
-                        """
-                        insert into public.bot_health
-                        (user_id, mode, state, websocket_healthy, market_data_healthy,
-                         private_stream_healthy, db_healthy, last_cycle_at, last_error)
-                        values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        on conflict (user_id, mode) do update set
-                          state=excluded.state,
-                          websocket_healthy=excluded.websocket_healthy,
-                          market_data_healthy=excluded.market_data_healthy,
-                          private_stream_healthy=excluded.private_stream_healthy,
-                          db_healthy=excluded.db_healthy,
-                          last_cycle_at=excluded.last_cycle_at,
-                          last_error=excluded.last_error,
-                          updated_at=now()
-                        """,
-                        (settings.bot_owner_user_id, settings.trading_mode, state,
-                         websocket_healthy, market_data_healthy, private_stream_healthy,
-                         True, now, last_error),
-                    )
-                await conn.commit()
-        except Exception as exc:
-            logger.exception("Health database check failed: %s", exc)
-            return
+        self.health = {
+            "state": state,
+            "market_data_healthy": market_data_healthy,
+            "websocket_healthy": market_data_healthy,
+            "private_stream_healthy": not settings.is_live,
+            "db_healthy": True,
+            "last_cycle_at": now.isoformat(),
+            "last_error": last_error,
+            "updated_at": now.isoformat(),
+        }
 
         if crashed and self._restart_allowed(now):
             self._restart_times.append(now)
