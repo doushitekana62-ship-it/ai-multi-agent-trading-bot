@@ -5,19 +5,37 @@ import logging
 import multiprocessing as mp
 import os
 import signal
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from .config import settings
+from .config import DEFAULT_FREQTRADE_DB_PATH, settings
 
 logger = logging.getLogger(__name__)
 _RUNTIME_DIR = Path(os.getenv("FREQTRADE_RUNTIME_DIR", "/tmp/compound-scalping"))
 
 
+def _writable_sqlite_path() -> Path:
+    configured = Path(settings.freqtrade_db_path).expanduser()
+    fallback = Path(DEFAULT_FREQTRADE_DB_PATH)
+
+    for path in (configured, fallback):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(path, timeout=2) as conn:
+                conn.execute("select 1")
+            if path != configured:
+                logger.warning("Configured SQLite path is not writable; using fallback %s", path)
+            return path
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning("SQLite path unavailable %s: %s", path, exc)
+
+    raise RuntimeError("No writable SQLite path is available")
+
+
 def _sqlite_db_url() -> str:
-    path = Path(settings.freqtrade_db_path).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _writable_sqlite_path()
     return f"sqlite:///{path}"
 
 
@@ -67,7 +85,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
             "heartbeat_interval": settings.heartbeat_interval,
             "sd_notify": False,
         },
-        "logfile": "/app/logs/freqtrade.log",
+        "logfile": "/tmp/compound-scalping/freqtrade.log",
         "verbosity": 0,
         "cancel_open_orders_on_exit": True,
         "force_entry_enable": False,
