@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 DEFAULT_FREQTRADE_DB_PATH = "/tmp/compound-scalping/tradesv3.sqlite"
 SUPPORTED_EXCHANGE = "indodax"
+DEFAULT_TRADING_PAIR = "BTC/IDR"
 FREQTRADE_API_USERNAME = "doushitekana"
 DEFAULT_CORS_ORIGINS = "https://doushitekana62-ship-it.github.io"
 
@@ -21,13 +22,14 @@ class Settings:
     freqtrade_api_username: str = FREQTRADE_API_USERNAME
     freqtrade_jwt_secret: str = os.getenv("FREQTRADE_JWT_SECRET", "")
 
-    # This project is Indodax-only. Ignore stale exchange environment values.
+    # Dry-run baseline is intentionally fixed to Indodax BTC/IDR.
+    # Broker/pair selection will be reopened after the dry-run path is proven stable.
     exchange_name: str = SUPPORTED_EXCHANGE
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
     bot_name: str = os.getenv("BOT_NAME", "compound-scalper")
     strategy_name: str = os.getenv("FREQTRADE_STRATEGY", "CompoundScalpingStrategy")
-    trading_pairs: str = os.getenv("TRADING_PAIRS", "BTC/IDR")
-    stake_currency: str = os.getenv("STAKE_CURRENCY", "IDR")
+    trading_pairs: str = DEFAULT_TRADING_PAIR
+    stake_currency: str = "IDR"
     stake_amount: float = float(os.getenv("STAKE_AMOUNT", "100000"))
     paper_initial_balance: float = float(os.getenv("PAPER_INITIAL_BALANCE", "1000000"))
     max_open_trades: int = int(os.getenv("MAX_OPEN_TRADES", "1"))
