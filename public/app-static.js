@@ -1,36 +1,17 @@
-let sb;
 const apiBaseUrl = (window.APP_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
-
-async function boot() {
-  const config = window.APP_CONFIG || {};
-  if (!config.supabaseUrl || !config.supabaseAnonKey || !apiBaseUrl) {
-    throw Error("public/config.js is not configured");
-  }
-  sb = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
-    auth: { autoRefreshToken: true, persistSession: true, detectSessionInUrl: true },
-  });
-  const { data } = await sb.auth.getSession();
-  if (data.session) show();
-}
-
-async function signIn() {
-  const email = emailEl.value.trim();
-  const password = passwordEl.value;
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) {
-    loginMsg.textContent = error.message;
-    return;
-  }
-  if (data.session) show();
-}
+const TOKEN_KEY = "compound_scalping_dashboard_token";
 
 async function api(path, options = {}) {
-  const { data } = await sb.auth.getSession();
-  if (!data.session) throw Error("Session expired");
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) throw Error("Dashboard token is not set");
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", `Bearer ${data.session.access_token}`);
+  headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(`${apiBaseUrl}${path}`, { ...options, headers });
+  if (response.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    throw Error("Dashboard token is invalid or expired");
+  }
   if (!response.ok) throw Error(await response.text());
   return response.json();
 }
@@ -50,22 +31,34 @@ async function load() {
   }
 }
 
+async function connect() {
+  const token = tokenEl.value.trim();
+  if (!token) {
+    loginMsg.textContent = "Enter the dashboard token.";
+    return;
+  }
+  localStorage.setItem(TOKEN_KEY, token);
+  try {
+    await api("/me");
+    show();
+  } catch (e) {
+    localStorage.removeItem(TOKEN_KEY);
+    loginMsg.textContent = e.message;
+  }
+}
+
 async function startEngine() {
   try {
     await api("/engine/start", { method: "POST" });
     await load();
-  } catch (e) {
-    data.textContent = e.message;
-  }
+  } catch (e) { data.textContent = e.message; }
 }
 
 async function stopEngine() {
   try {
     await api("/engine/stop", { method: "POST" });
     await load();
-  } catch (e) {
-    data.textContent = e.message;
-  }
+  } catch (e) { data.textContent = e.message; }
 }
 
 function show() {
@@ -74,8 +67,7 @@ function show() {
   load();
 }
 
-const emailEl = document.querySelector("#email");
-const passwordEl = document.querySelector("#password");
+const tokenEl = document.querySelector("#token");
 const login = document.querySelector("#login");
 const dashboard = document.querySelector("#dashboard");
 const loginMsg = document.querySelector("#loginMsg");
@@ -85,16 +77,18 @@ const engine = document.querySelector("#engine");
 const positions = document.querySelector("#positions");
 const data = document.querySelector("#data");
 
-document.querySelector("#loginBtn").onclick = signIn;
+document.querySelector("#loginBtn").onclick = connect;
 document.querySelector("#refresh").onclick = load;
 document.querySelector("#startEngine").onclick = startEngine;
 document.querySelector("#stopEngine").onclick = stopEngine;
-document.querySelector("#logout").onclick = async () => {
-  await sb.auth.signOut();
+document.querySelector("#logout").onclick = () => {
+  localStorage.removeItem(TOKEN_KEY);
   location.reload();
 };
 
-boot().catch((e) => {
+if (!apiBaseUrl) {
   state.textContent = "ERROR";
-  loginMsg.textContent = e.message;
-});
+  loginMsg.textContent = "FastAPI URL is not configured.";
+} else if (localStorage.getItem(TOKEN_KEY)) {
+  api("/me").then(show).catch(() => localStorage.removeItem(TOKEN_KEY));
+}
