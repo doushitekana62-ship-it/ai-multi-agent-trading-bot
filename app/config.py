@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 DEFAULT_FREQTRADE_DB_PATH = "/tmp/compound-scalping/tradesv3.sqlite"
 SUPPORTED_EXCHANGE = "indodax"
+FREQTRADE_API_USERNAME = "doushitekana"
 DEFAULT_CORS_ORIGINS = "https://doushitekana62-ship-it.github.io"
 
 
@@ -16,7 +17,8 @@ class Settings:
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
     freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
     freqtrade_api_port: int = int(os.getenv("FREQTRADE_API_PORT", "8080"))
-    freqtrade_api_username: str = os.getenv("FREQTRADE_API_USERNAME", "doushitekana")
+    # This dashboard has one fixed Freqtrade API identity. Ignore stale env values.
+    freqtrade_api_username: str = FREQTRADE_API_USERNAME
     freqtrade_jwt_secret: str = os.getenv("FREQTRADE_JWT_SECRET", "")
 
     # This project is Indodax-only. Ignore stale exchange environment values.
