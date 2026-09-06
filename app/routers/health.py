@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
-import httpx
 import psycopg
 from fastapi import APIRouter
 
@@ -15,7 +15,7 @@ router = APIRouter(tags=["health"])
 
 def _safe_error(exc: Exception) -> str:
     message = str(exc).replace("\n", " ").strip()
-    for secret in (settings.supabase_db_url, settings.supabase_service_role_key, settings.supabase_anon_key):
+    for secret in (settings.supabase_db_url, settings.supabase_service_role_key, settings.supabase_anon_key, settings.indodax_api_key, settings.indodax_api_secret):
         if secret:
             message = message.replace(secret, "[redacted]")
     return f"{type(exc).__name__}: {message[:300]}"
@@ -23,8 +23,6 @@ def _safe_error(exc: Exception) -> str:
 
 @router.get("/health")
 async def health():
-    # Keep the platform liveness endpoint dependency-free. Database and
-    # exchange diagnostics live under /health/dependencies.
     return {
         "ok": True,
         "service": "fastapi",
@@ -32,6 +30,7 @@ async def health():
         "engine_runtime": runtime.status(),
         "exchange": settings.exchange_name,
         "mode": settings.trading_mode,
+        "live_ready": settings.live_ready,
     }
 
 
@@ -49,58 +48,58 @@ async def _database_check() -> dict:
         return {"ok": False, "error": _safe_error(exc)}
 
 
-async def _bybit_check() -> dict:
-    if settings.exchange_name.lower() != "bybit":
-        return {"ok": False, "error": f"Expected EXCHANGE_NAME=bybit, got {settings.exchange_name}"}
-    pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
-    symbol = pairs[0] if pairs else "BTC/USDT"
-    params = {"category": "spot", "symbol": symbol.replace("/", "")}
-    endpoints = ("https://api.bybit.com", "https://api.bytick.com")
-    errors: list[str] = []
+def _indodax_public_check() -> dict:
+    try:
+        import ccxt
 
-    async with httpx.AsyncClient(timeout=8) as client:
-        for base_url in endpoints:
-            try:
-                response = await client.get(f"{base_url}/v5/market/tickers", params=params)
-                payload = response.json()
-                if response.status_code >= 400:
-                    body = response.text.replace("\n", " ").strip()[:300]
-                    errors.append(f"{base_url}: HTTP {response.status_code}: {body}")
-                    continue
-                if payload.get("retCode") not in (0, None):
-                    errors.append(f"{base_url}: retCode={payload.get('retCode')} retMsg={payload.get('retMsg')}")
-                    continue
-                result = payload.get("result", {}).get("list", [])
-                if not result:
-                    errors.append(f"{base_url}: symbol_not_found")
-                    continue
-                ticker = result[0]
-                return {
-                    "ok": True,
-                    "exchange": "bybit",
-                    "endpoint": base_url,
-                    "symbol": symbol,
-                    "last_price": ticker.get("lastPrice"),
-                    "bid": ticker.get("bid1Price"),
-                    "ask": ticker.get("ask1Price"),
-                }
-            except Exception as exc:
-                errors.append(f"{base_url}: {_safe_error(exc)}")
+        exchange = ccxt.indodax({"enableRateLimit": True})
+        markets = exchange.load_markets()
+        pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
+        symbol = pairs[0] if pairs else "BTC/IDR"
+        if symbol not in markets:
+            return {"ok": False, "exchange": "indodax", "error": f"symbol_not_found: {symbol}"}
+        ticker = exchange.fetch_ticker(symbol)
+        orderbook = exchange.fetch_order_book(symbol, limit=5)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=settings.timeframe, limit=2)
+        bid = ticker.get("bid")
+        ask = ticker.get("ask")
+        spread_bps = None
+        if bid and ask and bid > 0:
+            spread_bps = ((ask - bid) / bid) * 10000
+        return {
+            "ok": True,
+            "exchange": "indodax",
+            "symbol": symbol,
+            "markets_loaded": len(markets),
+            "last_price": ticker.get("last"),
+            "bid": bid,
+            "ask": ask,
+            "spread_bps": spread_bps,
+            "orderbook_levels": len(orderbook.get("bids", [])) + len(orderbook.get("asks", [])),
+            "ohlcv_candles": len(ohlcv),
+        }
+    except Exception as exc:
+        logger.exception("Indodax CCXT public compatibility check failed")
+        return {"ok": False, "exchange": "indodax", "error": _safe_error(exc)}
 
-    return {"ok": False, "symbol": symbol, "error": " | ".join(errors)[:900]}
+
+async def _indodax_check() -> dict:
+    if settings.exchange_name.lower() != "indodax":
+        return {"ok": False, "error": f"Expected EXCHANGE_NAME=indodax, got {settings.exchange_name}"}
+    return await asyncio.to_thread(_indodax_public_check)
 
 
 @router.get("/health/dependencies")
 async def dependency_health():
-    database, bybit = await _database_check(), await _bybit_check()
+    database, indodax = await asyncio.gather(_database_check(), _indodax_check())
     return {
-        "ok": database["ok"] and bybit["ok"],
+        "ok": database["ok"] and indodax["ok"],
         "fastapi": True,
         "supabase_postgres": database,
-        "bybit_market_data": bybit,
+        "indodax_ccxt_market_data": indodax,
         "freqtrade": {
             "embedded": True,
-            "paper_mode": not settings.is_live,
+            "paper_mode": not settings.live_ready,
             "runtime": runtime.status(),
         },
     }
