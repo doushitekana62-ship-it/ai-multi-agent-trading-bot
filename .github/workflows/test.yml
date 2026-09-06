@@ -17,6 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip setuptools wheel
       - name: Compile Python sources
         run: python -m compileall -q app user_data/strategies vendor/freqtrade/freqtrade
       - name: Validate vendored Freqtrade commit marker
