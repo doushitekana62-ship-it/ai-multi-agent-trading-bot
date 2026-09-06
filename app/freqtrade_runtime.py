@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -33,12 +34,19 @@ def _writable_sqlite_path() -> Path:
     raise RuntimeError("No writable SQLite path is available")
 
 
+def _internal_api_password() -> str:
+    if not settings.dashboard_token:
+        raise RuntimeError("DASHBOARD_TOKEN must be configured before starting Freqtrade")
+    return hashlib.sha256(
+        f"{settings.dashboard_token}:freqtrade-api".encode("utf-8")
+    ).hexdigest()
+
+
 def _build_freqtrade_config() -> dict[str, Any]:
     pairs = [item.strip() for item in settings.trading_pairs.split(",") if item.strip()]
     if not pairs:
         raise RuntimeError("TRADING_PAIRS must contain at least one pair")
-    if not settings.dashboard_token:
-        raise RuntimeError("DASHBOARD_TOKEN must be configured before starting Freqtrade")
+    api_password = _internal_api_password()
 
     exchange_config: dict[str, Any] = {
         "name": settings.exchange_name,
@@ -84,8 +92,8 @@ def _build_freqtrade_config() -> dict[str, Any]:
             "jwt_secret_key": settings.effective_freqtrade_jwt_secret,
             "CORS_origins": [],
             "username": settings.freqtrade_api_username,
-            "password": settings.dashboard_token,
-            "ws_token": settings.dashboard_token,
+            "password": api_password,
+            "ws_token": api_password,
         },
     }
 
@@ -121,6 +129,10 @@ class FreqtradeRuntime:
     @property
     def running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
+
+    @property
+    def api_password(self) -> str:
+        return _internal_api_password()
 
     def boot(self) -> dict[str, Any]:
         """Run Freqtrade in-process so FastAPI Cloud can keep its native API alive."""
@@ -180,7 +192,7 @@ class FreqtradeRuntime:
         self._wait_for_api_sync()
         url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/{command}"
         with httpx.Client(timeout=10.0) as client:
-            response = client.post(url, auth=(settings.freqtrade_api_username, settings.dashboard_token))
+            response = client.post(url, auth=(settings.freqtrade_api_username, self.api_password))
         if response.status_code >= 400:
             raise RuntimeError(f"Freqtrade /{command} returned HTTP {response.status_code}: {response.text[:300]}")
         return response.json()
@@ -204,7 +216,6 @@ class FreqtradeRuntime:
         return {"running": self.running, "error": self._error}
 
     def shutdown(self) -> None:
-        # The worker thread is daemonized; the platform terminates it with the FastAPI process.
         self._thread = None
         self._worker = None
         if self._config_path:
