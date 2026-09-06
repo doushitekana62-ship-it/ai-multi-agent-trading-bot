@@ -23,10 +23,19 @@ def _ensure_owner(user: dict) -> None:
 def _validate_start() -> None:
     if not settings.supabase_db_url:
         raise HTTPException(status_code=503, detail="SUPABASE_DB_URL is not configured")
-    if settings.is_live and (not settings.indodax_api_key or not settings.indodax_api_secret):
-        raise HTTPException(status_code=503, detail="Indodax API credentials are required for live mode")
+    if settings.exchange_name != "indodax":
+        raise HTTPException(status_code=503, detail="EXCHANGE_NAME must be indodax for this bot")
+    if settings.is_live:
+        if not settings.live_trading_enabled:
+            raise HTTPException(status_code=409, detail="Live trading is safety-locked. Set LIVE_TRADING_ENABLED=true only after compatibility and reconciliation tests pass")
+        if not settings.indodax_api_key or not settings.indodax_api_secret:
+            raise HTTPException(status_code=503, detail="Indodax API credentials are required for live mode")
     if settings.stake_amount <= 0:
         raise HTTPException(status_code=503, detail="STAKE_AMOUNT must be greater than zero")
+    if settings.max_open_trades < 1:
+        raise HTTPException(status_code=503, detail="MAX_OPEN_TRADES must be at least 1")
+    if settings.process_throttle_secs <= 0:
+        raise HTTPException(status_code=503, detail="PROCESS_THROTTLE_SECS must be greater than zero")
 
 
 @router.get("/engine/status")
@@ -36,6 +45,7 @@ async def engine_status(user=Depends(current_user)):
         "engine": "freqtrade-embedded",
         "exchange": settings.exchange_name,
         "mode": settings.trading_mode,
+        "live_ready": settings.live_ready,
         "runtime": runtime.status(),
         "strategy": settings.strategy_name,
         "pairs": [item.strip() for item in settings.trading_pairs.split(",") if item.strip()],
