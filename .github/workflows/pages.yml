@@ -40,8 +40,9 @@ jobs:
         env:
           VITE_BOT_API_URL: https://ai-multi-agent-trading-bot-e5328952.fastapicloud.dev
         run: |
-          git clone --depth 1 --branch 3.1.2 https://github.com/freqtrade/frequi.git /tmp/frequi
+          git clone --depth 1 https://github.com/freqtrade/frequi.git /tmp/frequi
           cd /tmp/frequi
+          git checkout 5cade05d3fef32dee505609eff1a374d80939083
           python3 - <<'PY'
           from pathlib import Path
 
@@ -64,12 +65,8 @@ jobs:
           elif url_new not in text:
               raise SystemExit("Could not locate FreqUI default API URL")
 
-          username_old = "placeholder=\"Freqtrader\""
-          username_new = "placeholder=\"doushitekana\""
-          if username_old in text:
-              text = text.replace(username_old, username_new, 1)
-          elif username_new not in text:
-              raise SystemExit("Could not locate FreqUI username placeholder")
+          text = text.replace("username: '',", "username: 'doushitekana',", 1)
+          text = text.replace("auth.value.username = '';", "auth.value.username = 'doushitekana';", 1)
           login.write_text(text)
           PY
           pnpm install --frozen-lockfile
