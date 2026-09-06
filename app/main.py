@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     configure_logging()
     logger.info("FastAPI runtime booting version=%s mode=%s", settings.app_version, settings.trading_mode)
+    try:
+        runtime.boot()
+    except Exception:
+        logger.exception("Embedded Freqtrade API boot failed")
     await collector.start()
     await monitor.start()
     yield
