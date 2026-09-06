@@ -38,11 +38,31 @@ jobs:
           cp /tmp/freqtrade-src/LICENSE vendor/freqtrade/LICENSE
           printf '%s\n' "$FREQTRADE_COMMIT" > vendor/freqtrade/SOURCE_COMMIT
 
+      - name: Make Freqtrade package metadata build-safe
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("vendor/freqtrade/pyproject.toml")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              'name = "freqtrade"\ndynamic = ["version"]',
+              'name = "freqtrade"\nversion = "2026.9-dev"',
+          )
+          text = text.replace(
+              '\n[tool.setuptools.dynamic]\nversion = {attr = "freqtrade.__version__"}\n',
+              '\n',
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
+
       - name: Verify vendored source
         run: |
           test -f vendor/freqtrade/freqtrade/__init__.py
           test -f vendor/freqtrade/freqtrade/freqtradebot.py
           test -f vendor/freqtrade/freqtrade/worker.py
+          grep -q '^version = "2026.9-dev"$' vendor/freqtrade/pyproject.toml
+          ! grep -q '^dynamic = \["version"\]$' vendor/freqtrade/pyproject.toml
 
       - name: Commit vendored source
         run: |
