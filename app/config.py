@@ -2,15 +2,21 @@ import os
 from dataclasses import dataclass
 
 
+DEFAULT_FREQTRADE_DB_PATH = "/tmp/compound-scalping/tradesv3.sqlite"
+SUPPORTED_EXCHANGE = "indodax"
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Compound Scalping API")
     app_version: str = os.getenv("APP_VERSION", "2.4.0")
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
-    freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", "/app/data/tradesv3.sqlite")
+    freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
 
-    exchange_name: str = os.getenv("EXCHANGE_NAME", "indodax").lower()
+    # This project is Indodax-only. Ignore stale exchange environment values
+    # (for example BYBIT) so a deployment cannot silently target another venue.
+    exchange_name: str = SUPPORTED_EXCHANGE
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
     bot_name: str = os.getenv("BOT_NAME", "compound-scalper")
     strategy_name: str = os.getenv("FREQTRADE_STRATEGY", "CompoundScalpingStrategy")
