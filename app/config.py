@@ -1,3 +1,4 @@
+import hashlib
 import os
 from dataclasses import dataclass
 
@@ -52,10 +53,14 @@ class Settings:
 
     @property
     def effective_freqtrade_jwt_secret(self) -> str:
-        # Freqtrade requires a JWT secret. Prefer a dedicated secret, but keep
-        # the existing dashboard token as the deployment-safe fallback so the
-        # current environment does not require another secret to be introduced.
-        return self.freqtrade_jwt_secret or self.dashboard_token
+        # Freqtrade requires a JWT secret of at least 32 characters. A dedicated
+        # secret is preferred; otherwise derive a fixed 64-character secret from
+        # the existing dashboard token without exposing the token itself.
+        if self.freqtrade_jwt_secret:
+            return self.freqtrade_jwt_secret
+        if not self.dashboard_token:
+            return ""
+        return hashlib.sha256(self.dashboard_token.encode("utf-8")).hexdigest()
 
 
 settings = Settings()
