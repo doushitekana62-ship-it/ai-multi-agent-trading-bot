@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY app ./app
 COPY user_data ./user_data
 
-RUN mkdir -p /app/logs /app/user_data/data /app/user_data/backtest_results
+RUN mkdir -p /app/logs /app/data /app/runtime /app/user_data/data /app/user_data/backtest_results
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
