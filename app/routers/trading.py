@@ -41,6 +41,16 @@ async def engine_status(user=Depends(current_user)):
     }
 
 
+@router.get("/engine/diagnostics")
+async def engine_diagnostics(user=Depends(current_user)):
+    """Safe diagnostic endpoint for the embedded worker and its local log tail."""
+    try:
+        return runtime.diagnostics()
+    except Exception as exc:
+        logger.exception("Engine diagnostics failed")
+        raise HTTPException(status_code=500, detail="Unable to read engine diagnostics") from exc
+
+
 @router.post("/engine/start")
 async def engine_start(user=Depends(current_user)):
     _validate_start()
