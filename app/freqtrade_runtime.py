@@ -168,14 +168,20 @@ class FreqtradeRuntime:
         self._error = None
         self._exitcode = None
         self._worker = None
-        self._config_path = _write_config()
-        self._thread = threading.Thread(
-            target=self._thread_entry,
-            args=(str(self._config_path),),
-            daemon=True,
-            name="freqtrade-engine",
-        )
-        self._thread.start()
+        try:
+            self._config_path = _write_config()
+            self._thread = threading.Thread(
+                target=self._thread_entry,
+                args=(str(self._config_path),),
+                daemon=True,
+                name="freqtrade-engine",
+            )
+            self._thread.start()
+        except Exception as exc:
+            self._error = f"{type(exc).__name__}: {exc}"
+            self._exitcode = 1
+            logger.exception("Freqtrade boot preparation failed")
+            raise
         return {
             "running": True,
             "message": "booted",
@@ -238,12 +244,19 @@ class FreqtradeRuntime:
         return response.json()
 
     def start(self) -> dict[str, Any]:
-        boot_result = self.boot()
-        self._wait_for_api_sync(timeout=30.0)
-        if settings.should_auto_start:
-            return {**boot_result, "message": "started", "trading": True}
-        api_result = self._api_command("start")
-        return {**boot_result, "message": "started", "trading": True, "api": api_result}
+        try:
+            boot_result = self.boot()
+            self._wait_for_api_sync(timeout=30.0)
+            if settings.should_auto_start:
+                return {**boot_result, "message": "started", "trading": True}
+            api_result = self._api_command("start")
+            return {**boot_result, "message": "started", "trading": True, "api": api_result}
+        except Exception as exc:
+            if not self._error:
+                self._error = f"{type(exc).__name__}: {exc}"
+            self._exitcode = self._exitcode or 1
+            logger.exception("Freqtrade runtime start failed")
+            raise
 
     def stop(self) -> dict[str, Any]:
         if not self.running:
