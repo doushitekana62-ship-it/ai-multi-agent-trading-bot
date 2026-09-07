@@ -19,8 +19,6 @@ from .config import DEFAULT_FREQTRADE_DB_PATH, settings
 
 logger = logging.getLogger(__name__)
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
-# FastAPI Cloud may install requirements differently from Docker. Keep the vendored
-# source importable as a runtime fallback; Docker still installs the package normally.
 _VENDOR_FREQTRADE = _PROJECT_DIR / "vendor" / "freqtrade"
 if _VENDOR_FREQTRADE.is_dir() and str(_VENDOR_FREQTRADE) not in sys.path:
     sys.path.insert(0, str(_VENDOR_FREQTRADE))
@@ -71,6 +69,11 @@ def _build_freqtrade_config() -> dict[str, Any]:
         exchange_config["key"] = settings.indodax_api_key
         exchange_config["secret"] = settings.indodax_api_secret
 
+    # Development/paper mode is intentionally started automatically. This is
+    # safe because live_ready is false unless live mode, the explicit live
+    # switch, and both Indodax credentials are present.
+    initial_state = "running" if settings.should_auto_start else "stopped"
+
     return {
         "bot_name": settings.bot_name,
         "dry_run": not settings.live_ready,
@@ -98,7 +101,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
             "stoploss": "market",
             "stoploss_on_exchange": False,
         },
-        "initial_state": "stopped",
+        "initial_state": initial_state,
         "force_entry_enable": True,
         "internals": {
             "process_throttle_secs": settings.process_throttle_secs,
@@ -176,7 +179,12 @@ class FreqtradeRuntime:
             name="freqtrade-engine",
         )
         self._thread.start()
-        return {"running": True, "message": "booted", "dry_run": not settings.live_ready}
+        return {
+            "running": True,
+            "message": "booted",
+            "dry_run": not settings.live_ready,
+            "auto_started": settings.should_auto_start,
+        }
 
     def _thread_entry(self, config_path: str) -> None:
         try:
@@ -234,6 +242,8 @@ class FreqtradeRuntime:
 
     def start(self) -> dict[str, Any]:
         boot_result = self.boot()
+        if settings.should_auto_start:
+            return {**boot_result, "message": "started", "trading": True}
         api_result = self._api_command("start")
         return {**boot_result, "message": "started", "trading": True, "api": api_result}
 
@@ -248,7 +258,13 @@ class FreqtradeRuntime:
             return {"running": True, "message": "stop_failed", "error": str(exc)}
 
     def status(self) -> dict[str, Any]:
-        return {"running": self.running, "error": self._error, "exitcode": self._exitcode}
+        return {
+            "running": self.running,
+            "error": self._error,
+            "exitcode": self._exitcode,
+            "auto_start": settings.should_auto_start,
+            "mode": settings.trading_mode,
+        }
 
     def diagnostics(self) -> dict[str, Any]:
         tail: list[str] = []
