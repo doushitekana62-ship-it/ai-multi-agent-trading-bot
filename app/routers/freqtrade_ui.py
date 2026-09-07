@@ -57,11 +57,10 @@ def _dashboard_bearer(request: Request) -> bool:
 
 
 async def _ensure_api_ready() -> None:
+    if not settings.trading_active:
+        raise RuntimeError("Trading is inactive by master safety switch")
     try:
         async with _ENGINE_START_LOCK:
-            # Boot only starts the worker thread and returns quickly. Do not
-            # call runtime.start() here because that method synchronously waits
-            # for the embedded Freqtrade API and can hold an HTTP request.
             if not runtime.running:
                 await asyncio.to_thread(runtime.boot)
             await runtime.wait_for_api(timeout=_ENGINE_BOOT_TIMEOUT)
@@ -71,6 +70,8 @@ async def _ensure_api_ready() -> None:
 
 @router.api_route("/api/v1/ping", methods=["GET", "HEAD"])
 async def freqtrade_ping() -> Response:
+    if not settings.trading_active:
+        return JSONResponse({"status": "inactive", "trading_active": False, "runtime": runtime.status()})
     try:
         await _ensure_api_ready()
     except RuntimeError as exc:
