@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -55,7 +56,10 @@ async def engine_diagnostics(user=Depends(current_user)):
 async def engine_start(user=Depends(current_user)):
     _validate_start()
     try:
-        result = runtime.start()
+        # runtime.start() performs synchronous polling while the embedded
+        # Freqtrade API comes up. Move that blocking operation off the
+        # FastAPI event loop so other requests remain responsive.
+        result = await asyncio.to_thread(runtime.start)
         logger.info("Engine start requested result=%s", result)
         return result
     except Exception as exc:
@@ -66,7 +70,7 @@ async def engine_start(user=Depends(current_user)):
 @router.post("/engine/stop")
 async def engine_stop(user=Depends(current_user)):
     try:
-        result = runtime.stop()
+        result = await asyncio.to_thread(runtime.stop)
         logger.info("Engine stop requested result=%s", result)
         return result
     except Exception as exc:
