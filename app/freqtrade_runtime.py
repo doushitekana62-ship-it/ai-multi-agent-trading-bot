@@ -90,8 +90,11 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "strategy": settings.strategy_name,
         "strategy_path": str(_STRATEGY_DIR),
         "user_data_dir": str(_USER_DATA_DIR),
-        "entry_pricing": {"price_side": "same", "use_order_book": False},
-        "exit_pricing": {"price_side": "same", "use_order_book": False},
+        # Freqtrade requires market orders to price against the opposite side
+        # of the spread. This also makes dry-run pricing more representative
+        # of the taker-style execution configured below.
+        "entry_pricing": {"price_side": "other", "use_order_book": False},
+        "exit_pricing": {"price_side": "other", "use_order_book": False},
         "order_types": {
             "entry": "market",
             "exit": "market",
