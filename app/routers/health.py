@@ -49,6 +49,12 @@ async def health():
     }
 
 
+@router.get("/health/diagnostics")
+async def diagnostics():
+    """Safe runtime diagnostics; secrets are never returned."""
+    return runtime.diagnostics()
+
+
 async def _database_check() -> dict:
     def check() -> dict:
         try:
