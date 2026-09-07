@@ -22,8 +22,6 @@ class CompoundScalpingStrategy(IStrategy):
     process_only_new_candles = True
     startup_candle_count = 200
 
-    # The old bot targeted small, fast exits. Freqtrade's custom ROI below
-    # further adapts this using the latest ATR.
     minimal_roi = {"0": 0.012, "5": 0.008, "15": 0.005, "30": 0.0}
     stoploss = -0.008
     trailing_stop = False
@@ -81,9 +79,8 @@ class CompoundScalpingStrategy(IStrategy):
 
     @staticmethod
     def _btc_return_percent(dataframe: DataFrame) -> float:
-        # The development pair is intentionally fixed to BTC/IDR, so its own
-        # short return is the BTC lead signal. When the pair universe expands,
-        # this method can be switched to an informative BTC/IDR dataframe.
+        # Development is intentionally fixed to BTC/IDR. When the pair universe
+        # expands, this can be switched to an informative BTC/IDR dataframe.
         if len(dataframe) < 2:
             return 0.0
         previous = float(dataframe["close"].iloc[-2])
@@ -115,7 +112,6 @@ class CompoundScalpingStrategy(IStrategy):
     def _build_brain(self, dataframe: DataFrame, pair: str) -> None:
         if len(dataframe) < self.startup_candle_count:
             return
-
         prices = [float(value) for value in dataframe["close"].dropna().tolist()]
         regime = self.regime_engine.classify(prices, 0.0)
         forecast = self.forecast_agent.analyze(dataframe)
@@ -143,18 +139,19 @@ class CompoundScalpingStrategy(IStrategy):
             exposure_available=True,
         )
 
-        dataframe.loc[dataframe.index[-1], "regime_name"] = regime.name
-        dataframe.loc[dataframe.index[-1], "regime_strength"] = regime.trend_strength
-        dataframe.loc[dataframe.index[-1], "regime_volatility"] = regime.realized_vol_percent
-        dataframe.loc[dataframe.index[-1], "signal_score"] = decision.score
-        dataframe.loc[dataframe.index[-1], "expected_edge_percent"] = decision.expected_edge_percent
-        dataframe.loc[dataframe.index[-1], "signal_action"] = decision.action
-        dataframe.loc[dataframe.index[-1], "signal_reason"] = ",".join(decision.reasons)
-        dataframe.loc[dataframe.index[-1], "btc_lead_percent"] = self._btc_return_percent(dataframe)
-        dataframe.loc[dataframe.index[-1], "forecast_confidence"] = forecast.confidence
-        dataframe.loc[dataframe.index[-1], "forecast_tp_percent"] = (forecast.suggested_tp / forecast.price - 1) * 100
-        dataframe.loc[dataframe.index[-1], "forecast_sl_percent"] = (1 - forecast.suggested_sl / forecast.price) * 100
-        dataframe.loc[dataframe.index[-1], "risk_multiplier"] = 1.0
+        last = dataframe.index[-1]
+        dataframe.loc[last, "regime_name"] = regime.name
+        dataframe.loc[last, "regime_strength"] = regime.trend_strength
+        dataframe.loc[last, "regime_volatility"] = regime.realized_vol_percent
+        dataframe.loc[last, "signal_score"] = decision.score
+        dataframe.loc[last, "expected_edge_percent"] = decision.expected_edge_percent
+        dataframe.loc[last, "signal_action"] = decision.action
+        dataframe.loc[last, "signal_reason"] = ",".join(decision.reasons)
+        dataframe.loc[last, "btc_lead_percent"] = self._btc_return_percent(dataframe)
+        dataframe.loc[last, "forecast_confidence"] = forecast.confidence
+        dataframe.loc[last, "forecast_tp_percent"] = (forecast.suggested_tp / forecast.price - 1) * 100
+        dataframe.loc[last, "forecast_sl_percent"] = (1 - forecast.suggested_sl / forecast.price) * 100
+        dataframe.loc[last, "risk_multiplier"] = 1.0
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe["ema_fast"] = ta.EMA(dataframe, timeperiod=9)
@@ -167,7 +164,6 @@ class CompoundScalpingStrategy(IStrategy):
         dataframe["momentum_percent"] = dataframe["close"].pct_change(3) * 100
         dataframe["spread_bps"] = float("nan")
         dataframe["orderbook_imbalance"] = float("nan")
-
         self._refresh_orderbook(dataframe, metadata["pair"])
         self._build_brain(dataframe, metadata["pair"])
         return dataframe
@@ -175,20 +171,11 @@ class CompoundScalpingStrategy(IStrategy):
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         runmode = getattr(getattr(self.dp, "runmode", None), "value", "") if self.dp else ""
         live_mode = runmode in ("live", "dry_run")
-
         trend = dataframe["ema_fast"] > dataframe["ema_slow"]
         momentum = dataframe["rsi"].between(52, 68)
         strength = dataframe["adx"] > 18
         volume = dataframe["volume_ratio"] > 1.20
-
-        # Preserve the old vectorized score for backtests. In live/dry-run,
-        # the fresh full brain is additionally checked by confirm_trade_entry.
-        legacy_score = (
-            trend.astype(int) * 25
-            + momentum.astype(int) * 20
-            + strength.astype(int) * 20
-            + volume.astype(int) * 15
-        )
+        legacy_score = trend.astype(int) * 25 + momentum.astype(int) * 20 + strength.astype(int) * 20 + volume.astype(int) * 15
         dataframe["legacy_score"] = legacy_score
 
         if live_mode:
@@ -202,22 +189,18 @@ class CompoundScalpingStrategy(IStrategy):
         else:
             condition = legacy_score >= 70
             tag = "legacy_score_backtest"
-
         dataframe.loc[condition, ["enter_long", "enter_tag"]] = (1, tag)
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
-            (
-                (dataframe["ema_fast"] < dataframe["ema_slow"])
-                | (dataframe["rsi"] > 74)
-            ),
+            (dataframe["ema_fast"] < dataframe["ema_slow"]) | (dataframe["rsi"] > 74),
             ["exit_long", "exit_tag"],
         ] = (1, "brain_exit")
         return dataframe
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float, time_in_force: str, current_time: datetime, entry_tag: str | None, side: str, **kwargs) -> bool:
-        """Re-run the critical legacy gates immediately before every paper entry."""
+        """Re-run critical legacy gates immediately before every paper entry."""
         try:
             dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
             if dataframe.empty or len(dataframe) < self.startup_candle_count:
@@ -225,10 +208,11 @@ class CompoundScalpingStrategy(IStrategy):
             dataframe = dataframe.copy()
             self._refresh_orderbook(dataframe, pair)
             self._build_brain(dataframe, pair)
-            latest_action = dataframe["signal_action"].iloc[-1]
-            latest_score = float(dataframe["signal_score"].iloc[-1])
-            latest_edge = float(dataframe["expected_edge_percent"].iloc[-1])
-            return latest_action == "OPEN" and latest_score >= 70 and latest_edge > 0
+            return (
+                dataframe["signal_action"].iloc[-1] == "OPEN"
+                and float(dataframe["signal_score"].iloc[-1]) >= 70
+                and float(dataframe["expected_edge_percent"].iloc[-1]) > 0
+            )
         except Exception:
             return False
 
@@ -241,8 +225,7 @@ class CompoundScalpingStrategy(IStrategy):
             atr = float(dataframe["atr"].iloc[-1])
             if price <= 0 or atr <= 0:
                 return None
-            atr_target = (atr / price) * 1.8
-            return max(0.012, min(0.025, atr_target))
+            return max(0.012, min(0.025, (atr / price) * 1.8))
         except Exception:
             return None
 
@@ -268,7 +251,7 @@ class CompoundScalpingStrategy(IStrategy):
                 return "trend_reversal"
             if float(candle["rsi"]) > 74:
                 return "rsi_overbought"
-            if current_profit > 0 and float(candle.get("signal_action", "WAIT") == "NO_TRADE"):
+            if current_profit > 0 and candle.get("signal_action", "WAIT") == "NO_TRADE":
                 return "brain_no_trade"
             return None
         except Exception:
