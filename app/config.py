@@ -33,7 +33,10 @@ class Settings:
     paper_initial_balance: float = float(os.getenv("PAPER_INITIAL_BALANCE", "1000000"))
     max_open_trades: int = int(os.getenv("MAX_OPEN_TRADES", "1"))
     timeframe: str = os.getenv("TIMEFRAME", "1m")
-    process_throttle_secs: float = float(os.getenv("PROCESS_THROTTLE_SECS", "5"))
+    # Freqtrade's configuration schema requires this value to be an integer.
+    # Keep the environment value strict as well so values such as 5.0 cannot
+    # reach the generated configuration as a JSON number of type float.
+    process_throttle_secs: int = int(os.getenv("PROCESS_THROTTLE_SECS", "5"))
     heartbeat_interval: int = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
     indodax_api_key: str = os.getenv("INDODAX_API_KEY", "")
