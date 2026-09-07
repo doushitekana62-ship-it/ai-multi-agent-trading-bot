@@ -21,8 +21,10 @@ jobs:
         run: python -m pip install --upgrade pip setuptools wheel
       - name: Compile Python sources
         run: python -m compileall -q app user_data/strategies vendor/freqtrade/freqtrade
+      - name: Test restored scalping brain
+        run: python -m unittest tests/test_scalping_brain.py -v
       - name: Validate vendored Freqtrade commit marker
-        run: test "$(cat vendor/freqtrade/SOURCE_COMMIT)" = "29186a9a0e62af7e52a0f0d386c8b02a0d4b2206"
+        run: test "$(cat vendor/freqtrade/SOURCE_COMMIT)" = "29186a9a0e62af7e52a0f0d386c8b02a0d4b220"
       - name: Build vendored Freqtrade wheel
         run: python -m pip wheel --no-deps --no-build-isolation ./vendor/freqtrade -w /tmp/freqtrade-wheel
       - name: Import Freqtrade package
