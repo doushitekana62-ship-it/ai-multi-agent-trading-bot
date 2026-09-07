@@ -14,6 +14,8 @@ router = APIRouter(tags=["trading"])
 
 
 def _validate_start() -> None:
+    if not settings.trading_active:
+        raise HTTPException(status_code=409, detail="Trading is inactive by master safety switch")
     if settings.exchange_name != "indodax":
         raise HTTPException(status_code=503, detail="EXCHANGE_NAME must be indodax for this bot")
     if settings.is_live:
@@ -34,8 +36,9 @@ async def engine_status(user=Depends(current_user)):
     return {
         "engine": "freqtrade-embedded",
         "exchange": settings.exchange_name,
-        "mode": settings.trading_mode,
+        "mode": settings.effective_mode,
         "live_ready": settings.live_ready,
+        "trading_active": settings.trading_active,
         "runtime": runtime.status(),
         "strategy": settings.strategy_name,
         "pairs": [item.strip() for item in settings.trading_pairs.split(",") if item.strip()],
@@ -56,9 +59,6 @@ async def engine_diagnostics(user=Depends(current_user)):
 async def engine_start(user=Depends(current_user)):
     _validate_start()
     try:
-        # runtime.start() performs synchronous polling while the embedded
-        # Freqtrade API comes up. Move that blocking operation off the
-        # FastAPI event loop so other requests remain responsive.
         result = await asyncio.to_thread(runtime.start)
         logger.info("Engine start requested result=%s", result)
         return result
