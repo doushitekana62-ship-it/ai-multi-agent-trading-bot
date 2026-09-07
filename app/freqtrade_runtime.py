@@ -44,9 +44,9 @@ def _writable_sqlite_path() -> Path:
 
 
 def _internal_api_password() -> str:
-    if not settings.dashboard_token:
-        raise RuntimeError("DASHBOARD_TOKEN must be configured before starting Freqtrade")
-    return hashlib.sha256(f"{settings.dashboard_token}:freqtrade-api".encode("utf-8")).hexdigest()
+    # Internal Freqtrade auth must not depend on the browser dashboard token.
+    # This keeps paper mode bootable even when the dashboard secret is added later.
+    return settings.effective_freqtrade_internal_password
 
 
 def _build_freqtrade_config() -> dict[str, Any]:
@@ -69,9 +69,6 @@ def _build_freqtrade_config() -> dict[str, Any]:
         exchange_config["key"] = settings.indodax_api_key
         exchange_config["secret"] = settings.indodax_api_secret
 
-    # Development/paper mode is intentionally started automatically. This is
-    # safe because live_ready is false unless live mode, the explicit live
-    # switch, and both Indodax credentials are present.
     initial_state = "running" if settings.should_auto_start else "stopped"
 
     return {
@@ -90,9 +87,6 @@ def _build_freqtrade_config() -> dict[str, Any]:
         "strategy": settings.strategy_name,
         "strategy_path": str(_STRATEGY_DIR),
         "user_data_dir": str(_USER_DATA_DIR),
-        # Freqtrade requires market orders to price against the opposite side
-        # of the spread. This also makes dry-run pricing more representative
-        # of the taker-style execution configured below.
         "entry_pricing": {"price_side": "other", "use_order_book": False},
         "exit_pricing": {"price_side": "other", "use_order_book": False},
         "order_types": {
@@ -121,7 +115,7 @@ def _build_freqtrade_config() -> dict[str, Any]:
             "verbosity": "error",
             "enable_openapi": False,
             "jwt_secret_key": settings.effective_freqtrade_jwt_secret,
-            "CORS_origins": [],
+            "CORS_origins": [item.strip() for item in settings.cors_origins.split(",") if item.strip()],
             "username": settings.freqtrade_api_username,
             "password": api_password,
             "ws_token": api_password,
@@ -245,6 +239,7 @@ class FreqtradeRuntime:
 
     def start(self) -> dict[str, Any]:
         boot_result = self.boot()
+        self._wait_for_api_sync(timeout=30.0)
         if settings.should_auto_start:
             return {**boot_result, "message": "started", "trading": True}
         api_result = self._api_command("start")
