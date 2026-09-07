@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -17,25 +18,46 @@ from .runtime_monitor import monitor
 logger = logging.getLogger(__name__)
 
 
+async def _start_engine_background() -> None:
+    """Start the heavy Freqtrade worker without blocking FastAPI readiness."""
+    try:
+        # Give Uvicorn/Cloudflare a clean application-ready window before the
+        # embedded trading engine imports its large dependency tree.
+        await asyncio.sleep(1.0)
+        result = await asyncio.to_thread(runtime.start)
+        logger.info("Embedded Freqtrade startup completed: %s", result)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Embedded Freqtrade background startup failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging()
     logger.info("FastAPI runtime booting version=%s mode=%s", settings.app_version, settings.trading_mode)
-    boot_error = None
+
+    engine_task: asyncio.Task[None] | None = None
     try:
-        runtime.boot()
-    except Exception as exc:
-        boot_error = f"{type(exc).__name__}: {exc}"
-        logger.exception("Embedded Freqtrade API boot failed")
-    await collector.start()
-    await monitor.start()
-    if boot_error:
-        logger.error("FastAPI remains available for diagnostics; engine is unhealthy: %s", boot_error)
-    yield
-    logger.info("FastAPI runtime shutting down")
-    await monitor.stop()
-    await collector.stop()
-    runtime.shutdown()
+        # Market telemetry and the runtime monitor are lightweight and can be
+        # started immediately. Freqtrade itself is deliberately deferred so a
+        # failed/heavy trading engine can never prevent FastAPI from serving
+        # diagnostics and health endpoints.
+        await collector.start()
+        await monitor.start()
+        engine_task = asyncio.create_task(_start_engine_background(), name="freqtrade-background-start")
+        yield
+    finally:
+        if engine_task and not engine_task.done():
+            engine_task.cancel()
+            try:
+                await engine_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("FastAPI runtime shutting down")
+        await monitor.stop()
+        await collector.stop()
+        runtime.shutdown()
 
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
