@@ -34,7 +34,6 @@ class Settings:
     paper_initial_balance: float = float(os.getenv("PAPER_INITIAL_BALANCE", "1000000"))
     max_open_trades: int = int(os.getenv("MAX_OPEN_TRADES", "1"))
     timeframe: str = os.getenv("TIMEFRAME", "1m")
-    # Freqtrade's schema requires this to be an integer.
     process_throttle_secs: int = int(os.getenv("PROCESS_THROTTLE_SECS", "5"))
     heartbeat_interval: int = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
@@ -42,7 +41,10 @@ class Settings:
     indodax_api_secret: str = os.getenv("INDODAX_API_SECRET", "")
     live_trading_enabled: bool = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
 
-    # Paper mode starts automatically. Live mode never auto-starts.
+    # MASTER KILL SWITCH: trading is intentionally inactive until explicitly re-enabled in code.
+    trading_active: bool = False
+
+    # Paper mode starts automatically only when the master switch is enabled.
     auto_start_trading: bool = os.getenv("AUTO_START_TRADING", "true").lower() == "true"
     runtime_restart_enabled: bool = os.getenv("RUNTIME_RESTART_ENABLED", "true").lower() == "true"
     runtime_restart_delay: int = int(os.getenv("RUNTIME_RESTART_DELAY", "30"))
@@ -53,11 +55,15 @@ class Settings:
 
     @property
     def live_ready(self) -> bool:
-        return self.is_live and self.live_trading_enabled and bool(self.indodax_api_key and self.indodax_api_secret)
+        return self.trading_active and self.is_live and self.live_trading_enabled and bool(self.indodax_api_key and self.indodax_api_secret)
 
     @property
     def should_auto_start(self) -> bool:
-        return self.auto_start_trading and not self.is_live and not self.live_ready
+        return self.trading_active and self.auto_start_trading and not self.is_live and not self.live_ready
+
+    @property
+    def effective_mode(self) -> str:
+        return self.trading_mode if self.trading_active else "inactive"
 
     @property
     def effective_freqtrade_jwt_secret(self) -> str:
