@@ -17,17 +17,8 @@ router = APIRouter()
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
 _HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-    "host",
-    "content-length",
-    "origin",
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "origin",
 }
 
 
@@ -36,11 +27,7 @@ def _upstream_url(path: str) -> str:
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in _HOP_BY_HOP_HEADERS
-    }
+    return {key: value for key, value in request.headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
 
 
 def _basic_header() -> str:
@@ -65,15 +52,10 @@ def _login_valid(request: Request) -> bool:
 def _dashboard_bearer(request: Request) -> bool:
     value = request.headers.get("authorization", "")
     prefix = "Bearer "
-    return bool(
-        settings.dashboard_token
-        and value.startswith(prefix)
-        and secrets.compare_digest(value[len(prefix) :], settings.dashboard_token)
-    )
+    return bool(settings.dashboard_token and value.startswith(prefix) and secrets.compare_digest(value[len(prefix):], settings.dashboard_token))
 
 
 async def _ensure_api_ready() -> None:
-    """Ensure Freqtrade's native API is available before proxying API calls."""
     try:
         await runtime.wait_for_api(timeout=30.0)
     except Exception as exc:
@@ -82,31 +64,25 @@ async def _ensure_api_ready() -> None:
 
 @router.api_route("/api/v1/{path:path}", methods=_PROXY_METHODS)
 async def freqtrade_api_proxy(path: str, request: Request) -> Response:
-    """Bridge the public FastAPI origin to Freqtrade's native REST API."""
     if path == "token/login":
         if not _login_valid(request):
             return JSONResponse({"detail": "Invalid username or dashboard token"}, status_code=401)
-        # TEMPORARY DEVELOPMENT BYPASS.
-        # Login intentionally does not wait for the Freqtrade API. Keep the
-        # authentication code in place so it can be re-enabled later.
-        return JSONResponse(
-            {
-                "access_token": settings.dashboard_token,
-                "refresh_token": settings.dashboard_token,
-                "token_type": "bearer",
-            }
-        )
+        # TEMPORARY DEVELOPMENT BYPASS: login validation remains here, but the
+        # authentication endpoint does not depend on the embedded API being ready.
+        return JSONResponse({
+            "access_token": settings.dashboard_token,
+            "refresh_token": settings.dashboard_token,
+            "token_type": "bearer",
+        })
 
     if path == "token/refresh":
         if not _dashboard_bearer(request):
             return JSONResponse({"detail": "Invalid dashboard session"}, status_code=401)
-        return JSONResponse(
-            {
-                "access_token": settings.dashboard_token,
-                "refresh_token": settings.dashboard_token,
-                "token_type": "bearer",
-            }
-        )
+        return JSONResponse({
+            "access_token": settings.dashboard_token,
+            "refresh_token": settings.dashboard_token,
+            "token_type": "bearer",
+        })
 
     try:
         await _ensure_api_ready()
@@ -128,33 +104,19 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
                 content=body,
             )
     except httpx.HTTPError as exc:
-        return Response(
-            content=f'{{"detail":"Freqtrade API unavailable: {exc}"}}',
-            status_code=503,
-            media_type="application/json",
-        )
+        return Response(content=f'{{"detail":"Freqtrade API unavailable: {exc}"}}', status_code=503, media_type="application/json")
 
-    response_headers = {
-        key: value
-        for key, value in upstream.headers.items()
-        if key.lower() not in _HOP_BY_HOP_HEADERS
-    }
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        headers=response_headers,
-    )
+    response_headers = {key: value for key, value in upstream.headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
 
 @router.websocket("/api/v1/message/ws")
 async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
-    """Bridge FreqUI's realtime websocket to the embedded Freqtrade API."""
     await websocket.accept()
     query = websocket.scope.get("query_string", b"").decode("latin-1")
     upstream_url = f"ws://127.0.0.1:{settings.freqtrade_api_port}/api/v1/message/ws"
     if query:
         upstream_url = f"{upstream_url}?{query}"
-
     try:
         await runtime.wait_for_api(timeout=30.0)
         async with ws_connect(
@@ -182,10 +144,7 @@ async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
 
             forward_client = asyncio.create_task(client_to_upstream())
             forward_server = asyncio.create_task(upstream_to_client())
-            done, pending = await asyncio.wait(
-                {forward_client, forward_server},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            done, pending = await asyncio.wait({forward_client, forward_server}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
             for task in done:
