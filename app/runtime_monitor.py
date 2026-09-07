@@ -115,7 +115,7 @@ class RuntimeMonitor:
             await asyncio.sleep(settings.runtime_restart_delay)
             if not self._stop.is_set() and not runtime.running:
                 try:
-                    runtime.start()
+                    await asyncio.to_thread(runtime.start)
                     logger.info("Paper runtime restarted after crash")
                 except Exception:
                     logger.exception("Paper runtime restart failed")
