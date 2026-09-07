@@ -59,13 +59,24 @@ async def _ensure_api_ready() -> None:
         raise RuntimeError(str(exc)) from exc
 
 
+# FreqUI determines the bot's online/offline state from this public endpoint.
+# The embedded API is bound to localhost, so answer the readiness check at the
+# public FastAPI layer instead of making the browser depend on the internal hop.
+@router.api_route("/api/v1/ping", methods=["GET", "HEAD"])
+async def freqtrade_ping() -> Response:
+    try:
+        await _ensure_api_ready()
+    except RuntimeError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+    return JSONResponse({"status": "pong"})
+
+
 @router.api_route("/api/v1/{path:path}", methods=_PROXY_METHODS)
 async def freqtrade_api_proxy(path: str, request: Request) -> Response:
     if path == "token/login":
         if not _login_valid(request):
             return JSONResponse({"detail": "Invalid username or dashboard token"}, status_code=401)
-        # TEMPORARY DEVELOPMENT BYPASS: login validation remains in place, but
-        # authentication does not wait for the embedded Freqtrade API.
+        # Development mode: dashboard authentication is independent from worker readiness.
         return JSONResponse({"access_token": settings.dashboard_token, "refresh_token": settings.dashboard_token, "token_type": "bearer"})
 
     if path == "token/refresh":
