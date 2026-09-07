@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import secrets
+from urllib.parse import parse_qsl, urlencode
 
 import httpx
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
@@ -59,15 +60,12 @@ async def _ensure_api_ready() -> None:
         raise RuntimeError(str(exc)) from exc
 
 
-# FreqUI determines the bot's online/offline state from this public endpoint.
-# The embedded API is bound to localhost, so answer the readiness check at the
-# public FastAPI layer instead of making the browser depend on the internal hop.
 @router.api_route("/api/v1/ping", methods=["GET", "HEAD"])
 async def freqtrade_ping() -> Response:
     try:
         await _ensure_api_ready()
     except RuntimeError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=503)
+        return JSONResponse({"status": "offline", "detail": str(exc), "runtime": runtime.status()}, status_code=503)
     return JSONResponse({"status": "pong"})
 
 
@@ -76,7 +74,6 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
     if path == "token/login":
         if not _login_valid(request):
             return JSONResponse({"detail": "Invalid username or dashboard token"}, status_code=401)
-        # Development mode: dashboard authentication is independent from worker readiness.
         return JSONResponse({"access_token": settings.dashboard_token, "refresh_token": settings.dashboard_token, "token_type": "bearer"})
 
     if path == "token/refresh":
@@ -87,7 +84,7 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
     try:
         await _ensure_api_ready()
     except RuntimeError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=503)
+        return JSONResponse({"detail": str(exc), "runtime": runtime.status()}, status_code=503)
 
     body = await request.body()
     headers = _forward_headers(request)
@@ -98,22 +95,32 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
         async with httpx.AsyncClient(timeout=90.0) as client:
             upstream = await client.request(request.method, _upstream_url(path), params=list(request.query_params.multi_items()), headers=headers, content=body)
     except httpx.HTTPError as exc:
-        return Response(content=f'{{"detail":"Freqtrade API unavailable: {exc}"}}', status_code=503, media_type="application/json")
+        return Response(content=f'{"detail":"Freqtrade API unavailable: ' + str(exc).replace('"', '\\"') + '"}', status_code=503, media_type="application/json")
 
     response_headers = {key: value for key, value in upstream.headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
 
+def _internal_ws_url(websocket: WebSocket) -> str:
+    raw_query = websocket.scope.get("query_string", b"").decode("latin-1")
+    params = parse_qsl(raw_query, keep_blank_values=True)
+    rewritten = []
+    for key, value in params:
+        if key == "token":
+            rewritten.append((key, runtime.api_password))
+        else:
+            rewritten.append((key, value))
+    query = urlencode(rewritten)
+    upstream_url = f"ws://127.0.0.1:{settings.freqtrade_api_port}/api/v1/message/ws"
+    return f"{upstream_url}?{query}" if query else upstream_url
+
+
 @router.websocket("/api/v1/message/ws")
 async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
     await websocket.accept()
-    query = websocket.scope.get("query_string", b"").decode("latin-1")
-    upstream_url = f"ws://127.0.0.1:{settings.freqtrade_api_port}/api/v1/message/ws"
-    if query:
-        upstream_url = f"{upstream_url}?{query}"
     try:
         await runtime.wait_for_api(timeout=30.0)
-        async with ws_connect(upstream_url, open_timeout=30, close_timeout=5, additional_headers={"Authorization": _basic_header()}) as upstream:
+        async with ws_connect(_internal_ws_url(websocket), open_timeout=30, close_timeout=5, additional_headers={"Authorization": _basic_header()}) as upstream:
             async def client_to_upstream() -> None:
                 while True:
                     message = await websocket.receive()
