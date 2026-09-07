@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import secrets
 from urllib.parse import parse_qsl, urlencode
 
@@ -95,7 +96,7 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
         async with httpx.AsyncClient(timeout=90.0) as client:
             upstream = await client.request(request.method, _upstream_url(path), params=list(request.query_params.multi_items()), headers=headers, content=body)
     except httpx.HTTPError as exc:
-        return Response(content=f'{"detail":"Freqtrade API unavailable: ' + str(exc).replace('"', '\\"') + '"}', status_code=503, media_type="application/json")
+        return JSONResponse({"detail": f"Freqtrade API unavailable: {exc}"}, status_code=503)
 
     response_headers = {key: value for key, value in upstream.headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
