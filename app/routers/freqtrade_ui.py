@@ -56,6 +56,11 @@ def _dashboard_bearer(request: Request) -> bool:
 
 async def _ensure_api_ready() -> None:
     try:
+        # Do not rely exclusively on FastAPI lifespan. Some managed hosting
+        # configurations can serve requests while lifespan startup is deferred
+        # or disabled. A first API request must be able to bootstrap the engine.
+        if not runtime.running:
+            await asyncio.to_thread(runtime.start)
         await runtime.wait_for_api(timeout=30.0)
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
@@ -120,7 +125,7 @@ def _internal_ws_url(websocket: WebSocket) -> str:
 async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
-        await runtime.wait_for_api(timeout=30.0)
+        await _ensure_api_ready()
         async with ws_connect(_internal_ws_url(websocket), open_timeout=30, close_timeout=5, additional_headers={"Authorization": _basic_header()}) as upstream:
             async def client_to_upstream() -> None:
                 while True:
