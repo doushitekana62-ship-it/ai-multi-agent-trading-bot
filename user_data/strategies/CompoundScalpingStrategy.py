@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 
 from pandas import DataFrame
@@ -8,22 +7,14 @@ import talib.abstract as ta
 
 from freqtrade.strategy import IStrategy
 
+from app.agents.forecast_agent import ForecastAgent
 from app.agents.regime_engine import RegimeEngine
 from app.agents.risk_engine import RiskEngine
-from app.agents.signal_engine import SignalEngine
-
-
-@dataclass(frozen=True)
-class _ForecastProxy:
-    action: str
-    price: float
-    suggested_tp: float
-    suggested_sl: float
-    indicators: dict
+from app.agents.scalping_library import ScalpingLibrary
 
 
 class CompoundScalpingStrategy(IStrategy):
-    """Freqtrade execution shell using the pre-migration scalping decision brain."""
+    """Freqtrade execution shell around the pre-migration scalping brain."""
 
     INTERFACE_VERSION = 3
     can_short = False
@@ -31,12 +22,16 @@ class CompoundScalpingStrategy(IStrategy):
     process_only_new_candles = True
     startup_candle_count = 200
 
-    minimal_roi = {"0": 0.006, "5": 0.004, "15": 0.002, "30": 0.0}
+    # The old bot targeted small, fast exits. Freqtrade's custom ROI below
+    # further adapts this using the latest ATR.
+    minimal_roi = {"0": 0.012, "5": 0.008, "15": 0.005, "30": 0.0}
     stoploss = -0.008
     trailing_stop = False
     use_exit_signal = True
     exit_profit_only = False
     ignore_roi_if_entry_signal = False
+    use_custom_roi = True
+    use_custom_stoploss = True
 
     order_types = {
         "entry": "market",
@@ -47,8 +42,9 @@ class CompoundScalpingStrategy(IStrategy):
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
+        self.forecast_agent = ForecastAgent()
         self.regime_engine = RegimeEngine()
-        self.signal_engine = SignalEngine(min_score=70.0, fee_percent=0.30, slippage_percent=0.05)
+        self.scalping_library = ScalpingLibrary(min_score=70.0, fee_percent=0.30, slippage_percent=0.05)
         self.risk_engine = RiskEngine()
 
     @property
@@ -85,58 +81,64 @@ class CompoundScalpingStrategy(IStrategy):
 
     @staticmethod
     def _btc_return_percent(dataframe: DataFrame) -> float:
+        # The development pair is intentionally fixed to BTC/IDR, so its own
+        # short return is the BTC lead signal. When the pair universe expands,
+        # this method can be switched to an informative BTC/IDR dataframe.
         if len(dataframe) < 2:
             return 0.0
         previous = float(dataframe["close"].iloc[-2])
         current = float(dataframe["close"].iloc[-1])
         return ((current / previous) - 1.0) * 100 if previous > 0 else 0.0
 
-    def _build_brain(self, dataframe: DataFrame) -> DataFrame:
+    def _refresh_orderbook(self, dataframe: DataFrame, pair: str) -> None:
+        dataframe.loc[dataframe.index[-1], "spread_bps"] = float("nan")
+        dataframe.loc[dataframe.index[-1], "orderbook_imbalance"] = float("nan")
+        runmode = getattr(getattr(self.dp, "runmode", None), "value", "") if self.dp else ""
+        if not self.dp or runmode not in ("live", "dry_run"):
+            return
+        try:
+            ob = self.dp.orderbook(pair, 10)
+            bids = ob.get("bids", [])
+            asks = ob.get("asks", [])
+            if not bids or not asks:
+                return
+            bid = float(bids[0][0])
+            ask = float(asks[0][0])
+            bid_volume = sum(float(level[1]) for level in bids)
+            ask_volume = sum(float(level[1]) for level in asks)
+            total = bid_volume + ask_volume
+            dataframe.loc[dataframe.index[-1], "spread_bps"] = ((ask - bid) / bid) * 10000 if bid > 0 else float("nan")
+            dataframe.loc[dataframe.index[-1], "orderbook_imbalance"] = ((bid_volume - ask_volume) / total) if total else 0.0
+        except Exception:
+            return
+
+    def _build_brain(self, dataframe: DataFrame, pair: str) -> None:
+        if len(dataframe) < self.startup_candle_count:
+            return
+
         prices = [float(value) for value in dataframe["close"].dropna().tolist()]
-        if len(prices) < self.startup_candle_count:
-            return dataframe
-
         regime = self.regime_engine.classify(prices, 0.0)
-        if regime is None:
-            return dataframe
-
-        current = float(dataframe["close"].iloc[-1])
-        atr = float(dataframe["atr"].iloc[-1]) if dataframe["atr"].iloc[-1] == dataframe["atr"].iloc[-1] else 0.0
-        momentum_percent = float(dataframe["momentum_percent"].iloc[-1])
-        trend_up = (
-            float(dataframe["ema_fast"].iloc[-1]) > float(dataframe["ema_slow"].iloc[-1])
-            and regime.name == "TREND_UP"
-        )
-        forecast_action = "buy" if trend_up and 52 <= float(dataframe["rsi"].iloc[-1]) <= 68 else "hold"
-
-        # Keep the old expected-edge gate, but use an ATR-aware target so a valid
-        # 1-minute setup is not rejected merely because the static ROI is smaller.
-        target_percent = max(1.20, min(2.50, (atr / current * 100 * 1.5) if current > 0 else 1.20))
-        suggested_tp = current * (1.0 + target_percent / 100)
-        suggested_sl = current * (1.0 - max(0.80, min(1.20, (atr / current * 100) if current > 0 else 0.80)) / 100)
-
-        forecast = _ForecastProxy(
-            action=forecast_action,
-            price=current,
-            suggested_tp=suggested_tp,
-            suggested_sl=suggested_sl,
-            indicators={"momentum_percent": momentum_percent},
-        )
+        forecast = self.forecast_agent.analyze(dataframe)
+        if regime is None or forecast is None:
+            return
 
         spread_percent = float(dataframe["spread_bps"].iloc[-1]) / 100.0
+        if spread_percent != spread_percent:
+            spread_percent = 0.0
         book_imbalance = float(dataframe["orderbook_imbalance"].iloc[-1])
         if book_imbalance != book_imbalance:
             book_imbalance = 0.0
-        liquidity_score = min(1.0, max(0.0, float(dataframe["volume_ratio"].iloc[-1]) / 2.0))
-        decision = self.signal_engine.evaluate(
-            forecast,
-            regime,
-            spread_percent,
-            book_imbalance,
-            self._btc_return_percent(dataframe),
-            liquidity_score,
-            self._support_resistance_score(prices),
-            regime.data_quality,
+        liquidity_score = min(1.0, max(0.0, forecast.indicators.get("volume_ratio", 1.0) / 2.0))
+
+        decision = self.scalping_library.evaluate(
+            forecast=forecast,
+            regime=regime,
+            spread_percent=spread_percent,
+            book_imbalance=book_imbalance,
+            btc_return_percent=self._btc_return_percent(dataframe),
+            liquidity_score=liquidity_score,
+            support_resistance_score=self._support_resistance_score(prices),
+            data_quality=regime.data_quality,
             cooldown=False,
             exposure_available=True,
         )
@@ -149,8 +151,10 @@ class CompoundScalpingStrategy(IStrategy):
         dataframe.loc[dataframe.index[-1], "signal_action"] = decision.action
         dataframe.loc[dataframe.index[-1], "signal_reason"] = ",".join(decision.reasons)
         dataframe.loc[dataframe.index[-1], "btc_lead_percent"] = self._btc_return_percent(dataframe)
+        dataframe.loc[dataframe.index[-1], "forecast_confidence"] = forecast.confidence
+        dataframe.loc[dataframe.index[-1], "forecast_tp_percent"] = (forecast.suggested_tp / forecast.price - 1) * 100
+        dataframe.loc[dataframe.index[-1], "forecast_sl_percent"] = (1 - forecast.suggested_sl / forecast.price) * 100
         dataframe.loc[dataframe.index[-1], "risk_multiplier"] = 1.0
-        return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe["ema_fast"] = ta.EMA(dataframe, timeperiod=9)
@@ -161,27 +165,12 @@ class CompoundScalpingStrategy(IStrategy):
         dataframe["volume_mean"] = dataframe["volume"].rolling(20).mean()
         dataframe["volume_ratio"] = dataframe["volume"] / dataframe["volume_mean"].replace(0, float("nan"))
         dataframe["momentum_percent"] = dataframe["close"].pct_change(3) * 100
-
         dataframe["spread_bps"] = float("nan")
         dataframe["orderbook_imbalance"] = float("nan")
-        runmode = getattr(getattr(self.dp, "runmode", None), "value", "") if self.dp else ""
-        if self.dp and runmode in ("live", "dry_run"):
-            try:
-                ob = self.dp.orderbook(metadata["pair"], 10)
-                bids = ob.get("bids", [])
-                asks = ob.get("asks", [])
-                if bids and asks:
-                    bid = float(bids[0][0])
-                    ask = float(asks[0][0])
-                    bid_volume = sum(float(level[1]) for level in bids)
-                    ask_volume = sum(float(level[1]) for level in asks)
-                    total = bid_volume + ask_volume
-                    dataframe.loc[dataframe.index[-1], "spread_bps"] = ((ask - bid) / bid) * 10000 if bid > 0 else float("nan")
-                    dataframe.loc[dataframe.index[-1], "orderbook_imbalance"] = ((bid_volume - ask_volume) / total) if total else 0.0
-            except Exception:
-                pass
 
-        return self._build_brain(dataframe)
+        self._refresh_orderbook(dataframe, metadata["pair"])
+        self._build_brain(dataframe, metadata["pair"])
+        return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         runmode = getattr(getattr(self.dp, "runmode", None), "value", "") if self.dp else ""
@@ -192,21 +181,29 @@ class CompoundScalpingStrategy(IStrategy):
         strength = dataframe["adx"] > 18
         volume = dataframe["volume_ratio"] > 1.20
 
+        # Preserve the old vectorized score for backtests. In live/dry-run,
+        # the fresh full brain is additionally checked by confirm_trade_entry.
+        legacy_score = (
+            trend.astype(int) * 25
+            + momentum.astype(int) * 20
+            + strength.astype(int) * 20
+            + volume.astype(int) * 15
+        )
+        dataframe["legacy_score"] = legacy_score
+
         if live_mode:
             book = dataframe["orderbook_imbalance"].fillna(-1) > 0.05
             spread = dataframe["spread_bps"].fillna(999) < 30
+            brain_open = dataframe["signal_action"].fillna("") == "OPEN"
+            score = dataframe["signal_score"].fillna(0)
+            edge = dataframe["expected_edge_percent"].fillna(-999)
+            condition = brain_open & (score >= 70) & (edge > 0) & trend & momentum & strength & volume & book & spread
+            tag = "legacy_brain_open"
         else:
-            book = dataframe["orderbook_imbalance"].fillna(0) > -1
-            spread = dataframe["spread_bps"].fillna(0) < 999
+            condition = legacy_score >= 70
+            tag = "legacy_score_backtest"
 
-        brain_open = dataframe["signal_action"] == "OPEN"
-        score = dataframe["signal_score"].fillna(0)
-        edge = dataframe["expected_edge_percent"].fillna(-999)
-
-        dataframe.loc[
-            brain_open & (score >= 70) & (edge > 0) & trend & momentum & strength & volume & book & spread,
-            ["enter_long", "enter_tag"],
-        ] = (1, "legacy_brain_open")
+        dataframe.loc[condition, ["enter_long", "enter_tag"]] = (1, tag)
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -214,11 +211,68 @@ class CompoundScalpingStrategy(IStrategy):
             (
                 (dataframe["ema_fast"] < dataframe["ema_slow"])
                 | (dataframe["rsi"] > 74)
-                | (dataframe["signal_action"] == "NO_TRADE")
             ),
             ["exit_long", "exit_tag"],
         ] = (1, "brain_exit")
         return dataframe
+
+    def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float, time_in_force: str, current_time: datetime, entry_tag: str | None, side: str, **kwargs) -> bool:
+        """Re-run the critical legacy gates immediately before every paper entry."""
+        try:
+            dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
+            if dataframe.empty or len(dataframe) < self.startup_candle_count:
+                return False
+            dataframe = dataframe.copy()
+            self._refresh_orderbook(dataframe, pair)
+            self._build_brain(dataframe, pair)
+            latest_action = dataframe["signal_action"].iloc[-1]
+            latest_score = float(dataframe["signal_score"].iloc[-1])
+            latest_edge = float(dataframe["expected_edge_percent"].iloc[-1])
+            return latest_action == "OPEN" and latest_score >= 70 and latest_edge > 0
+        except Exception:
+            return False
+
+    def custom_roi(self, pair: str, trade, current_time: datetime, trade_duration: int, entry_tag: str | None, side: str, **kwargs) -> float | None:
+        try:
+            dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
+            if dataframe.empty:
+                return None
+            price = float(dataframe["close"].iloc[-1])
+            atr = float(dataframe["atr"].iloc[-1])
+            if price <= 0 or atr <= 0:
+                return None
+            atr_target = (atr / price) * 1.8
+            return max(0.012, min(0.025, atr_target))
+        except Exception:
+            return None
+
+    def custom_stoploss(self, pair: str, trade, current_time: datetime, current_rate: float, current_profit: float, after_fill: bool, **kwargs) -> float | None:
+        try:
+            dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
+            if dataframe.empty or current_rate <= 0:
+                return None
+            atr = float(dataframe["atr"].iloc[-1])
+            if atr <= 0:
+                return None
+            return max(0.008, min(0.012, atr / current_rate))
+        except Exception:
+            return None
+
+    def custom_exit(self, pair: str, trade, current_time: datetime, current_profit: float, **kwargs):
+        try:
+            dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
+            if dataframe.empty:
+                return None
+            candle = dataframe.iloc[-1]
+            if float(candle["ema_fast"]) < float(candle["ema_slow"]):
+                return "trend_reversal"
+            if float(candle["rsi"]) > 74:
+                return "rsi_overbought"
+            if current_profit > 0 and float(candle.get("signal_action", "WAIT") == "NO_TRADE"):
+                return "brain_no_trade"
+            return None
+        except Exception:
+            return None
 
     def custom_stake_amount(
         self,
@@ -233,12 +287,7 @@ class CompoundScalpingStrategy(IStrategy):
         side: str,
         **kwargs,
     ) -> float:
-        """Apply the reusable risk controller to execution-quality sizing.
-
-        Freqtrade remains responsible for account-level loss/drawdown protections;
-        this callback uses the shared risk engine for the information available at
-        order time, especially spread-based size reduction.
-        """
+        """Apply the shared risk controller to execution-quality sizing."""
         spread_percent = 0.0
         try:
             dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
