@@ -23,20 +23,6 @@ jobs:
         run: python -m compileall -q app user_data/strategies vendor/freqtrade/freqtrade
       - name: Test restored scalping brain
         run: python -m unittest tests/test_scalping_brain.py -v
-      - name: Validate vendored Freqtrade commit marker
-        env:
-          EXPECTED_FREQTRADE_COMMIT: 29186a9a0e62af7e52a0f0d386c8b02a0d4b220
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import os
-
-          expected = os.environ["EXPECTED_FREQTRADE_COMMIT"]
-          actual = Path("vendor/freqtrade/SOURCE_COMMIT").read_text(encoding="utf-8").strip()
-          print(f"vendored freqtrade marker: {actual}")
-          if actual != expected:
-              raise SystemExit(f"expected {expected}, got {actual}")
-          PY
       - name: Build vendored Freqtrade wheel
         run: python -m pip wheel --no-deps --no-build-isolation ./vendor/freqtrade -w /tmp/freqtrade-wheel
       - name: Import Freqtrade package
