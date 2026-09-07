@@ -15,7 +15,7 @@ DEFAULT_CORS_ORIGINS = "https://doushitekana62-ship-it.github.io"
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Compound Scalping API")
-    app_version: str = os.getenv("APP_VERSION", "2.5.0")
+    app_version: str = os.getenv("APP_VERSION", "2.5.1")
     cors_origins: str = os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
     freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
@@ -40,6 +40,9 @@ class Settings:
     indodax_api_secret: str = os.getenv("INDODAX_API_SECRET", "")
     live_trading_enabled: bool = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
 
+    # Paper mode starts automatically so the development dashboard does not
+    # depend on a separate engine-control button. Live mode never auto-starts.
+    auto_start_trading: bool = os.getenv("AUTO_START_TRADING", "true").lower() == "true"
     runtime_restart_enabled: bool = os.getenv("RUNTIME_RESTART_ENABLED", "true").lower() == "true"
     runtime_restart_delay: int = int(os.getenv("RUNTIME_RESTART_DELAY", "30"))
 
@@ -50,6 +53,10 @@ class Settings:
     @property
     def live_ready(self) -> bool:
         return self.is_live and self.live_trading_enabled and bool(self.indodax_api_key and self.indodax_api_secret)
+
+    @property
+    def should_auto_start(self) -> bool:
+        return self.auto_start_trading and not self.is_live and not self.live_ready
 
     @property
     def effective_freqtrade_jwt_secret(self) -> str:
