@@ -44,8 +44,6 @@ def _writable_sqlite_path() -> Path:
 
 
 def _internal_api_password() -> str:
-    # Internal Freqtrade auth must not depend on the browser dashboard token.
-    # This keeps paper mode bootable even when the dashboard secret is added later.
     return settings.effective_freqtrade_internal_password
 
 
@@ -163,6 +161,8 @@ class FreqtradeRuntime:
         return _internal_api_password()
 
     def boot(self) -> dict[str, Any]:
+        if not settings.trading_active:
+            return {"running": False, "message": "trading_inactive", "trading": False, "mode": "inactive"}
         if self.running:
             return {"running": True, "message": "already_running"}
         self._error = None
@@ -199,6 +199,8 @@ class FreqtradeRuntime:
             logger.exception("Embedded Freqtrade worker crashed")
 
     async def wait_for_api(self, timeout: float = 30.0) -> None:
+        if not settings.trading_active:
+            raise RuntimeError("Trading is inactive")
         deadline = time.monotonic() + timeout
         url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/ping"
         last_error: Exception | None = None
@@ -219,6 +221,8 @@ class FreqtradeRuntime:
         raise RuntimeError("Freqtrade API did not become ready") from last_error
 
     def _wait_for_api_sync(self, timeout: float = 30.0) -> None:
+        if not settings.trading_active:
+            raise RuntimeError("Trading is inactive")
         deadline = time.monotonic() + timeout
         url = f"http://127.0.0.1:{settings.freqtrade_api_port}/api/v1/ping"
         while time.monotonic() < deadline:
@@ -244,6 +248,8 @@ class FreqtradeRuntime:
         return response.json()
 
     def start(self) -> dict[str, Any]:
+        if not settings.trading_active:
+            return {"running": self.running, "message": "trading_inactive", "trading": False, "mode": "inactive"}
         try:
             boot_result = self.boot()
             self._wait_for_api_sync(timeout=30.0)
@@ -274,7 +280,8 @@ class FreqtradeRuntime:
             "error": self._error,
             "exitcode": self._exitcode,
             "auto_start": settings.should_auto_start,
-            "mode": settings.trading_mode,
+            "mode": settings.effective_mode,
+            "trading_active": settings.trading_active,
         }
 
     def diagnostics(self) -> dict[str, Any]:
