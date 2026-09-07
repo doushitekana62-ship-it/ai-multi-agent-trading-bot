@@ -16,10 +16,7 @@ from ..freqtrade_runtime import runtime
 router = APIRouter()
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
-_HOP_BY_HOP_HEADERS = {
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "origin",
-}
+_HOP_BY_HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "origin"}
 
 
 def _upstream_url(path: str) -> str:
@@ -67,22 +64,14 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
     if path == "token/login":
         if not _login_valid(request):
             return JSONResponse({"detail": "Invalid username or dashboard token"}, status_code=401)
-        # TEMPORARY DEVELOPMENT BYPASS: login validation remains here, but the
-        # authentication endpoint does not depend on the embedded API being ready.
-        return JSONResponse({
-            "access_token": settings.dashboard_token,
-            "refresh_token": settings.dashboard_token,
-            "token_type": "bearer",
-        })
+        # TEMPORARY DEVELOPMENT BYPASS: login validation remains in place, but
+        # authentication does not wait for the embedded Freqtrade API.
+        return JSONResponse({"access_token": settings.dashboard_token, "refresh_token": settings.dashboard_token, "token_type": "bearer"})
 
     if path == "token/refresh":
         if not _dashboard_bearer(request):
             return JSONResponse({"detail": "Invalid dashboard session"}, status_code=401)
-        return JSONResponse({
-            "access_token": settings.dashboard_token,
-            "refresh_token": settings.dashboard_token,
-            "token_type": "bearer",
-        })
+        return JSONResponse({"access_token": settings.dashboard_token, "refresh_token": settings.dashboard_token, "token_type": "bearer"})
 
     try:
         await _ensure_api_ready()
@@ -96,13 +85,7 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
 
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
-            upstream = await client.request(
-                request.method,
-                _upstream_url(path),
-                params=list(request.query_params.multi_items()),
-                headers=headers,
-                content=body,
-            )
+            upstream = await client.request(request.method, _upstream_url(path), params=list(request.query_params.multi_items()), headers=headers, content=body)
     except httpx.HTTPError as exc:
         return Response(content=f'{{"detail":"Freqtrade API unavailable: {exc}"}}', status_code=503, media_type="application/json")
 
@@ -119,12 +102,7 @@ async def freqtrade_websocket_proxy(websocket: WebSocket) -> None:
         upstream_url = f"{upstream_url}?{query}"
     try:
         await runtime.wait_for_api(timeout=30.0)
-        async with ws_connect(
-            upstream_url,
-            open_timeout=30,
-            close_timeout=5,
-            additional_headers={"Authorization": _basic_header()},
-        ) as upstream:
+        async with ws_connect(upstream_url, open_timeout=30, close_timeout=5, additional_headers={"Authorization": _basic_header()}) as upstream:
             async def client_to_upstream() -> None:
                 while True:
                     message = await websocket.receive()
