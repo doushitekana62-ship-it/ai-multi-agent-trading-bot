@@ -21,6 +21,17 @@ def _safe_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {message[:300]}"
 
 
+@router.get("/health/live")
+async def liveness():
+    """Process-level health check that does not depend on Freqtrade."""
+    return {
+        "ok": True,
+        "service": "fastapi",
+        "mode": settings.trading_mode,
+        "engine_runtime": runtime.status(),
+    }
+
+
 @router.get("/health")
 async def health():
     runtime_status = runtime.status()
