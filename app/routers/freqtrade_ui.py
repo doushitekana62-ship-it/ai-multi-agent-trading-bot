@@ -86,8 +86,9 @@ async def freqtrade_api_proxy(path: str, request: Request) -> Response:
     if path == "token/login":
         if not _login_valid(request):
             return JSONResponse({"detail": "Invalid username or dashboard token"}, status_code=401)
-        # DEVELOPMENT BYPASS: authentication is intentionally decoupled from
-        # Freqtrade API readiness. Keep this path until the runtime is stable.
+        # TEMPORARY DEVELOPMENT BYPASS.
+        # Login intentionally does not wait for the Freqtrade API. Keep the
+        # authentication code in place so it can be re-enabled later.
         return JSONResponse(
             {
                 "access_token": settings.dashboard_token,
