@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.mirei.app.execution.PaperPosition
 
 class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
@@ -49,6 +50,49 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         if (oldVersion < 2) {
             db.execSQL("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
         }
+    }
+
+    fun recordTradeOpened(position: PaperPosition, entryFeeIdr: Double) {
+        require(entryFeeIdr >= 0.0)
+        writableDatabase.insertOrThrow(
+            "trades",
+            null,
+            ContentValues().apply {
+                put("id", position.id)
+                put("exchange_id", position.exchangeId)
+                put("symbol", position.symbol)
+                put("side", "BUY")
+                put("status", "OPEN")
+                put("entry_price", position.entryPrice)
+                put("stake_idr", position.stakeIdr)
+                put("fee_idr", entryFeeIdr)
+                put("pnl_idr", 0.0)
+                put("opened_at", position.openedAtEpochMs)
+            },
+        )
+    }
+
+    fun recordTradeClosed(
+        positionId: String,
+        exitPrice: Double,
+        feeIdr: Double,
+        pnlIdr: Double,
+        closedAtEpochMs: Long,
+        exitReason: String,
+    ) {
+        require(exitPrice > 0.0)
+        require(feeIdr >= 0.0)
+        require(exitReason.isNotBlank())
+        val values = ContentValues().apply {
+            put("status", "CLOSED")
+            put("exit_price", exitPrice)
+            put("fee_idr", feeIdr)
+            put("pnl_idr", pnlIdr)
+            put("closed_at", closedAtEpochMs)
+            put("exit_reason", exitReason)
+        }
+        val updated = writableDatabase.update("trades", values, "id = ?", arrayOf(positionId))
+        check(updated == 1) { "trade_not_found:$positionId" }
     }
 
     fun recordAudit(eventType: String, details: String, nowMs: Long = System.currentTimeMillis()) {
