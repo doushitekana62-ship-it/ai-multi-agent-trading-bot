@@ -54,13 +54,17 @@ class MainActivity : Activity() {
     }
 
     private fun sendAction(command: String, nextState: String) {
-        val intent = Intent(this, MireiForegroundService::class.java).setAction(command)
-        if (command == MireiForegroundService.ACTION_START && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            val intent = Intent(this, MireiForegroundService::class.java).setAction(command)
+            if (command == MireiForegroundService.ACTION_START && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            status.text = "\nState: $nextState\nMode: Suggestion\nPaper trading: SAFE DEFAULT"
+        } catch (error: Exception) {
+            status.text = "\nState: ERROR\nMode: Suggestion\nPaper trading: SAFE DEFAULT\nService error: ${error.javaClass.simpleName}"
         }
-        status.text = "\nState: $nextState\nMode: Suggestion\nPaper trading: SAFE DEFAULT"
     }
 
     private fun requestNotificationPermissionIfNeeded() {
