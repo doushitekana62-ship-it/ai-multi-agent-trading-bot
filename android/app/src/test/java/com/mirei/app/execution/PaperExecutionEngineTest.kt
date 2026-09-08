@@ -102,11 +102,11 @@ class PaperExecutionEngineTest {
         assertTrue(third.success)
         assertTrue(!fourth.success)
         assertEquals(3, engine.pendingLimitOrders().size)
-        assertTrue(engine.availableBalanceIdr() < 1.0)
+        assertEquals(0.0, engine.availableBalanceIdr(), 0.001)
 
         assertTrue(engine.cancelLimit(second.orderId!!))
         assertEquals(2, engine.pendingLimitOrders().size)
-        assertTrue(engine.availableBalanceIdr() > 49_000.0)
+        assertEquals(50_000.0, engine.availableBalanceIdr(), 0.001)
     }
 
     @Test
@@ -130,11 +130,11 @@ class PaperExecutionEngineTest {
         val events = mutableListOf<String>()
         val ledger = object : TradeLedger {
             override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) {
-                events += "OPEN:${position.id}:${entryFeeIdr}"
+                events += "OPEN:${position.id}:$entryFeeIdr"
             }
 
             override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) {
-                events += "CLOSE:${position.id}:${pnlIdr}:${exitReason}"
+                events += "CLOSE:${position.id}:$pnlIdr:$exitReason"
             }
         }
         val engine = PaperExecutionEngine(config = config, feePercent = 0.3, slippagePercent = 0.05, tradeLedger = ledger)
@@ -153,17 +153,23 @@ class PaperExecutionEngineTest {
         assertTrue(c1.success)
         assertTrue(c1.pnlIdr > 0.0)
 
-        // The realized profit is returned to available balance and is immediately reusable.
-        val compoundedBalance = engine.availableBalanceIdr()
-        assertTrue(compoundedBalance > 0.0)
+        // Full realized profit remains available and can be compounded into the next position.
+        val compoundedStake = engine.availableBalanceIdr()
+        assertTrue(compoundedStake > config.positionSizeIdr)
+        val p4Plan = plan.copy(entryPrice = 4_000_000.0, stopLossPrice = 3_980_000.0, takeProfitPrice = 4_040_000.0, trailingActivationPrice = 4_020_000.0, stakeIdr = compoundedStake)
+        val p4 = engine.open("paper", "XRP/IDR", p4Plan, 5500L)
+        assertTrue(p4.success)
+        assertEquals(0.0, engine.availableBalanceIdr(), 0.001)
+        assertEquals(3, engine.positionCount())
 
         val c2 = engine.close(p2.orderId!!, 1_990_000.0, "stop_loss", 6000L)
         val c3 = engine.close(p3.orderId!!, 3_030_000.0, "take_profit", 7000L)
-        assertTrue(c2.success && c3.success)
+        val c4 = engine.close(p4.orderId!!, 4_040_000.0, "take_profit", 8000L)
+        assertTrue(c2.success && c3.success && c4.success)
         assertEquals(0, engine.positionCount())
         assertTrue(engine.availableBalanceIdr() > 0.0)
-        assertEquals(6, events.size)
-        assertTrue(events.count { it.startsWith("OPEN:") } == 3)
-        assertTrue(events.count { it.startsWith("CLOSE:") } == 3)
+        assertEquals(8, events.size)
+        assertEquals(4, events.count { it.startsWith("OPEN:") })
+        assertEquals(4, events.count { it.startsWith("CLOSE:") })
     }
 }
