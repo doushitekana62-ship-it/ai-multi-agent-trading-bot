@@ -18,6 +18,7 @@ data class ExecutionResult(
     val fee: Double = 0.0,
     val slippagePercent: Double = 0.0,
     val pnlIdr: Double = 0.0,
+    val remainingBalanceIdr: Double = 0.0,
     val error: String? = null,
 )
 
@@ -34,26 +35,51 @@ data class PaperPosition(
 )
 
 class PaperExecutionEngine(
+    private val initialBalanceIdr: Double = 150_000.0,
+    private val maxOpenPositions: Int = 3,
     private val feePercent: Double = 0.3,
     private val slippagePercent: Double = 0.05,
 ) {
+    private var availableBalanceIdr = initialBalanceIdr
     private val positions = linkedMapOf<String, PaperPosition>()
+
+    init {
+        require(initialBalanceIdr > 0.0)
+        require(maxOpenPositions in 1..3)
+        require(feePercent >= 0.0)
+        require(slippagePercent >= 0.0)
+    }
 
     fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long): ExecutionResult {
         if (!plan.allowed || plan.stakeIdr <= 0.0) {
-            return ExecutionResult(false, error = "entry_plan_not_allowed")
+            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
         }
+        if (positions.size >= maxOpenPositions) {
+            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
+        }
+
+        val entryFee = plan.stakeIdr * feePercent / 100.0
+        val required = plan.stakeIdr + entryFee
+        if (required > availableBalanceIdr) {
+            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
+        }
+
         val executionPrice = plan.entryPrice * (1.0 + slippagePercent / 100.0)
         val id = "paper-$nowMs-${positions.size + 1}"
+        val actualStop = executionPrice * (plan.stopLossPrice / plan.entryPrice)
+        val actualTarget = executionPrice * (plan.takeProfitPrice / plan.entryPrice)
+        val actualActivation = executionPrice * (plan.trailingActivationPrice / plan.entryPrice)
+
+        availableBalanceIdr -= required
         positions[id] = PaperPosition(
             id = id,
             exchangeId = exchangeId,
             symbol = symbol,
             stakeIdr = plan.stakeIdr,
             entryPrice = executionPrice,
-            stopLossPrice = plan.stopLossPrice,
-            takeProfitPrice = plan.takeProfitPrice,
-            trailingActivationPrice = plan.trailingActivationPrice,
+            stopLossPrice = actualStop,
+            takeProfitPrice = actualTarget,
+            trailingActivationPrice = actualActivation,
             openedAtEpochMs = nowMs,
         )
         return ExecutionResult(
@@ -61,35 +87,45 @@ class PaperExecutionEngine(
             orderId = id,
             filledAmount = plan.stakeIdr / executionPrice,
             averagePrice = executionPrice,
-            fee = plan.stakeIdr * feePercent / 100.0,
+            fee = entryFee,
             slippagePercent = slippagePercent,
+            remainingBalanceIdr = availableBalanceIdr,
         )
     }
 
     fun close(positionId: String, marketPrice: Double, reason: String): ExecutionResult {
-        if (marketPrice <= 0.0) return ExecutionResult(false, error = "invalid_market_price")
-        val position = positions[positionId] ?: return ExecutionResult(false, error = "paper_position_not_found")
+        if (marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_market_price")
+        val position = positions[positionId]
+            ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_not_found")
+
         val executionPrice = marketPrice * (1.0 - slippagePercent / 100.0)
         val amount = position.stakeIdr / position.entryPrice
-        val grossPnl = (executionPrice - position.entryPrice) * amount
-        val entryFee = position.stakeIdr * feePercent / 100.0
         val exitNotional = executionPrice * amount
         val exitFee = exitNotional * feePercent / 100.0
-        val netPnl = grossPnl - entryFee - exitFee
+        val proceedsAfterFee = exitNotional - exitFee
+        val netPnl = proceedsAfterFee - position.stakeIdr
+
+        availableBalanceIdr += proceedsAfterFee
         positions.remove(positionId)
+
         return ExecutionResult(
             success = true,
             orderId = positionId,
             filledAmount = amount,
             averagePrice = executionPrice,
-            fee = entryFee + exitFee,
+            fee = exitFee,
             slippagePercent = slippagePercent,
             pnlIdr = netPnl,
-            error = null,
+            remainingBalanceIdr = availableBalanceIdr,
         )
     }
 
     fun positionCount(): Int = positions.size
     fun positions(): List<PaperPosition> = positions.values.toList()
+    fun availableBalanceIdr(): Double = availableBalanceIdr
+    fun equityIdr(markPrices: Map<String, Double>): Double = availableBalanceIdr + positions.values.sumOf { position ->
+        val mark = markPrices[position.symbol] ?: position.entryPrice
+        mark.coerceAtLeast(0.0) * (position.stakeIdr / position.entryPrice)
+    }
     fun remove(positionId: String): PaperPosition? = positions.remove(positionId)
 }
