@@ -136,7 +136,7 @@ class PaperExecutionEngine(
 
 class PaperExchangeAdapter(
     private val prices: () -> Map<String, Double>,
-    private val engine: PaperExecutionEngine,
+    private val engine: PaperExecutionEngine = PaperExecutionEngine(),
     private val exchangeName: String = "paper",
 ) : ExchangeAdapter {
     override val exchangeId: String = exchangeName
