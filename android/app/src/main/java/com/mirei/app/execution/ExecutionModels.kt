@@ -17,6 +17,7 @@ data class ExecutionResult(
     val averagePrice: Double = 0.0,
     val fee: Double = 0.0,
     val slippagePercent: Double = 0.0,
+    val pnlIdr: Double = 0.0,
     val error: String? = null,
 )
 
@@ -62,6 +63,29 @@ class PaperExecutionEngine(
             averagePrice = executionPrice,
             fee = plan.stakeIdr * feePercent / 100.0,
             slippagePercent = slippagePercent,
+        )
+    }
+
+    fun close(positionId: String, marketPrice: Double, reason: String): ExecutionResult {
+        if (marketPrice <= 0.0) return ExecutionResult(false, error = "invalid_market_price")
+        val position = positions[positionId] ?: return ExecutionResult(false, error = "paper_position_not_found")
+        val executionPrice = marketPrice * (1.0 - slippagePercent / 100.0)
+        val amount = position.stakeIdr / position.entryPrice
+        val grossPnl = (executionPrice - position.entryPrice) * amount
+        val entryFee = position.stakeIdr * feePercent / 100.0
+        val exitNotional = executionPrice * amount
+        val exitFee = exitNotional * feePercent / 100.0
+        val netPnl = grossPnl - entryFee - exitFee
+        positions.remove(positionId)
+        return ExecutionResult(
+            success = true,
+            orderId = positionId,
+            filledAmount = amount,
+            averagePrice = executionPrice,
+            fee = entryFee + exitFee,
+            slippagePercent = slippagePercent,
+            pnlIdr = netPnl,
+            error = null,
         )
     }
 
