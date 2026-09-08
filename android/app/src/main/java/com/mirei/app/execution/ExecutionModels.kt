@@ -51,6 +51,7 @@ class PaperExecutionEngine(
     private val config: TradingConfig = TradingConfig(),
     private val feePercent: Double = 0.3,
     private val slippagePercent: Double = 0.05,
+    private val tradeLedger: TradeLedger? = null,
 ) {
     private var availableBalanceIdr = config.totalCapitalIdr
     private val positions = linkedMapOf<String, PaperPosition>()
@@ -79,12 +80,14 @@ class PaperExecutionEngine(
         val actualStop = executionPrice * (plan.stopLossPrice / plan.entryPrice)
         val actualTarget = executionPrice * (plan.takeProfitPrice / plan.entryPrice)
         val actualActivation = executionPrice * (plan.trailingActivationPrice / plan.entryPrice)
+        val position = PaperPosition(id, exchangeId, symbol, plan.stakeIdr, executionPrice, actualStop, actualTarget, actualActivation, nowMs)
         availableBalanceIdr -= required
-        positions[id] = PaperPosition(id, exchangeId, symbol, plan.stakeIdr, executionPrice, actualStop, actualTarget, actualActivation, nowMs)
+        positions[id] = position
+        tradeLedger?.recordOpened(position)
         return ExecutionResult(true, id, plan.stakeIdr / executionPrice, executionPrice, entryFee, entryFee = entryFee, slippagePercent = slippagePercent, remainingBalanceIdr = availableBalanceIdr, reason = "entry_filled")
     }
 
-    fun close(positionId: String, marketPrice: Double, reason: String): ExecutionResult {
+    fun close(positionId: String, marketPrice: Double, reason: String, nowMs: Long = System.currentTimeMillis()): ExecutionResult {
         if (marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "invalid_market_price")
         val position = positions[positionId]
             ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "paper_position_not_found")
@@ -97,6 +100,7 @@ class PaperExecutionEngine(
         val netPnl = proceedsAfterFee - position.stakeIdr - entryFee
         availableBalanceIdr += proceedsAfterFee
         positions.remove(positionId)
+        tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, nowMs, reason)
         return ExecutionResult(true, positionId, amount, executionPrice, exitFee, entryFee = entryFee, exitFee = exitFee, slippagePercent = slippagePercent, pnlIdr = netPnl, remainingBalanceIdr = availableBalanceIdr, reason = reason)
     }
 
