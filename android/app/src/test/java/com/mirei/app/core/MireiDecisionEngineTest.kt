@@ -148,8 +148,9 @@ class MireiDecisionEngineTest {
         val closed = engine.close(opened.orderId!!, 1_010_000.0, "take_profit")
 
         assertTrue(closed.success)
-        assertEquals(999.50025, closed.pnlIdr, 0.01)
-        assertEquals(150_999.50025, engine.availableBalanceIdr(), 0.01)
+        assertEquals(148.17666, closed.pnlIdr, 0.01)
+        assertEquals(150_148.17666, engine.availableBalanceIdr(), 0.01)
+        assertEquals("take_profit", closed.reason)
         assertEquals(0, engine.positionCount())
     }
 }
