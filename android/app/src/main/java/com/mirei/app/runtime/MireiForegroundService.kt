@@ -78,7 +78,7 @@ class MireiForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun handleRuntimeFailure(message: String, error: Exception) {
+    private fun handleRuntimeFailure(message: String, error: Throwable) {
         controller.onEngineError()
         runCatching { publish("$message — Mirei STOP") }
         stopSelf()
