@@ -1,6 +1,7 @@
 package com.mirei.app.execution
 
 import com.mirei.app.core.EntryPlan
+import com.mirei.app.core.TradingConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,7 +24,7 @@ class PaperExecutionEngineTest {
         assertTrue(opened.success)
         assertEquals(1, engine.positionCount())
 
-        val closed = engine.close(opened.orderId!!, 1_010_000.0, "take_profit")
+        val closed = engine.close(opened.orderId!!, 1_010_000.0, "take_profit", 2000L)
         assertTrue(closed.success)
         assertTrue(closed.pnlIdr > 0.0)
         assertEquals(0, engine.positionCount())
@@ -37,5 +38,132 @@ class PaperExecutionEngineTest {
 
         assertTrue(!closed.success)
         assertEquals(1, engine.positionCount())
+    }
+
+    @Test
+    fun ledgerFailureDoesNotCommitOpenState() {
+        val ledger = object : TradeLedger {
+            override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) {
+                error("ledger_down")
+            }
+
+            override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) = Unit
+        }
+        val engine = PaperExecutionEngine(tradeLedger = ledger)
+
+        var failed = false
+        try {
+            engine.open("paper", "BTC/IDR", plan, 1000L)
+        } catch (_: IllegalStateException) {
+            failed = true
+        }
+
+        assertTrue(failed)
+        assertEquals(0, engine.positionCount())
+        assertEquals(150_000.0, engine.availableBalanceIdr(), 0.001)
+    }
+
+    @Test
+    fun ledgerFailureDoesNotCommitCloseState() {
+        val ledger = object : TradeLedger {
+            override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) = Unit
+            override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) {
+                error("ledger_down")
+            }
+        }
+        val engine = PaperExecutionEngine(tradeLedger = ledger)
+        val opened = engine.open("paper", "BTC/IDR", plan, 1000L)
+        val balanceBefore = engine.availableBalanceIdr()
+
+        var failed = false
+        try {
+            engine.close(opened.orderId!!, 1_010_000.0, "take_profit", 2000L)
+        } catch (_: IllegalStateException) {
+            failed = true
+        }
+
+        assertTrue(failed)
+        assertEquals(1, engine.positionCount())
+        assertEquals(balanceBefore, engine.availableBalanceIdr(), 0.001)
+    }
+
+    @Test
+    fun limitOrdersReserveCapitalAndCancellationReleasesIt() {
+        val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0, maxOpenPositions = 3)
+        val engine = PaperExecutionEngine(config = config)
+
+        val first = engine.placeLimit("paper", "BTC/IDR", 50_000.0, 1_000_000.0, 1000L)
+        val second = engine.placeLimit("paper", "ETH/IDR", 50_000.0, 2_000_000.0, 1001L)
+        val third = engine.placeLimit("paper", "SOL/IDR", 50_000.0, 3_000_000.0, 1002L)
+        val fourth = engine.placeLimit("paper", "XRP/IDR", 50_000.0, 4_000_000.0, 1003L)
+
+        assertTrue(first.success)
+        assertTrue(second.success)
+        assertTrue(third.success)
+        assertTrue(!fourth.success)
+        assertEquals(3, engine.pendingLimitOrders().size)
+        assertTrue(engine.availableBalanceIdr() < 1.0)
+
+        assertTrue(engine.cancelLimit(second.orderId!!))
+        assertEquals(2, engine.pendingLimitOrders().size)
+        assertTrue(engine.availableBalanceIdr() > 49_000.0)
+    }
+
+    @Test
+    fun limitFillConsumesReservationWithoutDoubleCharging() {
+        val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0, maxOpenPositions = 3)
+        val engine = PaperExecutionEngine(config = config, feePercent = 0.3, slippagePercent = 0.05)
+        val order = engine.placeLimit("paper", "BTC/IDR", 50_000.0, 1_000_000.0, 1000L)
+        val reservedBalance = engine.availableBalanceIdr()
+
+        val filled = engine.fillLimit(order.orderId!!, 999_000.0, 2000L)
+
+        assertTrue(filled.success)
+        assertEquals(1, engine.positionCount())
+        assertEquals(0, engine.pendingLimitOrders().size)
+        assertEquals(reservedBalance, engine.availableBalanceIdr(), 0.001)
+    }
+
+    @Test
+    fun e2EndToEndThreePositionsCloseAndCompoundBalance() {
+        val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0, maxOpenPositions = 3)
+        val events = mutableListOf<String>()
+        val ledger = object : TradeLedger {
+            override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) {
+                events += "OPEN:${position.id}:${entryFeeIdr}"
+            }
+
+            override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) {
+                events += "CLOSE:${position.id}:${pnlIdr}:${exitReason}"
+            }
+        }
+        val engine = PaperExecutionEngine(config = config, feePercent = 0.3, slippagePercent = 0.05, tradeLedger = ledger)
+
+        val p1 = engine.open("paper", "BTC/IDR", plan, 1000L)
+        val p2 = engine.open("paper", "ETH/IDR", plan.copy(entryPrice = 2_000_000.0, stopLossPrice = 1_990_000.0, takeProfitPrice = 2_020_000.0, trailingActivationPrice = 2_010_000.0), 2000L)
+        val p3 = engine.open("paper", "SOL/IDR", plan.copy(entryPrice = 3_000_000.0, stopLossPrice = 2_985_000.0, takeProfitPrice = 3_030_000.0, trailingActivationPrice = 3_015_000.0), 3000L)
+        val rejected = engine.open("paper", "XRP/IDR", plan.copy(entryPrice = 4_000_000.0), 4000L)
+
+        assertTrue(p1.success && p2.success && p3.success)
+        assertTrue(!rejected.success)
+        assertEquals(3, engine.positionCount())
+        assertEquals(0.0, engine.availableBalanceIdr(), 0.001)
+
+        val c1 = engine.close(p1.orderId!!, 1_010_000.0, "take_profit", 5000L)
+        assertTrue(c1.success)
+        assertTrue(c1.pnlIdr > 0.0)
+
+        // The realized profit is returned to available balance and is immediately reusable.
+        val compoundedBalance = engine.availableBalanceIdr()
+        assertTrue(compoundedBalance > 0.0)
+
+        val c2 = engine.close(p2.orderId!!, 1_990_000.0, "stop_loss", 6000L)
+        val c3 = engine.close(p3.orderId!!, 3_030_000.0, "take_profit", 7000L)
+        assertTrue(c2.success && c3.success)
+        assertEquals(0, engine.positionCount())
+        assertTrue(engine.availableBalanceIdr() > 0.0)
+        assertEquals(6, events.size)
+        assertTrue(events.count { it.startsWith("OPEN:") } == 3)
+        assertTrue(events.count { it.startsWith("CLOSE:") } == 3)
     }
 }
