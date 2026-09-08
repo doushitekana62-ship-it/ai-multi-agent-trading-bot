@@ -178,3 +178,29 @@ class PaperExchangeAdapter(
         reasons = listOf("paper_market_entry", symbol),
     )
 }
+
+data class ExchangeHandle(
+    val id: String,
+    val displayName: String,
+    val adapter: ExchangeAdapter,
+    val tradingEnabled: Boolean = false,
+)
+
+class ExchangeRegistry {
+    private val handles = linkedMapOf<String, ExchangeHandle>()
+
+    fun register(handle: ExchangeHandle) {
+        require(handle.id.isNotBlank())
+        require(handle.displayName.isNotBlank())
+        require(handle.adapter.exchangeId == handle.id)
+        handles[handle.id] = handle
+    }
+
+    fun remove(exchangeId: String): ExchangeHandle? = handles.remove(exchangeId)
+    fun get(exchangeId: String): ExchangeHandle? = handles[exchangeId]
+    fun activeTradingAdapters(): List<ExchangeAdapter> = handles.values
+        .filter { it.tradingEnabled }
+        .map { it.adapter }
+    fun ids(): List<String> = handles.keys.toList()
+    fun all(): List<ExchangeHandle> = handles.values.toList()
+}
