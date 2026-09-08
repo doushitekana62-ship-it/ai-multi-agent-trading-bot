@@ -4,8 +4,8 @@ import com.mirei.app.execution.PaperPosition
 import com.mirei.app.execution.TradeLedger
 
 class SqliteTradeLedger(private val database: MireiDatabase) : TradeLedger {
-    override fun recordOpened(position: PaperPosition) {
-        database.recordTradeOpened(position)
+    override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) {
+        database.recordTradeOpened(position, entryFeeIdr)
     }
 
     override fun recordClosed(
