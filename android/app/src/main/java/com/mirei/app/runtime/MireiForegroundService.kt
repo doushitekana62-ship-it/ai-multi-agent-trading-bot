@@ -12,53 +12,81 @@ import com.mirei.app.core.MireiState
 
 class MireiForegroundService : Service() {
     private val controller = MireiRuntimeController()
-    private lateinit var connectivityManager: ConnectivityManager
+    private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "Mirei Runtime",
-                NotificationManager.IMPORTANCE_LOW,
+        try {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "Mirei Runtime",
+                    NotificationManager.IMPORTANCE_LOW,
+                )
             )
-        )
-        connectivityManager = getSystemService(ConnectivityManager::class.java)
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onLost(network: Network) {
-                controller.onNetworkLost()
-                publish("Internet lost — Mirei HOLD")
+
+            val connectivity = getSystemService(ConnectivityManager::class.java)
+            connectivityManager = connectivity
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onLost(network: Network) {
+                    runCatching {
+                        controller.onNetworkLost()
+                        publish("Internet lost — Mirei HOLD")
+                    }.onFailure { handleRuntimeFailure("Network monitor failed", it) }
+                }
             }
+            networkCallback = callback
+            connectivity.registerDefaultNetworkCallback(callback)
+        } catch (error: Exception) {
+            handleRuntimeFailure("Mirei initialization failed", error)
         }
-        connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, notification("Mirei ${controller.state.name}"))
-        when (intent?.action) {
-            ACTION_START -> controller.start()
-            ACTION_HOLD -> controller.hold()
-            ACTION_STOP -> controller.stop()
-            ACTION_CLOSE_ALL -> controller.closeAll()
-        }
-        publish("Mirei ${controller.state.name}")
-        if (controller.state == MireiState.STOP) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+        try {
+            startForeground(NOTIFICATION_ID, notification("Mirei ${controller.state.name}"))
+
+            when (intent?.action) {
+                ACTION_START -> controller.start()
+                ACTION_HOLD -> controller.hold()
+                ACTION_STOP -> controller.stop()
+                ACTION_CLOSE_ALL -> controller.closeAll()
+            }
+
+            publish("Mirei ${controller.state.name}")
+            if (controller.state == MireiState.STOP) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        } catch (error: Exception) {
+            handleRuntimeFailure("Mirei action failed", error)
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        networkCallback?.let { connectivityManager.unregisterNetworkCallback(it) }
-        networkCallback = null
+        try {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {
+            // Cleanup must never crash the service during teardown.
+        } finally {
+            networkCallback = null
+            connectivityManager = null
+        }
         super.onDestroy()
     }
 
+    private fun handleRuntimeFailure(message: String, error: Exception) {
+        controller.onEngineError()
+        runCatching { publish("$message — Mirei STOP") }
+        stopSelf()
+    }
+
     private fun publish(text: String) {
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, notification(text))
     }
 
     private fun notification(text: String): Notification = Notification.Builder(this, CHANNEL_ID)
