@@ -1,6 +1,7 @@
 package com.mirei.app.execution
 
 import com.mirei.app.core.EntryPlan
+import com.mirei.app.core.TradingConfig
 
 interface ExchangeAdapter {
     val exchangeId: String
@@ -47,18 +48,15 @@ data class PaperLimitOrder(
 )
 
 class PaperExecutionEngine(
-    private val initialBalanceIdr: Double = 150_000.0,
-    private val maxOpenPositions: Int = 3,
+    private val config: TradingConfig = TradingConfig(),
     private val feePercent: Double = 0.3,
     private val slippagePercent: Double = 0.05,
 ) {
-    private var availableBalanceIdr = initialBalanceIdr
+    private var availableBalanceIdr = config.totalCapitalIdr
     private val positions = linkedMapOf<String, PaperPosition>()
     private val limitOrders = linkedMapOf<String, PaperLimitOrder>()
 
     init {
-        require(initialBalanceIdr > 0.0)
-        require(maxOpenPositions in 1..3)
         require(feePercent >= 0.0)
         require(slippagePercent >= 0.0)
     }
@@ -67,7 +65,7 @@ class PaperExecutionEngine(
         if (!plan.allowed || plan.stakeIdr <= 0.0) {
             return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
         }
-        if (positions.size >= maxOpenPositions) {
+        if (positions.size >= config.maxOpenPositions) {
             return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         }
         val entryFee = plan.stakeIdr * feePercent / 100.0
@@ -105,7 +103,7 @@ class PaperExecutionEngine(
     fun placeLimit(exchangeId: String, symbol: String, quoteAmount: Double, limitPrice: Double, nowMs: Long): ExecutionResult {
         if (quoteAmount <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_quote_amount")
         if (limitPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_price")
-        if (positions.size >= maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
+        if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         val id = "limit-$nowMs-${limitOrders.size + 1}"
         limitOrders[id] = PaperLimitOrder(id, exchangeId, symbol, quoteAmount, limitPrice, nowMs)
         return ExecutionResult(true, orderId = id, remainingBalanceIdr = availableBalanceIdr, reason = "limit_order_accepted")
@@ -138,7 +136,7 @@ class PaperExecutionEngine(
 
 class PaperExchangeAdapter(
     private val prices: () -> Map<String, Double>,
-    private val engine: PaperExecutionEngine = PaperExecutionEngine(),
+    private val engine: PaperExecutionEngine,
     private val exchangeName: String = "paper",
 ) : ExchangeAdapter {
     override val exchangeId: String = exchangeName
