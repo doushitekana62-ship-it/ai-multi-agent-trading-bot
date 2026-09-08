@@ -26,7 +26,8 @@ class MireiDecisionEngine(
 ) {
     fun buildEntryPlan(snapshot: MarketSnapshot, riskSnapshot: RiskSnapshot): EntryPlan {
         val risk = riskPolicy.evaluate(riskSnapshot)
-        val reasons = risk.reasons.toMutableList()
+        val reasons = mutableListOf<String>()
+        if (!risk.allowedToOpen) reasons += risk.reasons
         if (!snapshot.dataFresh) reasons += "market_snapshot_stale"
         if (snapshot.price <= 0.0) reasons += "invalid_price"
         if (snapshot.forecastConfidence < minimumConfidence()) reasons += "forecast_confidence_low"
