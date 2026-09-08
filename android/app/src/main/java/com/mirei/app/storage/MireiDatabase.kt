@@ -52,7 +52,8 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         }
     }
 
-    fun recordTradeOpened(position: PaperPosition) {
+    fun recordTradeOpened(position: PaperPosition, entryFeeIdr: Double) {
+        require(entryFeeIdr >= 0.0)
         writableDatabase.insertOrThrow(
             "trades",
             null,
@@ -64,7 +65,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
                 put("status", "OPEN")
                 put("entry_price", position.entryPrice)
                 put("stake_idr", position.stakeIdr)
-                put("fee_idr", 0.0)
+                put("fee_idr", entryFeeIdr)
                 put("pnl_idr", 0.0)
                 put("opened_at", position.openedAtEpochMs)
             },
@@ -79,6 +80,8 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         closedAtEpochMs: Long,
         exitReason: String,
     ) {
+        require(exitPrice > 0.0)
+        require(feeIdr >= 0.0)
         val values = ContentValues().apply {
             put("status", "CLOSED")
             put("exit_price", exitPrice)
