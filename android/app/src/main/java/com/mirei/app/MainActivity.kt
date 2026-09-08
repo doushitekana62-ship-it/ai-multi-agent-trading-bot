@@ -10,7 +10,6 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.core.content.ContextCompat
 import com.mirei.app.runtime.MireiForegroundService
 
 class MainActivity : Activity() {
@@ -56,8 +55,8 @@ class MainActivity : Activity() {
 
     private fun sendAction(command: String, nextState: String) {
         val intent = Intent(this, MireiForegroundService::class.java).setAction(command)
-        if (command == MireiForegroundService.ACTION_START) {
-            ContextCompat.startForegroundService(this, intent)
+        if (command == MireiForegroundService.ACTION_START && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
         } else {
             startService(intent)
         }
