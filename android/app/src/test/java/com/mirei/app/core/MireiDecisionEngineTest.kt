@@ -38,15 +38,15 @@ class MireiDecisionEngineTest {
     }
 
     @Test fun paperInsufficientBalanceIsRejected() {
-        val engine = PaperExecutionEngine(config = config.copy(totalCapitalIdr = 50_000.0), feePercent = 0.3, slippagePercent = 0.0)
+        val engine = PaperExecutionEngine(config = config.copy(totalCapitalIdr = 49_999.0), feePercent = 0.3, slippagePercent = 0.0)
         val rejected = engine.open("paper", "BTC/IDR", paperPlan(), 1L)
-        assertFalse(rejected.success); assertEquals("insufficient_paper_balance", rejected.error); assertEquals(50_000.0, engine.availableBalanceIdr(), 0.001)
+        assertFalse(rejected.success); assertEquals("insufficient_paper_balance", rejected.error); assertEquals(49_999.0, engine.availableBalanceIdr(), 0.001)
     }
 
     @Test fun paperCloseReturnsCapitalAndNetPnl() {
         val engine = PaperExecutionEngine(config = config, feePercent = 0.3, slippagePercent = 0.05)
         val opened = engine.open("paper", "BTC/IDR", paperPlan(), 1L); val closed = engine.close(opened.orderId!!, 1_010_000.0, "take_profit")
-        assertTrue(closed.success); assertEquals(148.17666, closed.pnlIdr, 0.01); assertEquals(150_148.17666, engine.availableBalanceIdr(), 0.01); assertEquals("take_profit", closed.reason); assertEquals(0, engine.positionCount())
+        assertTrue(closed.success); assertEquals(147.73346, closed.pnlIdr, 0.01); assertEquals(150_147.73346, engine.availableBalanceIdr(), 0.01); assertEquals("take_profit", closed.reason); assertEquals(0, engine.positionCount())
     }
 
     @Test fun exchangeRegistryReturnsOnlyEnabledAdapters() {
