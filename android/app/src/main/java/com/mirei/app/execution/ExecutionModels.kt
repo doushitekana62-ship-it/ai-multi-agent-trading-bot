@@ -30,6 +30,7 @@ data class PaperPosition(
     val id: String,
     val exchangeId: String,
     val symbol: String,
+    /** Total capital allocated to this position, including its entry fee. */
     val stakeIdr: Double,
     val entryPrice: Double,
     val stopLossPrice: Double,
@@ -42,6 +43,7 @@ data class PaperLimitOrder(
     val id: String,
     val exchangeId: String,
     val symbol: String,
+    /** Total capital reserved for this order, including its eventual entry fee. */
     val quoteAmount: Double,
     val limitPrice: Double,
     val reservedIdr: Double,
@@ -79,8 +81,12 @@ class PaperExecutionEngine(
         if (positions.size >= config.maxOpenPositions) {
             return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         }
-        val entryFee = plan.stakeIdr * feePercent / 100.0
-        val required = plan.stakeIdr + entryFee
+
+        // stakeIdr is the complete cash allocation for the position. The fee is paid from it,
+        // so 3 x Rp50,000 positions remain possible inside exactly Rp150,000 of paper capital.
+        val entryFee = plan.stakeIdr * feePercent / (100.0 + feePercent)
+        val entryNotional = plan.stakeIdr - entryFee
+        val required = plan.stakeIdr
         if (reservedIdr > 0.0) {
             if (reservedIdr + 1e-9 < required) {
                 return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
@@ -105,17 +111,14 @@ class PaperExecutionEngine(
 
         // Persist first. If persistence fails, no in-memory balance or position is committed.
         tradeLedger?.recordOpened(position, entryFee)
-        if (reservedIdr > 0.0) {
-            // The reservation was already removed from available balance at order placement.
-            // It becomes consumed by the filled position here.
-        } else {
+        if (reservedIdr <= 0.0) {
             availableBalanceIdr -= required
         }
         positions[id] = position
         return ExecutionResult(
             true,
             id,
-            plan.stakeIdr / executionPrice,
+            entryNotional / executionPrice,
             executionPrice,
             entryFee,
             entryFee = entryFee,
@@ -135,12 +138,13 @@ class PaperExecutionEngine(
         val position = positions[positionId]
             ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "paper_position_not_found")
         val executionPrice = marketPrice * (1.0 - slippagePercent / 100.0)
-        val amount = position.stakeIdr / position.entryPrice
+        val entryFee = position.stakeIdr * feePercent / (100.0 + feePercent)
+        val entryNotional = position.stakeIdr - entryFee
+        val amount = entryNotional / position.entryPrice
         val exitNotional = executionPrice * amount
         val exitFee = exitNotional * feePercent / 100.0
-        val entryFee = position.stakeIdr * feePercent / 100.0
         val proceedsAfterFee = exitNotional - exitFee
-        val netPnl = proceedsAfterFee - position.stakeIdr - entryFee
+        val netPnl = proceedsAfterFee - position.stakeIdr
 
         // Persist first. A ledger failure leaves the position and balance untouched for retry/recovery.
         tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, nowMs, reason)
@@ -165,8 +169,7 @@ class PaperExecutionEngine(
         if (quoteAmount <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_quote_amount")
         if (limitPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_price")
         if (positions.size + limitOrders.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
-        val entryFee = quoteAmount * feePercent / 100.0
-        val reservedIdr = quoteAmount + entryFee
+        val reservedIdr = quoteAmount
         if (reservedIdr > availableBalanceIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
         val id = "limit-$nowMs-${limitOrders.size + 1}"
         availableBalanceIdr -= reservedIdr
@@ -198,7 +201,9 @@ class PaperExecutionEngine(
     fun reservedBalanceIdr(): Double = limitOrders.values.sumOf { it.reservedIdr }
     fun equityIdr(markPrices: Map<String, Double>): Double = availableBalanceIdr + reservedBalanceIdr() + positions.values.sumOf { position ->
         val mark = markPrices[position.symbol] ?: position.entryPrice
-        mark.coerceAtLeast(0.0) * (position.stakeIdr / position.entryPrice)
+        val entryFee = position.stakeIdr * feePercent / (100.0 + feePercent)
+        val entryNotional = position.stakeIdr - entryFee
+        mark.coerceAtLeast(0.0) * (entryNotional / position.entryPrice)
     }
 
     /** Removes only after an external reconciliation has established that capital was already settled. */
