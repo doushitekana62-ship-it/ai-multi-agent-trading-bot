@@ -105,7 +105,8 @@ class PaperExecutionEngine(
         val exitNotional = executionPrice * amount
         val exitFee = exitNotional * feePercent / 100.0
         val proceedsAfterFee = exitNotional - exitFee
-        val netPnl = proceedsAfterFee - position.stakeIdr
+        val entryFee = position.stakeIdr * feePercent / 100.0
+        val netPnl = proceedsAfterFee - position.stakeIdr - entryFee
 
         availableBalanceIdr += proceedsAfterFee
         positions.remove(positionId)
