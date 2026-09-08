@@ -9,13 +9,13 @@ DEFAULT_FREQTRADE_DB_PATH = str(_PROJECT_DIR / "data" / "tradesv3.sqlite")
 SUPPORTED_EXCHANGE = "indodax"
 DEFAULT_TRADING_PAIR = "BTC/IDR"
 FREQTRADE_API_USERNAME = "doushitekana"
-DEFAULT_CORS_ORIGINS = "https://doushitekana62-ship-it.github.io"
+DEFAULT_CORS_ORIGINS = ""
 
 
 @dataclass(frozen=True)
 class Settings:
-    app_name: str = os.getenv("APP_NAME", "Compound Scalping API")
-    app_version: str = os.getenv("APP_VERSION", "2.5.2")
+    app_name: str = os.getenv("APP_NAME", "Mirei ミレイ API")
+    app_version: str = os.getenv("APP_VERSION", "3.0.0")
     cors_origins: str = os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     dashboard_token: str = os.getenv("DASHBOARD_TOKEN", "")
     freqtrade_db_path: str = os.getenv("FREQTRADE_DB_PATH", DEFAULT_FREQTRADE_DB_PATH)
@@ -24,28 +24,37 @@ class Settings:
     freqtrade_jwt_secret: str = os.getenv("FREQTRADE_JWT_SECRET", "")
     freqtrade_internal_password: str = os.getenv("FREQTRADE_INTERNAL_PASSWORD", "")
 
-    exchange_name: str = SUPPORTED_EXCHANGE
+    # Legacy server runtime. Android-first Mirei will eventually own these settings locally.
+    exchange_name: str = os.getenv("EXCHANGE_NAME", SUPPORTED_EXCHANGE).lower()
+    supported_exchanges: str = os.getenv("SUPPORTED_EXCHANGES", "indodax,bybit")
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
-    bot_name: str = os.getenv("BOT_NAME", "compound-scalper")
+    bot_name: str = os.getenv("BOT_NAME", "mirei")
     strategy_name: str = os.getenv("FREQTRADE_STRATEGY", "CompoundScalpingStrategy")
-    trading_pairs: str = DEFAULT_TRADING_PAIR
-    stake_currency: str = "IDR"
-    stake_amount: float = float(os.getenv("STAKE_AMOUNT", "100000"))
-    paper_initial_balance: float = float(os.getenv("PAPER_INITIAL_BALANCE", "1000000"))
-    max_open_trades: int = int(os.getenv("MAX_OPEN_TRADES", "1"))
+    trading_pairs: str = os.getenv("TRADING_PAIRS", DEFAULT_TRADING_PAIR)
+    stake_currency: str = os.getenv("STAKE_CURRENCY", "IDR")
+    stake_amount: float = float(os.getenv("STAKE_AMOUNT", "50000"))
+    total_initial_balance: float = float(os.getenv("TOTAL_INITIAL_BALANCE", "150000"))
+    paper_initial_balance: float = float(os.getenv("PAPER_INITIAL_BALANCE", "150000"))
+    max_open_trades: int = int(os.getenv("MAX_OPEN_TRADES", "3"))
     timeframe: str = os.getenv("TIMEFRAME", "1m")
     process_throttle_secs: int = int(os.getenv("PROCESS_THROTTLE_SECS", "5"))
     heartbeat_interval: int = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
+    base_stoploss_percent: float = float(os.getenv("BASE_STOPLOSS_PERCENT", "0.5"))
+    base_take_profit_percent: float = float(os.getenv("BASE_TAKE_PROFIT_PERCENT", "1.0"))
+    sentiment_hold_threshold: float = float(os.getenv("SENTIMENT_HOLD_THRESHOLD", "-30"))
+
     indodax_api_key: str = os.getenv("INDODAX_API_KEY", "")
     indodax_api_secret: str = os.getenv("INDODAX_API_SECRET", "")
+    bybit_api_key: str = os.getenv("BYBIT_API_KEY", "")
+    bybit_api_secret: str = os.getenv("BYBIT_API_SECRET", "")
     live_trading_enabled: bool = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
 
-    # MASTER KILL SWITCH: trading is intentionally inactive until explicitly re-enabled in code.
+    # Master switch remains intentionally inactive until explicitly enabled by the runtime/UI.
     trading_active: bool = False
 
-    # Paper mode starts automatically only when the master switch is enabled.
-    auto_start_trading: bool = os.getenv("AUTO_START_TRADING", "true").lower() == "true"
+    # Android-first requirement: server auto-start is disabled by default.
+    auto_start_trading: bool = os.getenv("AUTO_START_TRADING", "false").lower() == "true"
     runtime_restart_enabled: bool = os.getenv("RUNTIME_RESTART_ENABLED", "true").lower() == "true"
     runtime_restart_delay: int = int(os.getenv("RUNTIME_RESTART_DELAY", "30"))
 
