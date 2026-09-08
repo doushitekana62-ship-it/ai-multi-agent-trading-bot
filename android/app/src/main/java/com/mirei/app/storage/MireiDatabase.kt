@@ -83,6 +83,6 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
 
     companion object {
         private const val DB_NAME = "mirei.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
     }
 }
