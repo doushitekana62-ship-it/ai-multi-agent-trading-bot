@@ -88,9 +88,14 @@ class MireiForegroundService : Service() {
                 ACTION_CLOSE_ALL -> {
                     controller.closeAll()
                     worker.post {
-                        runtime.closeAll(System.currentTimeMillis())
-                        controller.hold()
-                        publishHealth()
+                        val status = runtime.closeAll(
+                            nowMs = System.currentTimeMillis(),
+                            environment = RuntimeEnvironment(internetAvailable = internetAvailable, exchangeHealthy = true),
+                        )
+                        if (status.activePositions.isEmpty()) {
+                            controller.hold()
+                        }
+                        publishStatus(status)
                     }
                 }
             }
