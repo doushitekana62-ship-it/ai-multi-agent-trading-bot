@@ -132,6 +132,7 @@ class MireiPaperTradingRuntimeTest {
         val status = runtime.tick(1_000L)
 
         assertTrue(status.activePositions.isEmpty())
+        assertTrue(status.lastDecision!!.requiresHumanDecision)
         assertEquals("agent_conflict_requires_human_decision", status.lastDecision!!.rationale)
         assertTrue(status.lastDecision!!.observations.any { it.rationale == "momentum_non_positive" })
         assertTrue(status.lastDecision!!.observations.any { it.rationale == "forecast_confidence_supports_entry" })
