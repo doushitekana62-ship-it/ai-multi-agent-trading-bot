@@ -85,6 +85,12 @@ class MainActivity : Activity() {
         val pnl = intent.getDoubleExtra(MireiForegroundService.EXTRA_PNL, 0.0)
         val positions = intent.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)
         val confidence = intent.getDoubleExtra(MireiForegroundService.EXTRA_CONFIDENCE, 0.0)
+        val rationale = intent.getStringExtra(MireiForegroundService.EXTRA_RATIONALE) ?: "no_decision"
+        val agentSummary = intent.getStringExtra(MireiForegroundService.EXTRA_AGENT_SUMMARY).orEmpty()
+        val entryReasons = intent.getStringExtra(MireiForegroundService.EXTRA_ENTRY_REASONS).orEmpty()
+        val momentum = intent.getDoubleExtra(MireiForegroundService.EXTRA_MOMENTUM, 0.0)
+        val sentiment = intent.getDoubleExtra(MireiForegroundService.EXTRA_SENTIMENT, 0.0)
+        val forecast = intent.getDoubleExtra(MireiForegroundService.EXTRA_FORECAST_CONFIDENCE, 0.0)
         val marketFresh = intent.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)
         val internet = intent.getBooleanExtra(MireiForegroundService.EXTRA_INTERNET, false)
         val exchange = intent.getBooleanExtra(MireiForegroundService.EXTRA_EXCHANGE_HEALTHY, false)
@@ -106,6 +112,11 @@ class MainActivity : Activity() {
             Daily PnL: Rp ${numberFormat.format(pnl)}
             Positions: $positions
             Last action: $action (${(confidence * 100).toInt()}%)
+
+            DECISION REASON: $rationale
+            ENTRY GATES: ${entryReasons.ifBlank { "none" }}
+            MARKET SIGNALS: momentum=${"%.4f".format(Locale.US, momentum)}% sentiment=${"%.1f".format(Locale.US, sentiment)} forecast=${"%.2f".format(Locale.US, forecast)}
+            AGENTS: ${agentSummary.ifBlank { "not evaluated" }}
             ${if (error.isNullOrBlank()) "" else "Error: $error"}
         """.trimIndent()
     }
