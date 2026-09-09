@@ -13,4 +13,6 @@ This milestone validates the paper runtime pipeline at the domain/runtime layer:
 - the configured maximum of three active positions is preserved
 - conflicting agent decisions remain blocked in Suggestion mode
 
+The Android dashboard now also exposes the decision rationale, agent observations, entry-gate reasons, and raw market signal values so a HOLD can be diagnosed without guessing from confidence alone.
+
 Physical Android validation remains separate from these deterministic runtime tests.
