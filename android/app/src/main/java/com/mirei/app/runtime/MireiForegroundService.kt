@@ -150,9 +150,9 @@ class MireiForegroundService : Service() {
                 "${it.agent.name}:${it.action.name} ${(it.confidence * 100).toInt()}% ${it.rationale}"
             } ?: "")
             putExtra(EXTRA_ENTRY_REASONS, status.entryPlanReasons.joinToString(" | "))
-            putExtra(EXTRA_MOMENTUM, runtimeMarketMomentum(status))
-            putExtra(EXTRA_SENTIMENT, runtimeMarketSentiment(status))
-            putExtra(EXTRA_FORECAST_CONFIDENCE, runtimeForecastConfidence(status))
+            putExtra(EXTRA_MOMENTUM, status.marketMomentumPercent)
+            putExtra(EXTRA_SENTIMENT, status.marketSentimentScore)
+            putExtra(EXTRA_FORECAST_CONFIDENCE, status.forecastConfidence)
             putExtra(EXTRA_MARKET_FRESH, status.marketDataFresh)
             putExtra(EXTRA_INTERNET, status.internetAvailable)
             putExtra(EXTRA_EXCHANGE_HEALTHY, status.exchangeHealthy)
@@ -162,17 +162,6 @@ class MireiForegroundService : Service() {
         sendBroadcast(intent)
         publish("Mirei ${controller.state.name} · ${status.activePositions.size} position(s)")
     }
-
-    private fun runtimeMarketMomentum(status: PaperRuntimeStatus): Double =
-        status.lastDecision?.observations?.firstOrNull { it.agent.name == "MARKET" }?.let {
-            if (it.action.name == "BUY") 1.0 else 0.0
-        } ?: 0.0
-
-    private fun runtimeMarketSentiment(status: PaperRuntimeStatus): Double =
-        status.lastDecision?.observations?.firstOrNull { it.agent.name == "SENTIMENT" }?.confidence ?: 0.0
-
-    private fun runtimeForecastConfidence(status: PaperRuntimeStatus): Double =
-        status.lastDecision?.observations?.firstOrNull { it.agent.name == "FORECAST" }?.confidence ?: 0.0
 
     private fun publishHealth() {
         val status = runtime.status(RuntimeEnvironment(internetAvailable = internetAvailable, exchangeHealthy = true))
