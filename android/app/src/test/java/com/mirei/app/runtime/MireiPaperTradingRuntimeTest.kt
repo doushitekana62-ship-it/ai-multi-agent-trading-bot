@@ -50,6 +50,57 @@ class MireiPaperTradingRuntimeTest {
     }
 
     @Test
+    fun runtimeUsesAllThreePositionSlotsAndReentersAfterOnePositionCloses() {
+        val market = MutableMarket(10_000.0)
+        val ledger = RecordingLedger()
+        val runtime = MireiPaperTradingRuntime(
+            config = TradingConfig(positionSizeIdr = 50_000.0, maxOpenPositions = 3),
+            marketData = market,
+            symbol = "BTC/IDR",
+            tradeLedger = ledger,
+        )
+
+        runtime.tick(1_000L)
+        market.price = 10_020.0
+        runtime.tick(2_000L)
+        market.price = 10_040.0
+        val third = runtime.tick(3_000L)
+
+        assertEquals(3, third.activePositions.size)
+        assertEquals(3, ledger.openedCount)
+
+        market.price = 10_110.0
+        val reentry = runtime.tick(4_000L)
+
+        assertEquals(3, reentry.activePositions.size)
+        assertEquals(4, ledger.openedCount)
+        assertEquals(1, ledger.closedCount)
+        assertTrue(reentry.dailyPnlIdr > 0.0)
+        assertTrue(reentry.activePositions.any { it.openedAtEpochMs == 4_000L })
+    }
+
+    @Test
+    fun positionCapPreventsFourthConcurrentEntry() {
+        val market = MutableMarket(10_000.0)
+        val ledger = RecordingLedger()
+        val runtime = MireiPaperTradingRuntime(
+            config = TradingConfig(positionSizeIdr = 30_000.0, maxOpenPositions = 3),
+            marketData = market,
+            symbol = "BTC/IDR",
+            tradeLedger = ledger,
+        )
+
+        runtime.tick(1_000L)
+        runtime.tick(2_000L)
+        val third = runtime.tick(3_000L)
+        val capped = runtime.tick(4_000L)
+
+        assertEquals(3, third.activePositions.size)
+        assertEquals(3, capped.activePositions.size)
+        assertEquals(3, ledger.openedCount)
+    }
+
+    @Test
     fun staleMarketDataDoesNotOpenPosition() {
         val runtime = MireiPaperTradingRuntime(
             marketData = MutableMarket(10_000.0, fresh = false),
