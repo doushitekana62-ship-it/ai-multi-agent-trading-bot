@@ -100,9 +100,19 @@ class MireiPaperTradingRuntime(
             status(environment)
         }
 
-    fun closeAll(nowMs: Long, reason: String = "manual_close_all"): PaperRuntimeStatus {
+    fun closeAll(
+        nowMs: Long,
+        environment: RuntimeEnvironment = RuntimeEnvironment(),
+        reason: String = "manual_close_all",
+    ): PaperRuntimeStatus {
         lastTickEpochMs = nowMs
         lastError = null
+        if (!environment.internetAvailable || !environment.exchangeHealthy) {
+            lastExchangeHealthy = false
+            lastError = "close_all_exchange_unavailable"
+            return status(environment)
+        }
+
         val positions = engine.positions()
         for (position in positions) {
             val snapshot = marketData.snapshot(position.symbol)
@@ -114,7 +124,7 @@ class MireiPaperTradingRuntime(
             lastExchangeHealthy = true
             close(position.id, snapshot.price, reason, nowMs)
         }
-        return status(RuntimeEnvironment(internetAvailable = true, exchangeHealthy = lastExchangeHealthy))
+        return status(environment)
     }
 
     fun status(environment: RuntimeEnvironment = RuntimeEnvironment(), markPrices: Map<String, Double> = emptyMap()): PaperRuntimeStatus {
