@@ -87,7 +87,7 @@ class MireiPaperTradingRuntime(
             val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot)
             val decision = orchestrator.evaluate(snapshot)
             lastDecision = decision
-            if (engine.positionCount() == 0 && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
+            if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
                 lastExecution = engine.open("paper", symbol, plan, nowMs)
             } else {
                 lastExecution = null
