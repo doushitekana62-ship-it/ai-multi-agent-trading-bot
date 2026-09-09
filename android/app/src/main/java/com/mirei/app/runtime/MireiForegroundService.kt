@@ -145,6 +145,14 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_POSITIONS, status.activePositions.size)
             putExtra(EXTRA_CONFIDENCE, status.lastDecision?.confidence ?: 0.0)
             putExtra(EXTRA_ACTION, status.lastDecision?.action?.name ?: "HOLD")
+            putExtra(EXTRA_RATIONALE, status.lastDecision?.rationale ?: "no_decision")
+            putExtra(EXTRA_AGENT_SUMMARY, status.lastDecision?.observations?.joinToString(" | ") {
+                "${it.agent.name}:${it.action.name} ${(it.confidence * 100).toInt()}% ${it.rationale}"
+            } ?: "")
+            putExtra(EXTRA_ENTRY_REASONS, status.entryPlanReasons.joinToString(" | "))
+            putExtra(EXTRA_MOMENTUM, runtimeMarketMomentum(status))
+            putExtra(EXTRA_SENTIMENT, runtimeMarketSentiment(status))
+            putExtra(EXTRA_FORECAST_CONFIDENCE, runtimeForecastConfidence(status))
             putExtra(EXTRA_MARKET_FRESH, status.marketDataFresh)
             putExtra(EXTRA_INTERNET, status.internetAvailable)
             putExtra(EXTRA_EXCHANGE_HEALTHY, status.exchangeHealthy)
@@ -154,6 +162,17 @@ class MireiForegroundService : Service() {
         sendBroadcast(intent)
         publish("Mirei ${controller.state.name} · ${status.activePositions.size} position(s)")
     }
+
+    private fun runtimeMarketMomentum(status: PaperRuntimeStatus): Double =
+        status.lastDecision?.observations?.firstOrNull { it.agent.name == "MARKET" }?.let {
+            if (it.action.name == "BUY") 1.0 else 0.0
+        } ?: 0.0
+
+    private fun runtimeMarketSentiment(status: PaperRuntimeStatus): Double =
+        status.lastDecision?.observations?.firstOrNull { it.agent.name == "SENTIMENT" }?.confidence ?: 0.0
+
+    private fun runtimeForecastConfidence(status: PaperRuntimeStatus): Double =
+        status.lastDecision?.observations?.firstOrNull { it.agent.name == "FORECAST" }?.confidence ?: 0.0
 
     private fun publishHealth() {
         val status = runtime.status(RuntimeEnvironment(internetAvailable = internetAvailable, exchangeHealthy = true))
@@ -187,6 +206,12 @@ class MireiForegroundService : Service() {
         const val EXTRA_POSITIONS = "positions"
         const val EXTRA_CONFIDENCE = "confidence"
         const val EXTRA_ACTION = "action"
+        const val EXTRA_RATIONALE = "rationale"
+        const val EXTRA_AGENT_SUMMARY = "agent_summary"
+        const val EXTRA_ENTRY_REASONS = "entry_reasons"
+        const val EXTRA_MOMENTUM = "momentum"
+        const val EXTRA_SENTIMENT = "sentiment"
+        const val EXTRA_FORECAST_CONFIDENCE = "forecast_confidence"
         const val EXTRA_MARKET_FRESH = "market_fresh"
         const val EXTRA_INTERNET = "internet"
         const val EXTRA_EXCHANGE_HEALTHY = "exchange_healthy"
