@@ -70,6 +70,7 @@ class MireiPaperTradingRuntime(
             lastSnapshot = snapshot
             lastExchangeHealthy = snapshot != null && environment.exchangeHealthy
             if (snapshot == null) {
+                lastError = "market_data_unavailable"
                 lastEntryPlanReasons = listOf("market_data_unavailable")
                 lastDecision = null
                 return status(environment)
