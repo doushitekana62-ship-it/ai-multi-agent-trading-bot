@@ -141,7 +141,7 @@ class MireiPaperTradingRuntime(
             marketPrice = snapshot?.price ?: 0.0,
             marketDataFresh = snapshot?.dataFresh == true,
             internetAvailable = environment.internetAvailable,
-            exchangeHealthy = lastExchangeHealthy && environment.exchangeHealthy,
+            exchangeHealthy = lastExchangeHealthy && environment.exchangeHealthy && environment.internetAvailable,
             lastTickEpochMs = lastTickEpochMs,
             lastError = lastError,
         )
