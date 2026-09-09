@@ -7,38 +7,58 @@ import android.app.Service
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import com.mirei.app.core.MireiState
+import com.mirei.app.storage.TradeLedgerFactory
 
 class MireiForegroundService : Service() {
     private val controller = MireiRuntimeController()
+    private val config = com.mirei.app.core.TradingConfig()
+    private val symbol = "BTC/IDR"
+    private lateinit var workerThread: HandlerThread
+    private lateinit var worker: Handler
+    private lateinit var runtime: MireiPaperTradingRuntime
+    private lateinit var marketData: IndodaxMarketDataSource
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var internetAvailable = false
 
     override fun onCreate() {
         super.onCreate()
         try {
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Mirei Runtime",
-                    NotificationManager.IMPORTANCE_LOW,
-                )
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_LOW))
+
+            workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
+            worker = Handler(workerThread.looper)
+            marketData = IndodaxMarketDataSource()
+            runtime = MireiPaperTradingRuntime(
+                config = config,
+                marketData = marketData,
+                tradeLedger = TradeLedgerFactory.create(this),
+                symbol = symbol,
             )
 
             val connectivity = getSystemService(ConnectivityManager::class.java)
             connectivityManager = connectivity
+            internetAvailable = connectivity.activeNetwork != null
             val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    internetAvailable = true
+                    publishHealth()
+                }
+
                 override fun onLost(network: Network) {
-                    runCatching {
-                        controller.onNetworkLost()
-                        publish("Internet lost — Mirei HOLD")
-                    }.onFailure { handleRuntimeFailure("Network monitor failed", it) }
+                    internetAvailable = false
+                    controller.onNetworkLost()
+                    publishHealth()
                 }
             }
             networkCallback = callback
             connectivity.registerDefaultNetworkCallback(callback)
+            publishHealth()
         } catch (error: Exception) {
             handleRuntimeFailure("Mirei initialization failed", error)
         }
@@ -47,18 +67,37 @@ class MireiForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             startForeground(NOTIFICATION_ID, notification("Mirei ${controller.state.name}"))
-
             when (intent?.action) {
-                ACTION_START -> controller.start()
-                ACTION_HOLD -> controller.hold()
-                ACTION_STOP -> controller.stop()
-                ACTION_CLOSE_ALL -> controller.closeAll()
-            }
-
-            publish("Mirei ${controller.state.name}")
-            if (controller.state == MireiState.STOP) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                ACTION_START -> {
+                    controller.start()
+                    worker.removeCallbacksAndMessages(null)
+                    worker.post(runtimeLoop)
+                }
+                ACTION_HOLD -> {
+                    controller.hold()
+                    worker.removeCallbacksAndMessages(null)
+                    publishHealth()
+                }
+                ACTION_STOP -> {
+                    controller.stop()
+                    worker.removeCallbacksAndMessages(null)
+                    publishHealth()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                ACTION_CLOSE_ALL -> {
+                    controller.closeAll()
+                    worker.post {
+                        val status = runtime.closeAll(
+                            nowMs = System.currentTimeMillis(),
+                            environment = RuntimeEnvironment(internetAvailable = internetAvailable, exchangeHealthy = true),
+                        )
+                        if (status.activePositions.isEmpty()) {
+                            controller.hold()
+                        }
+                        publishStatus(status)
+                    }
+                }
             }
         } catch (error: Exception) {
             handleRuntimeFailure("Mirei action failed", error)
@@ -66,27 +105,63 @@ class MireiForegroundService : Service() {
         return START_NOT_STICKY
     }
 
+    private val runtimeLoop = object : Runnable {
+        override fun run() {
+            if (controller.state != MireiState.RUNNING) return
+            val status = runtime.tick(
+                System.currentTimeMillis(),
+                RuntimeEnvironment(internetAvailable = internetAvailable, exchangeHealthy = true),
+            )
+            publishStatus(status)
+            if (controller.state == MireiState.RUNNING) worker.postDelayed(this, TICK_MS)
+        }
+    }
+
     override fun onDestroy() {
         try {
             networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         } catch (_: Exception) {
-            // Cleanup must never crash the service during teardown.
-        } finally {
-            networkCallback = null
-            connectivityManager = null
         }
+        workerThread.takeIf { ::workerThread.isInitialized }?.quitSafely()
+        networkCallback = null
+        connectivityManager = null
         super.onDestroy()
     }
 
     private fun handleRuntimeFailure(message: String, error: Throwable) {
         controller.onEngineError()
-        runCatching { publish("$message — Mirei STOP") }
+        runCatching { publish("$message — Mirei ERROR") }
+        runCatching { publishHealth() }
         stopSelf()
     }
 
+    private fun publishStatus(status: PaperRuntimeStatus) {
+        val intent = Intent(ACTION_STATUS).setPackage(packageName).apply {
+            putExtra(EXTRA_STATE, controller.state.name)
+            putExtra(EXTRA_PRICE, status.marketPrice)
+            putExtra(EXTRA_EQUITY, status.equityIdr)
+            putExtra(EXTRA_BALANCE, status.availableBalanceIdr)
+            putExtra(EXTRA_PNL, status.dailyPnlIdr)
+            putExtra(EXTRA_POSITIONS, status.activePositions.size)
+            putExtra(EXTRA_CONFIDENCE, status.lastDecision?.confidence ?: 0.0)
+            putExtra(EXTRA_ACTION, status.lastDecision?.action?.name ?: "HOLD")
+            putExtra(EXTRA_MARKET_FRESH, status.marketDataFresh)
+            putExtra(EXTRA_INTERNET, status.internetAvailable)
+            putExtra(EXTRA_EXCHANGE_HEALTHY, status.exchangeHealthy)
+            putExtra(EXTRA_ERROR, status.lastError)
+            putExtra(EXTRA_TICK, status.lastTickEpochMs)
+        }
+        sendBroadcast(intent)
+        publish("Mirei ${controller.state.name} · ${status.activePositions.size} position(s)")
+    }
+
+    private fun publishHealth() {
+        val status = runtime.status(RuntimeEnvironment(internetAvailable = internetAvailable, exchangeHealthy = true))
+        publishStatus(status)
+    }
+
     private fun publish(text: String) {
-        getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, notification(text))
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
     }
 
     private fun notification(text: String): Notification = Notification.Builder(this, CHANNEL_ID)
@@ -103,7 +178,22 @@ class MireiForegroundService : Service() {
         const val ACTION_HOLD = "com.mirei.app.action.HOLD"
         const val ACTION_STOP = "com.mirei.app.action.STOP"
         const val ACTION_CLOSE_ALL = "com.mirei.app.action.CLOSE_ALL"
+        const val ACTION_STATUS = "com.mirei.app.action.STATUS"
+        const val EXTRA_STATE = "state"
+        const val EXTRA_PRICE = "price"
+        const val EXTRA_EQUITY = "equity"
+        const val EXTRA_BALANCE = "balance"
+        const val EXTRA_PNL = "daily_pnl"
+        const val EXTRA_POSITIONS = "positions"
+        const val EXTRA_CONFIDENCE = "confidence"
+        const val EXTRA_ACTION = "action"
+        const val EXTRA_MARKET_FRESH = "market_fresh"
+        const val EXTRA_INTERNET = "internet"
+        const val EXTRA_EXCHANGE_HEALTHY = "exchange_healthy"
+        const val EXTRA_ERROR = "error"
+        const val EXTRA_TICK = "tick"
         private const val CHANNEL_ID = "mirei_runtime"
         private const val NOTIFICATION_ID = 1001
+        private const val TICK_MS = 5_000L
     }
 }

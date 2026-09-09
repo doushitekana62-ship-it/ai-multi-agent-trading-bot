@@ -2,7 +2,10 @@ package com.mirei.app
 
 import android.Manifest
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,41 +14,51 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.mirei.app.runtime.MireiForegroundService
+import java.text.NumberFormat
+import java.util.Locale
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
+    private val numberFormat = NumberFormat.getNumberInstance(Locale("id", "ID"))
+    private val statusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != MireiForegroundService.ACTION_STATUS) return
+            renderStatus(intent)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNotificationPermissionIfNeeded()
+        numberFormat.maximumFractionDigits = 2
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 40, 32, 32)
         }
-
-        root.addView(TextView(this).apply {
-            text = "Mirei ミレイ"
-            textSize = 30f
-        }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
-
-        root.addView(TextView(this).apply {
-            text = "Android-first trading runtime"
-            textSize = 16f
-        }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
-
+        root.addView(TextView(this).apply { text = "Mirei ミレイ"; textSize = 30f }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
+        root.addView(TextView(this).apply { text = "Android-first trading runtime"; textSize = 16f }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
         status = TextView(this).apply {
-            text = "\nState: STOP\nMode: Suggestion\nPaper trading: SAFE DEFAULT"
-            textSize = 18f
+            text = "\nState: STOP\nMode: Suggestion\nExecution: PAPER ONLY\n\nSYSTEM HEALTH\nMarket data: OFFLINE\nInternet: UNKNOWN\nExchange: UNKNOWN"
+            textSize = 17f
         }
         root.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, -2))
-
         root.addView(actionButton("START") { sendAction(MireiForegroundService.ACTION_START, "RUNNING") })
         root.addView(actionButton("HOLD") { sendAction(MireiForegroundService.ACTION_HOLD, "HOLD") })
         root.addView(actionButton("STOP") { sendAction(MireiForegroundService.ACTION_STOP, "STOP") })
         root.addView(actionButton("CLOSE ALL") { sendAction(MireiForegroundService.ACTION_CLOSE_ALL, "CLOSE_ALL") })
-
         setContentView(root)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(MireiForegroundService.ACTION_STATUS)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(statusReceiver, filter, RECEIVER_NOT_EXPORTED) else registerReceiver(statusReceiver, filter)
+    }
+
+    override fun onStop() {
+        runCatching { unregisterReceiver(statusReceiver) }
+        super.onStop()
     }
 
     private fun actionButton(label: String, action: () -> Unit): Button = Button(this).apply {
@@ -56,15 +69,45 @@ class MainActivity : Activity() {
     private fun sendAction(command: String, nextState: String) {
         try {
             val intent = Intent(this, MireiForegroundService::class.java).setAction(command)
-            if (command == MireiForegroundService.ACTION_START && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-            status.text = "\nState: $nextState\nMode: Suggestion\nPaper trading: SAFE DEFAULT"
+            if (command == MireiForegroundService.ACTION_START && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+            status.text = "\nState: $nextState\nMode: Suggestion\nExecution: PAPER ONLY\n\nSYSTEM HEALTH\nWaiting for runtime telemetry..."
         } catch (error: Exception) {
-            status.text = "\nState: ERROR\nMode: Suggestion\nPaper trading: SAFE DEFAULT\nService error: ${error.javaClass.simpleName}"
+            status.text = "\nState: ERROR\nMode: Suggestion\nExecution: PAPER ONLY\n\nService error: ${error.javaClass.simpleName}"
         }
+    }
+
+    private fun renderStatus(intent: Intent) {
+        val state = intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "UNKNOWN"
+        val action = intent.getStringExtra(MireiForegroundService.EXTRA_ACTION) ?: "HOLD"
+        val price = intent.getDoubleExtra(MireiForegroundService.EXTRA_PRICE, 0.0)
+        val equity = intent.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0)
+        val balance = intent.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0)
+        val pnl = intent.getDoubleExtra(MireiForegroundService.EXTRA_PNL, 0.0)
+        val positions = intent.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)
+        val confidence = intent.getDoubleExtra(MireiForegroundService.EXTRA_CONFIDENCE, 0.0)
+        val marketFresh = intent.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)
+        val internet = intent.getBooleanExtra(MireiForegroundService.EXTRA_INTERNET, false)
+        val exchange = intent.getBooleanExtra(MireiForegroundService.EXTRA_EXCHANGE_HEALTHY, false)
+        val error = intent.getStringExtra(MireiForegroundService.EXTRA_ERROR)
+        val health = if (marketFresh && internet && exchange && error.isNullOrBlank()) "HEALTHY" else "DEGRADED / SAFE HOLD"
+        status.text = """
+            State: $state
+            Mode: Suggestion
+            Execution: PAPER ONLY
+
+            SYSTEM HEALTH: $health
+            Market data: ${if (marketFresh) "LIVE / FRESH" else "STALE / UNAVAILABLE"}
+            Internet: ${if (internet) "ONLINE" else "OFFLINE"}
+            Exchange: ${if (exchange) "REACHABLE" else "UNHEALTHY"}
+
+            BTC/IDR: ${numberFormat.format(price)}
+            Equity: Rp ${numberFormat.format(equity)}
+            Available: Rp ${numberFormat.format(balance)}
+            Daily PnL: Rp ${numberFormat.format(pnl)}
+            Positions: $positions
+            Last action: $action (${(confidence * 100).toInt()}%)
+            ${if (error.isNullOrBlank()) "" else "Error: $error"}
+        """.trimIndent()
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -73,7 +116,5 @@ class MainActivity : Activity() {
         }
     }
 
-    companion object {
-        private const val REQUEST_NOTIFICATIONS = 2001
-    }
+    companion object { private const val REQUEST_NOTIFICATIONS = 2001 }
 }
