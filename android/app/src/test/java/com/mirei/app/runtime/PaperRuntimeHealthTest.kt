@@ -84,4 +84,29 @@ class PaperRuntimeHealthTest {
         assertFalse(status.exchangeHealthy)
         assertEquals("close_all_market_data_unavailable", status.lastError)
     }
+
+    @Test
+    fun closeAllDoesNotAttemptToCloseWhenInternetIsUnavailable() {
+        val engine = PaperExecutionEngine()
+        val runtime = MireiPaperTradingRuntime(
+            marketData = object : PaperMarketDataSource {
+                override fun snapshot(symbol: String) = MarketSnapshot(symbol, 10_000.0, 1.0, 0.5, 0.0, 0.65, true)
+            },
+            symbol = "BTC/IDR",
+            engine = engine,
+        )
+
+        engine.open(
+            "paper",
+            "BTC/IDR",
+            EntryPlan(true, 10_000.0, 9_900.0, 10_200.0, 10_100.0, 10_000.0, listOf("test")),
+            6_000L,
+        )
+
+        val status = runtime.closeAll(7_000L, RuntimeEnvironment(internetAvailable = false, exchangeHealthy = true))
+
+        assertEquals(1, status.activePositions.size)
+        assertFalse(status.exchangeHealthy)
+        assertEquals("close_all_exchange_unavailable", status.lastError)
+    }
 }
