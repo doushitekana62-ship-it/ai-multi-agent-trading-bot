@@ -7,14 +7,24 @@ import org.junit.Test
 
 class RuntimeTelemetryTest {
     @Test
-    fun healthySnapshotIsReflectedInStatus() {
+    fun healthySnapshotIsReflectedInStatusWithoutOpeningPosition() {
         val runtime = MireiPaperTradingRuntime(
             marketData = object : PaperMarketDataSource {
-                override fun snapshot(symbol: String) = MarketSnapshot(symbol, 12_345.0, 1.0, 0.5, 0.0, 0.65, true)
+                override fun snapshot(symbol: String) = MarketSnapshot(
+                    symbol = symbol,
+                    price = 12_345.0,
+                    momentumPercent = 0.0,
+                    volatilityPercent = 0.5,
+                    sentimentScore = 0.0,
+                    forecastConfidence = 0.65,
+                    dataFresh = true,
+                )
             },
             symbol = "BTC/IDR",
         )
+
         val status = runtime.tick(1234L, RuntimeEnvironment(internetAvailable = true, exchangeHealthy = true))
+
         assertEquals(12_345.0, status.marketPrice, 0.0)
         assertEquals(1234L, status.lastTickEpochMs)
         assertTrue(status.marketDataFresh)
@@ -22,5 +32,6 @@ class RuntimeTelemetryTest {
         assertTrue(status.exchangeHealthy)
         assertEquals(150_000.0, status.availableBalanceIdr, 0.0)
         assertEquals(150_000.0, status.equityIdr, 0.0)
+        assertEquals(0, status.activePositions.size)
     }
 }
