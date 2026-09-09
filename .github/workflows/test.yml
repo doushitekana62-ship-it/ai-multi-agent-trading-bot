@@ -3,15 +3,35 @@ name: Test Trading Bot
 on:
   push:
     branches: [main, integrate/freqtrade-core]
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'user_data/**'
+      - 'vendor/**'
+      - 'requirements.txt'
+      - '.github/workflows/test.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'user_data/**'
+      - 'vendor/**'
+      - 'requirements.txt'
+      - '.github/workflows/test.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: python-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   syntax:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -1,11 +1,6 @@
 name: Build Mirei Android
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'android/**'
-      - '.github/workflows/android.yml'
   pull_request:
     branches: [main]
     paths:
@@ -16,9 +11,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: android-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-debug-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: android
@@ -32,12 +32,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Run Android unit tests
-        run: gradle :app:testDebugUnitTest --no-daemon
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Test and build debug APK
+        run: gradle :app:testDebugUnitTest :app:assembleDebug --no-daemon
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: mirei-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 3
