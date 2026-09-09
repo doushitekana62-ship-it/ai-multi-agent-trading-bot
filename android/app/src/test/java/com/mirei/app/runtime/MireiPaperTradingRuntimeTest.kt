@@ -111,18 +111,19 @@ class MireiPaperTradingRuntimeTest {
 
         assertTrue(status.activePositions.isEmpty())
         assertEquals(null, status.lastExecution)
+        assertEquals(listOf("market_snapshot_stale"), status.entryPlanReasons)
     }
 
     @Test
-    fun conflictingAgentsRequireHumanDecisionAndDoNotExecute() {
+    fun conflictingAgentsExposeDecisionAndEntryReasons() {
         val market = object : PaperMarketDataSource {
             override fun snapshot(symbol: String) = MarketSnapshot(
                 symbol = symbol,
                 price = 10_000.0,
-                momentumPercent = 1.0,
+                momentumPercent = -0.10,
                 volatilityPercent = 0.5,
-                sentimentScore = -40.0,
-                forecastConfidence = 0.90,
+                sentimentScore = 10.0,
+                forecastConfidence = 0.65,
                 dataFresh = true,
             )
         }
@@ -131,7 +132,10 @@ class MireiPaperTradingRuntimeTest {
         val status = runtime.tick(1_000L)
 
         assertTrue(status.activePositions.isEmpty())
-        assertTrue(status.lastDecision!!.requiresHumanDecision)
+        assertEquals("agent_conflict_requires_human_decision", status.lastDecision!!.rationale)
+        assertTrue(status.lastDecision!!.observations.any { it.rationale == "momentum_non_positive" })
+        assertTrue(status.lastDecision!!.observations.any { it.rationale == "forecast_confidence_supports_entry" })
+        assertEquals(listOf("momentum_not_positive"), status.entryPlanReasons)
     }
 
     private class MutableMarket(
