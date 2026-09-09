@@ -36,6 +36,7 @@ data class PaperRuntimeStatus(
     val exchangeHealthy: Boolean = false,
     val lastTickEpochMs: Long = 0L,
     val lastError: String? = null,
+    val entryPlanReasons: List<String> = emptyList(),
 )
 
 class MireiPaperTradingRuntime(
@@ -56,6 +57,7 @@ class MireiPaperTradingRuntime(
     private var lastSnapshot: MarketSnapshot? = null
     private var lastTickEpochMs = 0L
     private var lastExchangeHealthy = false
+    private var lastEntryPlanReasons: List<String> = emptyList()
 
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus =
         runCatching {
@@ -65,12 +67,22 @@ class MireiPaperTradingRuntime(
             lastSnapshot = snapshot
             lastExchangeHealthy = snapshot != null && environment.exchangeHealthy
             if (snapshot == null) {
-                lastError = "market_data_unavailable"
+                lastEntryPlanReasons = listOf("market_data_unavailable")
+                lastDecision = null
                 return status(environment)
             }
-            if (!environment.internetAvailable) return status(environment)
-            if (!environment.exchangeHealthy) return status(environment)
-            if (!snapshot.dataFresh) return status(environment)
+            if (!environment.internetAvailable) {
+                lastEntryPlanReasons = listOf("internet_unavailable")
+                return status(environment)
+            }
+            if (!environment.exchangeHealthy) {
+                lastEntryPlanReasons = listOf("exchange_unhealthy")
+                return status(environment)
+            }
+            if (!snapshot.dataFresh) {
+                lastEntryPlanReasons = listOf("market_snapshot_stale")
+                return status(environment)
+            }
 
             val markPrices = mapOf(symbol to snapshot.price)
             closeTriggeredPositions(snapshot.price, nowMs)
@@ -85,6 +97,7 @@ class MireiPaperTradingRuntime(
                 internetAvailable = environment.internetAvailable,
             )
             val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot)
+            lastEntryPlanReasons = plan.reasons
             val decision = orchestrator.evaluate(snapshot)
             lastDecision = decision
             if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
@@ -95,6 +108,7 @@ class MireiPaperTradingRuntime(
             status(environment, markPrices)
         }.getOrElse { error ->
             lastError = error.message ?: error.javaClass.simpleName
+            lastEntryPlanReasons = listOf("runtime_error")
             lastTickEpochMs = nowMs
             lastExchangeHealthy = false
             status(environment)
@@ -110,6 +124,7 @@ class MireiPaperTradingRuntime(
         if (!environment.internetAvailable || !environment.exchangeHealthy) {
             lastExchangeHealthy = false
             lastError = "close_all_exchange_unavailable"
+            lastEntryPlanReasons = listOf("close_all_exchange_unavailable")
             return status(environment)
         }
 
@@ -119,6 +134,7 @@ class MireiPaperTradingRuntime(
             if (snapshot == null || !snapshot.dataFresh) {
                 lastExchangeHealthy = false
                 lastError = "close_all_market_data_unavailable"
+                lastEntryPlanReasons = listOf("close_all_market_data_unavailable")
                 break
             }
             lastExchangeHealthy = true
@@ -144,6 +160,7 @@ class MireiPaperTradingRuntime(
             exchangeHealthy = lastExchangeHealthy && environment.exchangeHealthy && environment.internetAvailable,
             lastTickEpochMs = lastTickEpochMs,
             lastError = lastError,
+            entryPlanReasons = lastEntryPlanReasons,
         )
     }
 
