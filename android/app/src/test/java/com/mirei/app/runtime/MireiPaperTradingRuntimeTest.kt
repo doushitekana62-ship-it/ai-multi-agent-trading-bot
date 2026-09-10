@@ -2,13 +2,13 @@ package com.mirei.app.runtime
 
 import com.mirei.app.core.MarketSnapshot
 import com.mirei.app.core.MireiDecisionEngine
+import com.mirei.app.core.ManualRiskMode
 import com.mirei.app.core.RiskSnapshot
 import com.mirei.app.core.ScalpingMode
 import com.mirei.app.core.TradingConfig
 import com.mirei.app.execution.PaperPosition
 import com.mirei.app.execution.TradeLedger
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -52,11 +52,11 @@ class MireiPaperTradingRuntimeTest {
     }
 
     @Test fun riskProfilesProduceDifferentTargetsAndManualOverridesWin() {
-        val snapshot = bullishSnapshot(); val risk = RiskSnapshot(0.0, 150_000.0, 150_000.0, 0, 0, true, true, true)
+        val snapshot = sampleBullishSnapshot(); val risk = RiskSnapshot(0.0, 150_000.0, 150_000.0, 0, 0, true, true, true)
         val aggressive = MireiDecisionEngine(TradingConfig(mode = ScalpingMode.AGGRESSIVE)).buildEntryPlan(snapshot, risk)
         val balanced = MireiDecisionEngine(TradingConfig(mode = ScalpingMode.BALANCED)).buildEntryPlan(snapshot, risk)
         val safety = MireiDecisionEngine(TradingConfig(mode = ScalpingMode.SAFETY)).buildEntryPlan(snapshot, risk)
-        val manual = TradingConfig(manualRiskMode = com.mirei.app.core.ManualRiskMode.MANUAL, manualStopLossPercent = 0.80, manualTakeProfitPercent = 1.80)
+        val manual = TradingConfig(manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = 0.80, manualTakeProfitPercent = 1.80)
         val manualPlan = MireiDecisionEngine(manual).buildEntryPlan(snapshot, risk)
         assertTrue(aggressive.takeProfitPrice > balanced.takeProfitPrice); assertTrue(balanced.takeProfitPrice > safety.takeProfitPrice); assertEquals(0.80, (snapshot.price - manualPlan.stopLossPrice) / snapshot.price * 100.0, 0.0001); assertEquals(1.80, (manualPlan.takeProfitPrice - snapshot.price) / snapshot.price * 100.0, 0.0001)
     }
@@ -67,17 +67,22 @@ class MireiPaperTradingRuntimeTest {
     }
 
     @Test fun conflictingAgentsExposeDecisionAndEntryReasons() {
-        val market = object : PaperMarketDataSource { override fun snapshot(symbol: String) = bullishSnapshot().copy(momentumPercent = -0.10, sentimentScore = 10.0, forecastConfidence = 0.65, changeSinceLastTickPercent = -0.10, change1mPercent = -0.10, change5mPercent = -0.10, change15mPercent = -0.10, trendScorePercent = 0.0) }
+        val market = object : PaperMarketDataSource {
+            override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, momentumPercent = -0.10, sentimentScore = 10.0, forecastConfidence = 0.65, changeSinceLastTickPercent = -0.10, change1mPercent = -0.10, change5mPercent = -0.10, change15mPercent = -0.10, trendScorePercent = 0.0)
+        }
         val status = MireiPaperTradingRuntime(marketData = market, symbol = "BTC/IDR").tick(1_000L)
         assertTrue(status.activePositions.isEmpty()); assertTrue(status.lastDecision!!.requiresHumanDecision); assertEquals("agent_conflict_requires_human_decision", status.lastDecision!!.rationale); assertTrue(status.lastDecision!!.observations.any { it.rationale == "market_trend_not_confirmed" }); assertTrue(status.lastDecision!!.observations.any { it.rationale == "forecast_direction_or_confidence_weak" }); assertEquals(listOf("momentum_not_positive"), status.entryPlanReasons)
     }
+}
 
-    private fun bullishSnapshot() = MarketSnapshot("BTC/IDR", 10_000.0, 1.0, 0.5, 10.0, 0.90, true, changeSinceLastTickPercent = 0.20, change1mPercent = 0.20, change5mPercent = 0.40, change15mPercent = 0.60, tradeFlowPercent = 20.0, trendScorePercent = 5.0)
+private fun sampleBullishSnapshot() = MarketSnapshot("BTC/IDR", 10_000.0, 1.0, 0.5, 10.0, 0.90, true, changeSinceLastTickPercent = 0.20, change1mPercent = 0.20, change5mPercent = 0.40, change15mPercent = 0.60, tradeFlowPercent = 20.0, trendScorePercent = 5.0)
 
-    private class MutableMarket(var price: Double, private val fresh: Boolean = true) : PaperMarketDataSource { override fun snapshot(symbol: String) = bullishSnapshot().copy(symbol = symbol, price = price, dataFresh = fresh) }
-    private class RecordingLedger : TradeLedger {
-        var openedCount = 0; var closedCount = 0
-        override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) { openedCount++ }
-        override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) { closedCount++ }
-    }
+private class MutableMarket(var price: Double, private val fresh: Boolean = true) : PaperMarketDataSource {
+    override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, price = price, dataFresh = fresh)
+}
+
+private class RecordingLedger : TradeLedger {
+    var openedCount = 0; var closedCount = 0
+    override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) { openedCount++ }
+    override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) { closedCount++ }
 }
