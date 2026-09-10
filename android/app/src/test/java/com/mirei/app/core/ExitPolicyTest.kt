@@ -27,7 +27,7 @@ class ExitPolicyTest {
         assertEquals("initial_protection", beforeOneR.reason)
         assertEquals(false, beforeOneR.breakevenApplied)
 
-        val atOneR = policy.evaluate(entry, 100.5, initialStop, takeProfit, 0.20, null)
+        val atOneR = policy.evaluate(entry, 100.51, initialStop, takeProfit, 0.20, null)
         assertTrue(atOneR.breakevenApplied)
         assertTrue((atOneR.trailingStopPrice ?: 0.0) >= entry)
     }
