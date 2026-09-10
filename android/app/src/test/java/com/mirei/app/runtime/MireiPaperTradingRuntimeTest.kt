@@ -34,29 +34,24 @@ class MireiPaperTradingRuntimeTest {
         assertEquals(3, third.activePositions.size); assertEquals(4, ledger.openedCount); assertEquals(1, ledger.closedCount); assertEquals(1, reentry.recentExecutions.count { it.reason == "take_profit" }); assertTrue(reentry.activePositions.any { it.openedAtEpochMs == 4_000L })
     }
 
-    @Test fun stopLossReleasesCapitalAndAggressiveReentersWithoutLossRecovery() {
+    @Test fun stopLossReleasesCapitalAndManualAggressiveReentersWithoutLossRecovery() {
         val market = ScenarioMarket()
         val ledger = RecordingLedger()
         val runtime = MireiPaperTradingRuntime(
-            config = TradingConfig(mode = ScalpingMode.AGGRESSIVE, positionSizeIdr = 50_000.0, maxOpenPositions = 3),
+            config = TradingConfig(mode = ScalpingMode.AGGRESSIVE, manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = 0.35, manualTakeProfitPercent = 1.0, positionSizeIdr = 50_000.0, maxOpenPositions = 3),
             marketData = market,
             symbol = "BTC/IDR",
             managedSymbols = listOf("BTC/IDR", "ETH/IDR", "SOL/IDR"),
             tradeLedger = ledger,
         )
-        val seeded = runtime.seedInitialHoldings(
-            mapOf("BTC/IDR" to 50_000.0, "ETH/IDR" to 50_000.0, "SOL/IDR" to 50_000.0),
-            1_000L,
-        )
+        val seeded = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 50_000.0, "ETH/IDR" to 50_000.0, "SOL/IDR" to 50_000.0), 1_000L)
         assertEquals(3, seeded.count { it.success })
-
         market.bearishSymbol = "BTC/IDR"
         val close = runtime.tick(2_000L)
         assertEquals(2, close.activePositions.size)
         assertTrue(close.recentExecutions.any { it.reason == "stop_loss" })
         assertTrue(runtime.paperEngine().availableBalanceIdr() > 0.0)
         assertTrue(runtime.paperEngine().availableBalanceIdr() < 50_000.0)
-
         market.bearishSymbol = null
         val reentry = runtime.tick(3_000L)
         assertEquals(3, reentry.activePositions.size)
@@ -92,7 +87,12 @@ class MireiPaperTradingRuntimeTest {
         val safety = MireiDecisionEngine(TradingConfig(mode = ScalpingMode.SAFETY)).buildEntryPlan(snapshot, risk)
         val manual = TradingConfig(manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = 0.80, manualTakeProfitPercent = 1.80)
         val manualPlan = MireiDecisionEngine(manual).buildEntryPlan(snapshot, risk)
-        assertTrue(aggressive.stopLossPrice > balanced.stopLossPrice); assertTrue(balanced.stopLossPrice > safety.stopLossPrice); assertTrue(aggressive.takeProfitPrice < balanced.takeProfitPrice); assertTrue(balanced.takeProfitPrice < safety.takeProfitPrice); assertEquals(0.80, (snapshot.price - manualPlan.stopLossPrice) / snapshot.price * 100.0, 0.0001); assertEquals(1.80, (manualPlan.takeProfitPrice - snapshot.price) / snapshot.price * 100.0, 0.0001)
+        assertEquals(0.0, aggressive.stopLossPrice, 0.0001)
+        assertTrue(balanced.stopLossPrice > safety.stopLossPrice)
+        assertTrue(aggressive.takeProfitPrice == balanced.takeProfitPrice)
+        assertTrue(balanced.takeProfitPrice < safety.takeProfitPrice)
+        assertEquals(0.80, (snapshot.price - manualPlan.stopLossPrice) / snapshot.price * 100.0, 0.0001)
+        assertEquals(1.80, (manualPlan.takeProfitPrice - snapshot.price) / snapshot.price * 100.0, 0.0001)
     }
 
     @Test fun staleMarketDataDoesNotOpenPosition() {
@@ -102,17 +102,7 @@ class MireiPaperTradingRuntimeTest {
 
     @Test fun conflictingAgentsUseMajorityVoteAndNeverRequireHumanConfirmation() {
         val market = object : PaperMarketDataSource {
-            override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(
-                symbol = symbol,
-                momentumPercent = -0.10,
-                sentimentScore = 10.0,
-                forecastConfidence = 0.65,
-                changeSinceLastTickPercent = -0.10,
-                change1mPercent = -0.10,
-                change5mPercent = -0.10,
-                change15mPercent = -0.10,
-                trendScorePercent = 0.0,
-            )
+            override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, momentumPercent = -0.10, sentimentScore = 10.0, forecastConfidence = 0.65, changeSinceLastTickPercent = -0.10, change1mPercent = -0.10, change5mPercent = -0.10, change15mPercent = -0.10, trendScorePercent = 0.0)
         }
         val status = MireiPaperTradingRuntime(marketData = market, symbol = "BTC/IDR").tick(1_000L)
         assertTrue(status.activePositions.isEmpty())
