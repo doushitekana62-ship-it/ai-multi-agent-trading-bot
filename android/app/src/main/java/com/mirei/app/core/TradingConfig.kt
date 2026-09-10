@@ -1,5 +1,7 @@
 package com.mirei.app.core
 
+enum class ManualRiskMode { AUTO, MANUAL }
+
 data class TradingConfig(
     val totalCapitalIdr: Double = 150_000.0,
     val positionSizeIdr: Double = 50_000.0,
@@ -12,6 +14,9 @@ data class TradingConfig(
     val maxConsecutiveLosses: Int = 3,
     val mode: ScalpingMode = ScalpingMode.BALANCED,
     val decisionMode: DecisionMode = DecisionMode.SUGGESTION,
+    val manualRiskMode: ManualRiskMode = ManualRiskMode.AUTO,
+    val manualStopLossPercent: Double? = null,
+    val manualTakeProfitPercent: Double? = null,
 ) {
     init {
         require(totalCapitalIdr > 0)
@@ -23,5 +28,27 @@ data class TradingConfig(
         require(trailingActivationR > 0)
         require(maxDailyLossPercent > 0)
         require(maxConsecutiveLosses > 0)
+        if (manualRiskMode == ManualRiskMode.MANUAL) {
+            require(manualStopLossPercent != null && manualStopLossPercent > 0)
+            require(manualTakeProfitPercent != null && manualTakeProfitPercent > manualStopLossPercent)
+        }
+    }
+
+    fun effectiveStopLossPercent(): Double = when (manualRiskMode) {
+        ManualRiskMode.MANUAL -> manualStopLossPercent!!
+        ManualRiskMode.AUTO -> when (mode) {
+            ScalpingMode.AGGRESSIVE -> 0.35
+            ScalpingMode.BALANCED -> 0.50
+            ScalpingMode.SAFETY -> 0.70
+        }
+    }
+
+    fun effectiveTakeProfitPercent(): Double = when (manualRiskMode) {
+        ManualRiskMode.MANUAL -> manualTakeProfitPercent!!
+        ManualRiskMode.AUTO -> when (mode) {
+            ScalpingMode.AGGRESSIVE -> 1.50
+            ScalpingMode.BALANCED -> 1.00
+            ScalpingMode.SAFETY -> 0.90
+        }
     }
 }
