@@ -125,6 +125,12 @@ class MireiPaperTradingRuntimeTest {
                 sentimentScore = 10.0,
                 forecastConfidence = 0.65,
                 dataFresh = true,
+                changeSinceLastTickPercent = -0.10,
+                change1mPercent = -0.10,
+                change5mPercent = -0.10,
+                change15mPercent = -0.10,
+                tradeFlowPercent = 0.0,
+                trendScorePercent = 0.0,
             )
         }
         val runtime = MireiPaperTradingRuntime(marketData = market, symbol = "BTC/IDR")
@@ -134,8 +140,8 @@ class MireiPaperTradingRuntimeTest {
         assertTrue(status.activePositions.isEmpty())
         assertTrue(status.lastDecision!!.requiresHumanDecision)
         assertEquals("agent_conflict_requires_human_decision", status.lastDecision!!.rationale)
-        assertTrue(status.lastDecision!!.observations.any { it.rationale == "momentum_non_positive" })
-        assertTrue(status.lastDecision!!.observations.any { it.rationale == "forecast_confidence_supports_entry" })
+        assertTrue(status.lastDecision!!.observations.any { it.rationale == "market_trend_not_confirmed" })
+        assertTrue(status.lastDecision!!.observations.any { it.rationale == "forecast_direction_or_confidence_weak" })
         assertEquals(listOf("momentum_not_positive"), status.entryPlanReasons)
     }
 
@@ -151,6 +157,12 @@ class MireiPaperTradingRuntimeTest {
             sentimentScore = 10.0,
             forecastConfidence = 0.90,
             dataFresh = fresh,
+            changeSinceLastTickPercent = 0.20,
+            change1mPercent = 0.20,
+            change5mPercent = 0.40,
+            change15mPercent = 0.60,
+            tradeFlowPercent = 20.0,
+            trendScorePercent = 5.0,
         )
     }
 
