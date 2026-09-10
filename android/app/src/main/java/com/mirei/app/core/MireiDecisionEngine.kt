@@ -56,15 +56,16 @@ class MireiDecisionEngine(
             return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, reasons.ifEmpty { listOf("no_trade") })
         }
 
+        val baseStop = config.effectiveStopLossPercent()
+        val baseTake = config.effectiveTakeProfitPercent()
         val volatilityFactor = (snapshot.volatilityPercent / 0.5).coerceAtLeast(1.0)
-        val riskLossPercent = (config.baseStopLossPercent / volatilityFactor).coerceIn(0.25, config.baseStopLossPercent)
-        val rewardPercent = when (config.mode) {
-            ScalpingMode.AGGRESSIVE -> (config.baseTakeProfitPercent * 1.25).coerceAtMost(2.5)
-            ScalpingMode.BALANCED -> config.baseTakeProfitPercent
-            ScalpingMode.SAFETY -> (config.baseTakeProfitPercent * 0.9).coerceAtLeast(0.75)
+        val riskLossPercent = if (config.manualRiskMode == ManualRiskMode.MANUAL) {
+            baseStop
+        } else {
+            (baseStop / volatilityFactor).coerceIn(baseStop * 0.50, baseStop)
         }
         val stop = snapshot.price * (1.0 - riskLossPercent / 100.0)
-        val target = snapshot.price * (1.0 + rewardPercent / 100.0)
+        val target = snapshot.price * (1.0 + baseTake / 100.0)
         val activation = snapshot.price * (1.0 + (riskLossPercent * config.trailingActivationR) / 100.0)
         val stake = minOf(config.positionSizeIdr * risk.positionMultiplier, config.totalCapitalIdr / config.maxOpenPositions)
 
