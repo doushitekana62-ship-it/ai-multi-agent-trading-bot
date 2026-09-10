@@ -89,6 +89,26 @@ class TradingConfigRiskTargetsTest {
     }
 
     @Test
+    fun zeroStopLossMeansUnlimitedHoldAndStillHasTakeProfit() {
+        val aggressive = TradingConfig(mode = ScalpingMode.AGGRESSIVE, manualRiskMode = ManualRiskMode.AUTO)
+        val autoTargets = aggressive.calculateRiskTargets(100_000.0, 50_000.0)
+        assertEquals(0.0, aggressive.effectiveStopLossPercent(), 1e-9)
+        assertEquals(0.0, autoTargets.stopLossPrice, 1e-9)
+        assertEquals(50_000.0, autoTargets.takeProfitAmountIdr, 1e-9)
+        assertEquals(101_000.0, autoTargets.takeProfitPrice, 1e-9)
+
+        val manual = TradingConfig(
+            mode = ScalpingMode.BALANCED,
+            manualRiskMode = ManualRiskMode.MANUAL,
+            manualStopLossPercent = 0.0,
+            manualTakeProfitPercent = 1.0,
+        )
+        val manualTargets = manual.calculateRiskTargets(100_000.0, 50_000.0)
+        assertEquals(0.0, manualTargets.stopLossPrice, 1e-9)
+        assertEquals(101_000.0, manualTargets.takeProfitPrice, 1e-9)
+    }
+
+    @Test
     fun referenceModeOnlyChangesExitTargetsNotEntryGateDecisionInputs() {
         val snapshot = MarketSnapshot(
             symbol = "TEST/IDR",
