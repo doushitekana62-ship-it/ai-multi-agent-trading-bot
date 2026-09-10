@@ -9,6 +9,7 @@ import com.mirei.app.core.MireiDecisionEngine
 import com.mirei.app.core.RiskSnapshot
 import com.mirei.app.core.TradingConfig
 import com.mirei.app.execution.ExecutionResult
+import com.mirei.app.execution.PaperEngineState
 import com.mirei.app.execution.PaperExecutionEngine
 import com.mirei.app.execution.PaperPosition
 import com.mirei.app.execution.TradeLedger
@@ -59,6 +60,22 @@ data class PaperRuntimeStatus(
     val decisionsBySymbol: Map<String, MireiDecision> = emptyMap(),
     val snapshotsBySymbol: Map<String, MarketSnapshot> = emptyMap(),
     val scannerSummary: String = "",
+    val buyDecisionCount: Int = 0,
+    val holdDecisionCount: Int = 0,
+    val sellDecisionCount: Int = 0,
+    val humanVerificationRequired: Boolean = false,
+    val humanAllowedIndicators: List<String> = emptyList(),
+    val humanBlockedIndicators: List<String> = emptyList(),
+)
+
+data class PaperRuntimePersistence(
+    val engineState: PaperEngineState,
+    val dailyPnlIdr: Double,
+    val consecutiveLosses: Int,
+    val holdingsSeeded: Boolean,
+    val buyDecisionCount: Int,
+    val holdDecisionCount: Int,
+    val sellDecisionCount: Int,
 )
 
 class MireiPaperTradingRuntime(
@@ -90,6 +107,9 @@ class MireiPaperTradingRuntime(
     private var holdingsSeeded = false
     private var lastScannerSummary = ""
     private val recentlyClosedSymbols = linkedMapOf<String, Long>()
+    private var buyDecisionCount = 0
+    private var holdDecisionCount = 0
+    private var sellDecisionCount = 0
 
     fun applyRiskConfig(newConfig: TradingConfig) {
         require(newConfig.totalCapitalIdr == config.totalCapitalIdr) { "paper_capital_immutable_while_running" }
@@ -113,6 +133,68 @@ class MireiPaperTradingRuntime(
         holdingsSeeded = results.any { it.success }
         if (results.none { it.success }) lastError = "initial_holdings_not_seeded"
         return results
+    }
+
+    fun restoreState(state: PaperRuntimePersistence) {
+        engine.restoreState(state.engineState)
+        dailyPnlIdr = state.dailyPnlIdr
+        consecutiveLosses = state.consecutiveLosses
+        holdingsSeeded = state.holdingsSeeded
+        buyDecisionCount = state.buyDecisionCount
+        holdDecisionCount = state.holdDecisionCount
+        sellDecisionCount = state.sellDecisionCount
+        lastError = null
+        tickExecutions = mutableListOf()
+    }
+
+    fun persistenceState(): PaperRuntimePersistence = PaperRuntimePersistence(
+        engineState = engine.snapshotState(),
+        dailyPnlIdr = dailyPnlIdr,
+        consecutiveLosses = consecutiveLosses,
+        holdingsSeeded = holdingsSeeded,
+        buyDecisionCount = buyDecisionCount,
+        holdDecisionCount = holdDecisionCount,
+        sellDecisionCount = sellDecisionCount,
+    )
+
+    fun humanVerificationForm(symbol: String): Pair<List<String>, List<String>> {
+        val decision = lastDecisions[symbol] ?: return emptyList<String>() to emptyList()
+        val allowed = decision.observations.filter { it.action == AgentAction.BUY }.map { it.agent.name }.distinct()
+        val blocked = decision.observations.filter { it.action != AgentAction.BUY }.map { it.agent.name }.distinct()
+        return allowed to blocked
+    }
+
+    fun confirmHumanBuy(symbol: String, confirmedIndicators: Set<String>, nowMs: Long = System.currentTimeMillis()): PaperRuntimeStatus {
+        tickExecutions = mutableListOf()
+        val snapshot = lastSnapshots[symbol] ?: return status(RuntimeEnvironment(), errorOverride = "human_verification_market_unavailable")
+        val decision = lastDecisions[symbol] ?: return status(RuntimeEnvironment(), errorOverride = "human_verification_no_decision")
+        val allowed = decision.observations.filter { it.action == AgentAction.BUY }.map { it.agent.name }.toSet()
+        if (!decision.requiresHumanDecision || allowed.isEmpty()) return status(RuntimeEnvironment(), errorOverride = "human_verification_not_required")
+        if (confirmedIndicators != allowed) return status(RuntimeEnvironment(), errorOverride = "human_verification_form_incomplete")
+        val markPrices = lastSnapshots.filterValues { it.dataFresh }.mapValues { it.value.price }
+        val risk = RiskSnapshot(
+            dailyPnlIdr = dailyPnlIdr,
+            dailyStartBalanceIdr = dailyStartBalanceIdr,
+            equityIdr = engine.equityIdr(markPrices),
+            openPositions = engine.positionCount(),
+            consecutiveLosses = consecutiveLosses,
+            marketDataFresh = snapshot.dataFresh,
+            exchangeHealthy = lastExchangeHealthy,
+            internetAvailable = true,
+        )
+        val plan = decisionEngine.buildEntryPlan(snapshot, risk.copy(openPositions = engine.positionCount()))
+        lastEntryPlanReasons = plan.reasons
+        if (!plan.allowed) return status(RuntimeEnvironment(), errorOverride = "human_verification_risk_or_market_gate")
+        if (engine.positionCount() >= config.maxOpenPositions) return status(RuntimeEnvironment(), errorOverride = "human_verification_position_limit")
+        val reason = if (recentlyClosedSymbols.containsKey(symbol)) "human_verified_re_entry" else "human_verified_entry"
+        val execution = engine.open(exchangeId, symbol, plan, nowMs, reason)
+        lastExecution = execution
+        if (execution.success) {
+            tickExecutions += execution
+            recentlyClosedSymbols.remove(symbol)
+        }
+        lastError = if (execution.success) null else execution.error
+        return status(RuntimeEnvironment(internetAvailable = true, exchangeHealthy = lastExchangeHealthy), markPrices)
     }
 
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
@@ -151,6 +233,11 @@ class MireiPaperTradingRuntime(
             planReasons[managedSymbol] = plan.reasons
             val decision = orchestrator.evaluate(snapshot)
             decisions[managedSymbol] = decision
+            when (decision.action) {
+                AgentAction.BUY -> buyDecisionCount++
+                AgentAction.HOLD -> holdDecisionCount++
+                AgentAction.CLOSE -> sellDecisionCount++
+            }
             if (decision.action == AgentAction.CLOSE && !decision.requiresHumanDecision) {
                 engine.positions().filter { it.symbol == managedSymbol }.toList().forEach { position ->
                     val execution = engine.close(position.id, snapshot.price, "ai_close", nowMs)
@@ -203,9 +290,12 @@ class MireiPaperTradingRuntime(
         return status(environment)
     }
 
-    fun status(environment: RuntimeEnvironment = RuntimeEnvironment(), markPrices: Map<String, Double> = emptyMap()): PaperRuntimeStatus {
+    fun status(environment: RuntimeEnvironment = RuntimeEnvironment(), markPrices: Map<String, Double> = emptyMap(), errorOverride: String? = null): PaperRuntimeStatus {
         val snapshot = lastSnapshot
         val prices = if (markPrices.isNotEmpty()) markPrices else lastSnapshots.mapValues { it.value.price }
+        val humanDecision = lastDecision
+        val humanAllowed = humanDecision?.observations?.filter { it.action == AgentAction.BUY }?.map { it.agent.name }?.distinct().orEmpty()
+        val humanBlocked = humanDecision?.observations?.filter { it.action != AgentAction.BUY }?.map { it.agent.name }?.distinct().orEmpty()
         return PaperRuntimeStatus(
             availableBalanceIdr = engine.availableBalanceIdr(), equityIdr = engine.equityIdr(prices), activePositions = engine.positions(),
             lastDecision = lastDecision, lastExecution = lastExecution, recentExecutions = tickExecutions.toList(), dailyPnlIdr = dailyPnlIdr, consecutiveLosses = consecutiveLosses,
@@ -221,8 +311,11 @@ class MireiPaperTradingRuntime(
             lastTradeEpochMs = snapshot?.lastTradeEpochMs ?: 0L, snapshotEpochMs = snapshot?.snapshotEpochMs ?: 0L,
             sourceAgeMs = snapshot?.sourceAgeMs ?: 0L, marketDataFresh = snapshot?.dataFresh == true,
             internetAvailable = environment.internetAvailable, exchangeHealthy = lastExchangeHealthy && environment.exchangeHealthy && environment.internetAvailable,
-            lastTickEpochMs = lastTickEpochMs, lastError = lastError, entryPlanReasons = lastEntryPlanReasons,
+            lastTickEpochMs = lastTickEpochMs, lastError = errorOverride ?: lastError, entryPlanReasons = lastEntryPlanReasons,
             decisionsBySymbol = lastDecisions, snapshotsBySymbol = lastSnapshots, scannerSummary = lastScannerSummary,
+            buyDecisionCount = buyDecisionCount, holdDecisionCount = holdDecisionCount, sellDecisionCount = sellDecisionCount,
+            humanVerificationRequired = humanDecision?.requiresHumanDecision == true && humanAllowed.isNotEmpty(),
+            humanAllowedIndicators = humanAllowed, humanBlockedIndicators = humanBlocked,
         )
     }
 
