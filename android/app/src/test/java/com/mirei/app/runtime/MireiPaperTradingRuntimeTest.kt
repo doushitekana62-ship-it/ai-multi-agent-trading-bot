@@ -32,6 +32,28 @@ class MireiPaperTradingRuntimeTest {
         assertEquals(3, third.activePositions.size); assertEquals(4, ledger.openedCount); assertEquals(1, ledger.closedCount); assertEquals(1, reentry.recentExecutions.count { it.reason == "take_profit" }); assertTrue(reentry.activePositions.any { it.openedAtEpochMs == 4_000L })
     }
 
+    @Test fun stopLossReleasesCapitalAndNextValidSignalIsMarkedReEntry() {
+        val market = ScenarioMarket()
+        val ledger = RecordingLedger()
+        val runtime = MireiPaperTradingRuntime(config = TradingConfig(positionSizeIdr = 50_000.0), marketData = market, symbol = "BTC/IDR", tradeLedger = ledger)
+        val seeded = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 50_000.0), 1_000L).single()
+        assertTrue(seeded.success)
+
+        market.bearish = true
+        val close = runtime.tick(2_000L)
+        assertTrue(close.activePositions.isEmpty())
+        assertTrue(close.recentExecutions.any { it.reason == "stop_loss" })
+        assertEquals(1, ledger.closedCount)
+        assertTrue(runtime.paperEngine().availableBalanceIdr() > 0.0)
+
+        market.bearish = false
+        val reentry = runtime.tick(3_000L)
+        assertEquals(1, reentry.activePositions.size)
+        assertEquals("re_entry", reentry.activePositions.single().entryReason)
+        assertTrue(reentry.recentExecutions.any { it.reason == "re_entry" })
+        assertTrue(reentry.activePositions.single().openedAtEpochMs == 3_000L)
+    }
+
     @Test fun positionCapPreventsFourthConcurrentEntry() {
         val market = MutableMarket(10_000.0); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(positionSizeIdr = 30_000.0, maxOpenPositions = 3), marketData = market, symbol = "BTC/IDR", tradeLedger = ledger)
         runtime.tick(1_000L); runtime.tick(2_000L); val third = runtime.tick(3_000L); val capped = runtime.tick(4_000L)
@@ -58,9 +80,7 @@ class MireiPaperTradingRuntimeTest {
         val safety = MireiDecisionEngine(TradingConfig(mode = ScalpingMode.SAFETY)).buildEntryPlan(snapshot, risk)
         val manual = TradingConfig(manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = 0.80, manualTakeProfitPercent = 1.80)
         val manualPlan = MireiDecisionEngine(manual).buildEntryPlan(snapshot, risk)
-        assertTrue(aggressive.stopLossPrice > balanced.stopLossPrice); assertTrue(balanced.stopLossPrice > safety.stopLossPrice)
-        assertTrue(aggressive.takeProfitPrice < balanced.takeProfitPrice); assertTrue(balanced.takeProfitPrice < safety.takeProfitPrice)
-        assertEquals(0.80, (snapshot.price - manualPlan.stopLossPrice) / snapshot.price * 100.0, 0.0001); assertEquals(1.80, (manualPlan.takeProfitPrice - snapshot.price) / snapshot.price * 100.0, 0.0001)
+        assertTrue(aggressive.stopLossPrice > balanced.stopLossPrice); assertTrue(balanced.stopLossPrice > safety.stopLossPrice); assertTrue(aggressive.takeProfitPrice < balanced.takeProfitPrice); assertTrue(balanced.takeProfitPrice < safety.takeProfitPrice); assertEquals(0.80, (snapshot.price - manualPlan.stopLossPrice) / snapshot.price * 100.0, 0.0001); assertEquals(1.80, (manualPlan.takeProfitPrice - snapshot.price) / snapshot.price * 100.0, 0.0001)
     }
 
     @Test fun staleMarketDataDoesNotOpenPosition() {
@@ -69,9 +89,7 @@ class MireiPaperTradingRuntimeTest {
     }
 
     @Test fun conflictingAgentsExposeDecisionAndEntryReasons() {
-        val market = object : PaperMarketDataSource {
-            override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, momentumPercent = -0.10, sentimentScore = 10.0, forecastConfidence = 0.65, changeSinceLastTickPercent = -0.10, change1mPercent = -0.10, change5mPercent = -0.10, change15mPercent = -0.10, trendScorePercent = 0.0)
-        }
+        val market = object : PaperMarketDataSource { override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, momentumPercent = -0.10, sentimentScore = 10.0, forecastConfidence = 0.65, changeSinceLastTickPercent = -0.10, change1mPercent = -0.10, change5mPercent = -0.10, change15mPercent = -0.10, trendScorePercent = 0.0) }
         val status = MireiPaperTradingRuntime(marketData = market, symbol = "BTC/IDR").tick(1_000L)
         assertTrue(status.activePositions.isEmpty()); assertTrue(status.lastDecision!!.requiresHumanDecision); assertEquals("agent_conflict_requires_human_decision", status.lastDecision!!.rationale); assertTrue(status.lastDecision!!.observations.any { it.rationale == "market_trend_not_confirmed" }); assertTrue(status.lastDecision!!.observations.any { it.rationale == "forecast_direction_or_confidence_weak" }); assertEquals(listOf("momentum_not_positive"), status.entryPlanReasons)
     }
@@ -79,8 +97,17 @@ class MireiPaperTradingRuntimeTest {
 
 private fun sampleBullishSnapshot() = MarketSnapshot("BTC/IDR", 10_000.0, 1.0, 0.5, 10.0, 0.90, true, changeSinceLastTickPercent = 0.20, change1mPercent = 0.20, change5mPercent = 0.40, change15mPercent = 0.60, tradeFlowPercent = 20.0, trendScorePercent = 5.0)
 
-private class MutableMarket(var price: Double, private val fresh: Boolean = true) : PaperMarketDataSource {
-    override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, price = price, dataFresh = fresh)
+private class MutableMarket(var price: Double, private val fresh: Boolean = true) : PaperMarketDataSource { override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, price = price, dataFresh = fresh) }
+
+private class ScenarioMarket : PaperMarketDataSource {
+    var bearish = false
+    override fun snapshot(symbol: String): MarketSnapshot {
+        return if (bearish) {
+            sampleBullishSnapshot().copy(symbol = symbol, price = 9_900.0, momentumPercent = -5.0, sentimentScore = -40.0, forecastConfidence = 0.90, changeSinceLastTickPercent = -0.5, change1mPercent = -0.5, change5mPercent = -0.5, change15mPercent = -0.5, tradeFlowPercent = -40.0, trendScorePercent = -5.0)
+        } else {
+            sampleBullishSnapshot().copy(symbol = symbol, price = 10_000.0, momentumPercent = 5.0, sentimentScore = 20.0, forecastConfidence = 0.90, changeSinceLastTickPercent = 0.5, change1mPercent = 0.5, change5mPercent = 0.5, change15mPercent = 0.5, tradeFlowPercent = 40.0, trendScorePercent = 5.0)
+        }
+    }
 }
 
 private class RecordingLedger : TradeLedger {
