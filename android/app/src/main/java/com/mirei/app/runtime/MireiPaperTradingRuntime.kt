@@ -7,6 +7,7 @@ import com.mirei.app.agents.MireiOrchestrator
 import com.mirei.app.core.ExitPolicy
 import com.mirei.app.core.MarketSnapshot
 import com.mirei.app.core.MireiDecisionEngine
+import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.core.RiskSnapshot
 import com.mirei.app.core.TradingConfig
 import com.mirei.app.execution.ExecutionResult
@@ -77,6 +78,7 @@ data class PaperRuntimePersistence(
     val buyDecisionCount: Int,
     val holdDecisionCount: Int,
     val sellDecisionCount: Int,
+    val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
 )
 
 class MireiPaperTradingRuntime(
@@ -109,6 +111,7 @@ class MireiPaperTradingRuntime(
     private var holdingsSeeded = false
     private var lastScannerSummary = ""
     private val recentlyClosedSymbols = linkedMapOf<String, Long>()
+    private var initialCapitalBySymbol: MutableMap<String, Double> = linkedMapOf()
     private var buyDecisionCount = 0
     private var holdDecisionCount = 0
     private var sellDecisionCount = 0
@@ -119,7 +122,7 @@ class MireiPaperTradingRuntime(
         config = newConfig
         decisionEngine = MireiDecisionEngine(newConfig)
         exitPolicy = ExitPolicy(newConfig)
-        engine.updateRiskTargets(newConfig.effectiveStopLossPercent(), newConfig.effectiveTakeProfitPercent())
+        engine.updateRiskTargets(newConfig)
     }
 
     fun seedInitialHoldings(allocations: Map<String, Double>, nowMs: Long): List<ExecutionResult> {
@@ -127,11 +130,23 @@ class MireiPaperTradingRuntime(
         val normalized = allocations.filter { it.key in managedSymbols && it.value > 0.0 }.toList()
         require(normalized.size <= config.maxOpenPositions) { "initial_holding_position_limit" }
         require(normalized.sumOf { it.second } <= config.totalCapitalIdr + 1e-6) { "initial_holding_exceeds_capital" }
+        initialCapitalBySymbol.clear()
+        normalized.forEach { (managedSymbol, amount) -> initialCapitalBySymbol[managedSymbol] = amount }
         val results = mutableListOf<ExecutionResult>()
         for ((managedSymbol, amount) in normalized) {
             val snapshot = marketData.snapshot(managedSymbol) ?: continue
             if (!snapshot.dataFresh) continue
-            results += engine.seedExistingHolding(exchangeId, managedSymbol, amount, snapshot.price, config.effectiveStopLossPercent(), config.effectiveTakeProfitPercent(), nowMs)
+            results += engine.seedExistingHolding(
+                exchangeId,
+                managedSymbol,
+                amount,
+                snapshot.price,
+                config.effectiveStopLossPercent(),
+                config.effectiveTakeProfitPercent(),
+                nowMs,
+                config.riskReferenceMode,
+                amount,
+            )
         }
         holdingsSeeded = results.any { it.success }
         if (results.none { it.success }) lastError = "initial_holdings_not_seeded"
@@ -146,6 +161,7 @@ class MireiPaperTradingRuntime(
         buyDecisionCount = state.buyDecisionCount
         holdDecisionCount = state.holdDecisionCount
         sellDecisionCount = state.sellDecisionCount
+        initialCapitalBySymbol = state.initialCapitalBySymbol.toMutableMap()
         lastError = null
         tickExecutions = mutableListOf()
     }
@@ -158,6 +174,7 @@ class MireiPaperTradingRuntime(
         buyDecisionCount = buyDecisionCount,
         holdDecisionCount = holdDecisionCount,
         sellDecisionCount = sellDecisionCount,
+        initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
     )
 
     fun humanVerificationForm(symbol: String): Pair<List<String>, List<String>> {
@@ -185,7 +202,7 @@ class MireiPaperTradingRuntime(
             exchangeHealthy = lastExchangeHealthy,
             internetAvailable = true,
         )
-        val plan = decisionEngine.buildEntryPlan(snapshot, risk.copy(openPositions = engine.positionCount()))
+        val plan = decisionEngine.buildEntryPlan(snapshot, risk.copy(openPositions = engine.positionCount()), initialCapitalBySymbol[symbol])
         lastEntryPlanReasons = plan.reasons
         if (!plan.allowed) return status(RuntimeEnvironment(), errorOverride = "human_verification_risk_or_market_gate")
         if (engine.positionCount() >= config.maxOpenPositions) return status(RuntimeEnvironment(), errorOverride = "human_verification_position_limit")
@@ -235,7 +252,7 @@ class MireiPaperTradingRuntime(
         var lastExecutionForTick: ExecutionResult? = null
 
         for ((managedSymbol, snapshot) in fresh) {
-            val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot.copy(openPositions = engine.positionCount()))
+            val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot.copy(openPositions = engine.positionCount()), initialCapitalBySymbol[managedSymbol])
             planReasons[managedSymbol] = plan.reasons
             val decision = orchestrator.evaluate(snapshot)
             decisions[managedSymbol] = decision
