@@ -113,10 +113,12 @@ class PaperSessionStore(context: Context) {
                 }) }
             })
         }
-        prefs.edit().putString(KEY_STATE, root.toString()).apply()
+        // STOP -> START can happen before an asynchronous apply() reaches disk.
+        // Session state is the portfolio source of truth, so commit it synchronously.
+        prefs.edit().putString(KEY_STATE, root.toString()).commit()
     }
 
-    fun clearSession() = prefs.edit().remove(KEY_STATE).apply()
+    fun clearSession() = prefs.edit().remove(KEY_STATE).commit()
 
     companion object {
         private const val PREFS = "mirei_paper_session"
