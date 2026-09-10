@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.mirei.app.runtime.MireiForegroundService
 import java.text.NumberFormat
@@ -32,22 +33,37 @@ class MainActivity : Activity() {
         requestNotificationPermissionIfNeeded()
         numberFormat.maximumFractionDigits = 2
 
-        val root = LinearLayout(this).apply {
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 40, 32, 32)
         }
-        root.addView(TextView(this).apply { text = "Mirei ミレイ"; textSize = 30f }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
-        root.addView(TextView(this).apply { text = "Android-first trading runtime"; textSize = 16f }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
+        content.addView(TextView(this).apply {
+            text = "Mirei ミレイ"
+            textSize = 30f
+        }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
+        content.addView(TextView(this).apply {
+            text = "Android-first trading runtime"
+            textSize = 16f
+        }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
         status = TextView(this).apply {
             text = "\nState: STOP\nMode: Suggestion\nExecution: PAPER ONLY\n\nSYSTEM HEALTH\nMarket data: OFFLINE\nInternet: UNKNOWN\nExchange: UNKNOWN"
             textSize = 17f
+            setLineSpacing(0f, 1.05f)
         }
-        root.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, -2))
-        root.addView(actionButton("START") { sendAction(MireiForegroundService.ACTION_START, "RUNNING") })
-        root.addView(actionButton("HOLD") { sendAction(MireiForegroundService.ACTION_HOLD, "HOLD") })
-        root.addView(actionButton("STOP") { sendAction(MireiForegroundService.ACTION_STOP, "STOP") })
-        root.addView(actionButton("CLOSE ALL") { sendAction(MireiForegroundService.ACTION_CLOSE_ALL, "CLOSE_ALL") })
-        setContentView(root)
+        content.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, -2).apply {
+            topMargin = 24
+            bottomMargin = 16
+        })
+        content.addView(actionButton("START") { sendAction(MireiForegroundService.ACTION_START, "RUNNING") })
+        content.addView(actionButton("HOLD") { sendAction(MireiForegroundService.ACTION_HOLD, "HOLD") })
+        content.addView(actionButton("STOP") { sendAction(MireiForegroundService.ACTION_STOP, "STOP") })
+        content.addView(actionButton("CLOSE ALL") { sendAction(MireiForegroundService.ACTION_CLOSE_ALL, "CLOSE_ALL") })
+
+        val scrollView = ScrollView(this).apply {
+            isFillViewport = true
+            addView(content, ScrollView.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
+        setContentView(scrollView)
     }
 
     override fun onStart() {
@@ -70,9 +86,29 @@ class MainActivity : Activity() {
         try {
             val intent = Intent(this, MireiForegroundService::class.java).setAction(command)
             if (command == MireiForegroundService.ACTION_START && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
-            status.text = "\nState: $nextState\nMode: Suggestion\nExecution: PAPER ONLY\n\nSYSTEM HEALTH\nWaiting for runtime telemetry..."
+            status.text = """
+                State: $nextState
+                Mode: Suggestion
+                Execution: PAPER ONLY
+
+                SYSTEM HEALTH
+                Waiting for runtime telemetry...
+
+                MARKET
+                Waiting for live market data...
+
+                DECISION
+                Waiting for agent evaluation...
+            """.trimIndent()
         } catch (error: Exception) {
-            status.text = "\nState: ERROR\nMode: Suggestion\nExecution: PAPER ONLY\n\nService error: ${error.javaClass.simpleName}"
+            status.text = """
+                State: ERROR
+                Mode: Suggestion
+                Execution: PAPER ONLY
+
+                SERVICE ERROR
+                ${error.javaClass.simpleName}
+            """.trimIndent()
         }
     }
 
@@ -97,6 +133,7 @@ class MainActivity : Activity() {
         val error = intent.getStringExtra(MireiForegroundService.EXTRA_ERROR)
         val health = if (marketFresh && internet && exchange && error.isNullOrBlank()) "HEALTHY" else "DEGRADED / SAFE HOLD"
         status.text = """
+            STATE
             State: $state
             Mode: Suggestion
             Execution: PAPER ONLY
@@ -106,18 +143,26 @@ class MainActivity : Activity() {
             Internet: ${if (internet) "ONLINE" else "OFFLINE"}
             Exchange: ${if (exchange) "REACHABLE" else "UNHEALTHY"}
 
+            MARKET
             BTC/IDR: ${numberFormat.format(price)}
+            Momentum: ${"%.4f".format(Locale.US, momentum)}%
+            Sentiment: ${"%.1f".format(Locale.US, sentiment)}
+            Forecast confidence: ${"%.2f".format(Locale.US, forecast)}
+
+            ACCOUNT
             Equity: Rp ${numberFormat.format(equity)}
             Available: Rp ${numberFormat.format(balance)}
             Daily PnL: Rp ${numberFormat.format(pnl)}
             Positions: $positions
-            Last action: $action (${(confidence * 100).toInt()}%)
 
-            DECISION REASON: $rationale
-            ENTRY GATES: ${entryReasons.ifBlank { "none" }}
-            MARKET SIGNALS: momentum=${"%.4f".format(Locale.US, momentum)}% sentiment=${"%.1f".format(Locale.US, sentiment)} forecast=${"%.2f".format(Locale.US, forecast)}
-            AGENTS: ${agentSummary.ifBlank { "not evaluated" }}
-            ${if (error.isNullOrBlank()) "" else "Error: $error"}
+            DECISION
+            Last action: $action (${(confidence * 100).toInt()}%)
+            Reason: $rationale
+            Entry gates: ${entryReasons.ifBlank { "none" }}
+
+            AGENTS
+            ${agentSummary.ifBlank { "not evaluated" }}
+            ${if (error.isNullOrBlank()) "" else "\nERROR\n$error"}
         """.trimIndent()
     }
 
