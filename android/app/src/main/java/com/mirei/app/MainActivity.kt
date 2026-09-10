@@ -95,6 +95,7 @@ class MainActivity : Activity() {
         menuScroll.addView(menuBar, ViewGroup.LayoutParams(-2, -2))
         shell.addView(menuScroll, margin(0, 0, 0, 8))
 
+        chart = SparklineView(this)
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(this).apply { isFillViewport = true; addView(content, ViewGroup.LayoutParams(-1, -2)) }
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -165,7 +166,7 @@ class MainActivity : Activity() {
         val intent = currentIntent ?: run { content.addView(cardText("Menunggu snapshot pasar.")); return }
         content.addView(cardText("${intent.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: MireiForegroundService.DEFAULT_SYMBOL}\nHarga Rp ${numberFormat.format(intent.getDoubleExtra(MireiForegroundService.EXTRA_PRICE, 0.0))}\n1 menit ${signed(intent.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_1M, 0.0))}% · 5 menit ${signed(intent.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_5M, 0.0))}% · 15 menit ${signed(intent.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_15M, 0.0))}%\nMomentum ${signed(intent.getDoubleExtra(MireiForegroundService.EXTRA_MOMENTUM, 0.0))}% · Trend ${signed(intent.getDoubleExtra(MireiForegroundService.EXTRA_TREND, 0.0))}%\nFlow ${signed(intent.getDoubleExtra(MireiForegroundService.EXTRA_FLOW, 0.0))}% · Forecast ${(intent.getDoubleExtra(MireiForegroundService.EXTRA_FORECAST_CONFIDENCE, 0.0) * 100).toInt()}%\nSpread ${fmt(intent.getDoubleExtra(MireiForegroundService.EXTRA_SPREAD, 0.0))}%\nData ${if (intent.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)) "SEGAR" else "STALE"}", 14f))
         addTitle("GRAFIK HARGA")
-        chart = SparklineView(this); chart.setValues(priceSeries); content.addView(cardView("HARGA LIVE", chart, 220))
+        chart.setValues(priceSeries); content.addView(cardView("HARGA LIVE", chart, 220))
         addTitle("SCANNER")
         val rows = intent.getStringExtra(MireiForegroundService.EXTRA_SCANNER).orEmpty().lines().filter { it.isNotBlank() }.take(10)
         if (rows.isEmpty()) content.addView(cardText("Belum ada hasil scanner.")) else rows.forEach { line ->
