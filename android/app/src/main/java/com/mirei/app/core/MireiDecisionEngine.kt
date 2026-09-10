@@ -44,7 +44,12 @@ class MireiDecisionEngine(
     private val config: TradingConfig,
     private val riskPolicy: RiskPolicy = RiskPolicy(config),
 ) {
-    fun buildEntryPlan(snapshot: MarketSnapshot, riskSnapshot: RiskSnapshot, initialCapitalIdr: Double? = null): EntryPlan {
+    fun buildEntryPlan(
+        snapshot: MarketSnapshot,
+        riskSnapshot: RiskSnapshot,
+        initialCapitalIdr: Double? = null,
+        stakeOverrideIdr: Double? = null,
+    ): EntryPlan {
         val risk = riskPolicy.evaluate(riskSnapshot)
         val reasons = mutableListOf<String>()
         if (!risk.allowedToOpen) reasons += risk.reasons
@@ -67,10 +72,13 @@ class MireiDecisionEngine(
         val volatilityFactor = (snapshot.volatilityPercent / 0.5).coerceAtLeast(1.0)
         val riskLossPercent = if (config.manualRiskMode == ManualRiskMode.MANUAL) {
             baseStop
+        } else if (baseStop == 0.0) {
+            0.0
         } else {
             (baseStop / volatilityFactor).coerceIn(baseStop * 0.50, baseStop)
         }
-        val stake = minOf(config.positionSizeIdr * risk.positionMultiplier, config.totalCapitalIdr / config.maxOpenPositions)
+        val configuredStake = stakeOverrideIdr?.takeIf { it > 0.0 } ?: config.positionSizeIdr
+        val stake = minOf(configuredStake * risk.positionMultiplier, config.totalCapitalIdr / config.maxOpenPositions)
         val initialCapital = initialCapitalIdr?.takeIf { it > 0.0 } ?: stake
         val targets = config.calculateRiskTargets(
             entryPrice = snapshot.price,
@@ -79,7 +87,7 @@ class MireiDecisionEngine(
             stopLossPercent = riskLossPercent,
             takeProfitPercent = baseTake,
         )
-        val activation = snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR
+        val activation = if (targets.stopLossPrice == 0.0) 0.0 else snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR
 
         return EntryPlan(
             allowed = true,
