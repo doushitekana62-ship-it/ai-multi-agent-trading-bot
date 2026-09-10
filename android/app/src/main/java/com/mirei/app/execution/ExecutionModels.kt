@@ -72,15 +72,9 @@ class PaperExecutionEngine(
         takeProfitPercent: Double,
         nowMs: Long,
     ): ExecutionResult {
-        if (quoteAmount <= 0.0 || marketPrice <= 0.0) {
-            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_initial_holding")
-        }
-        if (positions.size >= config.maxOpenPositions) {
-            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
-        }
-        if (quoteAmount > availableBalanceIdr + 1e-9) {
-            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "initial_holding_exceeds_capital")
-        }
+        if (quoteAmount <= 0.0 || marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_initial_holding")
+        if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
+        if (quoteAmount > availableBalanceIdr + 1e-9) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "initial_holding_exceeds_capital")
         require(stopLossPercent > 0.0)
         require(takeProfitPercent > stopLossPercent)
 
@@ -100,28 +94,12 @@ class PaperExecutionEngine(
         tradeLedger?.recordOpened(position, entryFee)
         availableBalanceIdr -= quoteAmount
         positions[position.id] = position
-        return ExecutionResult(
-            success = true,
-            orderId = position.id,
-            filledAmount = entryNotional / marketPrice,
-            averagePrice = marketPrice,
-            fee = entryFee,
-            entryFee = entryFee,
-            remainingBalanceIdr = availableBalanceIdr,
-            reason = "initial_holding_seeded",
-        )
+        return ExecutionResult(true, position.id, entryNotional / marketPrice, marketPrice, entryFee, entryFee = entryFee, remainingBalanceIdr = availableBalanceIdr, reason = "initial_holding_seeded")
     }
 
-    fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long): ExecutionResult =
-        openInternal(exchangeId, symbol, plan, nowMs, reservedIdr = 0.0)
+    fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long): ExecutionResult = openInternal(exchangeId, symbol, plan, nowMs, reservedIdr = 0.0)
 
-    private fun openInternal(
-        exchangeId: String,
-        symbol: String,
-        plan: EntryPlan,
-        nowMs: Long,
-        reservedIdr: Double,
-    ): ExecutionResult {
+    private fun openInternal(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, reservedIdr: Double): ExecutionResult {
         if (!plan.allowed || plan.stakeIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         val entryFee = plan.stakeIdr * feePercent / (100.0 + feePercent)
@@ -129,45 +107,18 @@ class PaperExecutionEngine(
         val required = plan.stakeIdr
         if (reservedIdr > 0.0) {
             if (reservedIdr + 1e-9 < required) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
-        } else if (required > availableBalanceIdr) {
-            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
-        }
+        } else if (required > availableBalanceIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
         require(plan.entryPrice > 0.0)
         val executionPrice = plan.entryPrice * (1.0 + slippagePercent / 100.0)
         val id = "paper-$nowMs-${positions.size + 1}"
-        val position = PaperPosition(
-            id,
-            exchangeId,
-            symbol,
-            plan.stakeIdr,
-            executionPrice,
-            executionPrice * (plan.stopLossPrice / plan.entryPrice),
-            executionPrice * (plan.takeProfitPrice / plan.entryPrice),
-            executionPrice * (plan.trailingActivationPrice / plan.entryPrice),
-            nowMs,
-        )
+        val position = PaperPosition(id, exchangeId, symbol, plan.stakeIdr, executionPrice, executionPrice * (plan.stopLossPrice / plan.entryPrice), executionPrice * (plan.takeProfitPrice / plan.entryPrice), executionPrice * (plan.trailingActivationPrice / plan.entryPrice), nowMs)
         tradeLedger?.recordOpened(position, entryFee)
         if (reservedIdr <= 0.0) availableBalanceIdr -= required
         positions[id] = position
-        return ExecutionResult(
-            true,
-            id,
-            entryNotional / executionPrice,
-            executionPrice,
-            entryFee,
-            entryFee = entryFee,
-            slippagePercent = slippagePercent,
-            remainingBalanceIdr = availableBalanceIdr,
-            reason = "entry_filled",
-        )
+        return ExecutionResult(true, id, entryNotional / executionPrice, executionPrice, entryFee, entryFee = entryFee, slippagePercent = slippagePercent, remainingBalanceIdr = availableBalanceIdr, reason = "entry_filled")
     }
 
-    fun close(
-        positionId: String,
-        marketPrice: Double,
-        reason: String,
-        nowMs: Long = System.currentTimeMillis(),
-    ): ExecutionResult {
+    fun close(positionId: String, marketPrice: Double, reason: String, nowMs: Long = System.currentTimeMillis()): ExecutionResult {
         if (marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "invalid_market_price")
         val position = positions[positionId] ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "paper_position_not_found")
         val executionPrice = marketPrice * (1.0 - slippagePercent / 100.0)
@@ -181,30 +132,17 @@ class PaperExecutionEngine(
         tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, nowMs, reason)
         availableBalanceIdr += proceedsAfterFee
         positions.remove(positionId)
-        return ExecutionResult(
-            true,
-            positionId,
-            amount,
-            executionPrice,
-            exitFee,
-            entryFee = entryFee,
-            exitFee = exitFee,
-            slippagePercent = slippagePercent,
-            pnlIdr = netPnl,
-            remainingBalanceIdr = availableBalanceIdr,
-            reason = reason,
-        )
+        return ExecutionResult(true, positionId, amount, executionPrice, exitFee, entryFee = entryFee, exitFee = exitFee, slippagePercent = slippagePercent, pnlIdr = netPnl, remainingBalanceIdr = availableBalanceIdr, reason = reason)
     }
 
     fun placeLimit(exchangeId: String, symbol: String, quoteAmount: Double, limitPrice: Double, nowMs: Long): ExecutionResult {
         if (quoteAmount <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_quote_amount")
         if (limitPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_price")
         if (positions.size + limitOrders.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
-        val reservedIdr = quoteAmount
-        if (reservedIdr > availableBalanceIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
+        if (quoteAmount > availableBalanceIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
         val id = "limit-$nowMs-${limitOrders.size + 1}"
-        availableBalanceIdr -= reservedIdr
-        limitOrders[id] = PaperLimitOrder(id, exchangeId, symbol, quoteAmount, limitPrice, reservedIdr, nowMs)
+        availableBalanceIdr -= quoteAmount
+        limitOrders[id] = PaperLimitOrder(id, exchangeId, symbol, quoteAmount, limitPrice, quoteAmount, nowMs)
         return ExecutionResult(true, orderId = id, remainingBalanceIdr = availableBalanceIdr, reason = "limit_order_accepted")
     }
 
@@ -222,6 +160,18 @@ class PaperExecutionEngine(
         val order = limitOrders.remove(orderId) ?: return false
         availableBalanceIdr += order.reservedIdr
         return true
+    }
+
+    fun updateRiskTargets(stopLossPercent: Double, takeProfitPercent: Double) {
+        require(stopLossPercent > 0.0)
+        require(takeProfitPercent > stopLossPercent)
+        positions.entries.forEach { (id, position) ->
+            positions[id] = position.copy(
+                stopLossPrice = position.entryPrice * (1.0 - stopLossPercent / 100.0),
+                takeProfitPrice = position.entryPrice * (1.0 + takeProfitPercent / 100.0),
+                trailingActivationPrice = position.entryPrice * (1.0 + stopLossPercent / 100.0),
+            )
+        }
     }
 
     fun position(positionId: String): PaperPosition? = positions[positionId]
@@ -260,21 +210,11 @@ class PaperExchangeAdapter(
     fun paperEngine(): PaperExecutionEngine = engine
 }
 
-data class ExchangeHandle(
-    val id: String,
-    val displayName: String,
-    val adapter: ExchangeAdapter,
-    val tradingEnabled: Boolean = false,
-)
+data class ExchangeHandle(val id: String, val displayName: String, val adapter: ExchangeAdapter, val tradingEnabled: Boolean = false)
 
 class ExchangeRegistry {
     private val handles = linkedMapOf<String, ExchangeHandle>()
-    fun register(handle: ExchangeHandle) {
-        require(handle.id.isNotBlank())
-        require(handle.displayName.isNotBlank())
-        require(handle.adapter.exchangeId == handle.id)
-        handles[handle.id] = handle
-    }
+    fun register(handle: ExchangeHandle) { require(handle.id.isNotBlank()); require(handle.displayName.isNotBlank()); require(handle.adapter.exchangeId == handle.id); handles[handle.id] = handle }
     fun remove(exchangeId: String): ExchangeHandle? = handles.remove(exchangeId)
     fun get(exchangeId: String): ExchangeHandle? = handles[exchangeId]
     fun activeTradingAdapters(): List<ExchangeAdapter> = handles.values.filter { it.tradingEnabled }.map { it.adapter }
