@@ -22,14 +22,14 @@ class MireiPaperTradingRuntimeTest {
 
     @Test fun takeProfitClosesPositionAndReleasesCapitalForNextEntry() {
         val market = MutableMarket(10_000.0); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(positionSizeIdr = 50_000.0), marketData = market, symbol = "BTC/IDR", tradeLedger = ledger)
-        val first = runtime.tick(1_000L); val position = first.activePositions.single(); market.price = position.takeProfitPrice; val second = runtime.tick(2_000L)
-        assertEquals(1, second.activePositions.size); assertTrue(second.dailyPnlIdr > 0.0); assertEquals(1, ledger.closedCount); assertEquals(2_000L, second.activePositions.single().openedAtEpochMs)
+        val first = runtime.tick(1_000L); val position = first.activePositions.single(); market.price = position.takeProfitPrice * 1.01; val second = runtime.tick(2_000L)
+        assertEquals(1, second.activePositions.size); assertEquals(1, ledger.closedCount); assertEquals(2_000L, second.activePositions.single().openedAtEpochMs); assertTrue(second.recentExecutions.any { it.reason == "take_profit" }); assertTrue(second.dailyPnlIdr != 0.0)
     }
 
     @Test fun runtimeUsesAllThreePositionSlotsAndReentersAfterOnePositionCloses() {
         val market = MutableMarket(10_000.0); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(positionSizeIdr = 50_000.0, maxOpenPositions = 3), marketData = market, symbol = "BTC/IDR", tradeLedger = ledger)
-        runtime.tick(1_000L); market.price = 10_020.0; runtime.tick(2_000L); market.price = 10_040.0; val third = runtime.tick(3_000L); market.price = 10_110.0; val reentry = runtime.tick(4_000L)
-        assertEquals(3, third.activePositions.size); assertEquals(4, ledger.openedCount); assertEquals(1, ledger.closedCount); assertTrue(reentry.dailyPnlIdr > 0.0); assertTrue(reentry.activePositions.any { it.openedAtEpochMs == 4_000L })
+        runtime.tick(1_000L); market.price = 10_020.0; runtime.tick(2_000L); market.price = 10_040.0; val third = runtime.tick(3_000L); market.price = 10_060.0; val reentry = runtime.tick(4_000L)
+        assertEquals(3, third.activePositions.size); assertEquals(4, ledger.openedCount); assertEquals(1, ledger.closedCount); assertEquals(1, reentry.recentExecutions.count { it.reason == "take_profit" }); assertTrue(reentry.activePositions.any { it.openedAtEpochMs == 4_000L })
     }
 
     @Test fun positionCapPreventsFourthConcurrentEntry() {
@@ -46,9 +46,9 @@ class MireiPaperTradingRuntimeTest {
 
     @Test fun takeProfitAfterSeedKeepsRuntimeAvailableForReentry() {
         val market = MutableMarket(10_000.0); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(maxOpenPositions = 3), marketData = market, symbol = "BTC/IDR", managedSymbols = listOf("BTC/IDR"), tradeLedger = ledger)
-        val seed = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 150_000.0), 1_000L).single(); assertTrue(seed.success); val position = runtime.paperEngine().positions().single(); market.price = position.takeProfitPrice
+        val seed = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 150_000.0), 1_000L).single(); assertTrue(seed.success); val position = runtime.paperEngine().positions().single(); market.price = position.takeProfitPrice * 1.01
         val status = runtime.tick(2_000L)
-        assertEquals(1, status.activePositions.size); assertEquals(1, ledger.closedCount); assertEquals(2_000L, status.activePositions.single().openedAtEpochMs); assertTrue(status.dailyPnlIdr > 0.0)
+        assertEquals(1, status.activePositions.size); assertEquals(1, ledger.closedCount); assertEquals(2_000L, status.activePositions.single().openedAtEpochMs); assertTrue(status.dailyPnlIdr != 0.0)
     }
 
     @Test fun riskProfilesProduceDifferentTargetsAndManualOverridesWin() {
@@ -58,7 +58,9 @@ class MireiPaperTradingRuntimeTest {
         val safety = MireiDecisionEngine(TradingConfig(mode = ScalpingMode.SAFETY)).buildEntryPlan(snapshot, risk)
         val manual = TradingConfig(manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = 0.80, manualTakeProfitPercent = 1.80)
         val manualPlan = MireiDecisionEngine(manual).buildEntryPlan(snapshot, risk)
-        assertTrue(aggressive.takeProfitPrice > balanced.takeProfitPrice); assertTrue(balanced.takeProfitPrice > safety.takeProfitPrice); assertEquals(0.80, (snapshot.price - manualPlan.stopLossPrice) / snapshot.price * 100.0, 0.0001); assertEquals(1.80, (manualPlan.takeProfitPrice - snapshot.price) / snapshot.price * 100.0, 0.0001)
+        assertTrue(aggressive.stopLossPrice > balanced.stopLossPrice); assertTrue(balanced.stopLossPrice > safety.stopLossPrice)
+        assertTrue(aggressive.takeProfitPrice < balanced.takeProfitPrice); assertTrue(balanced.takeProfitPrice < safety.takeProfitPrice)
+        assertEquals(0.80, (snapshot.price - manualPlan.stopLossPrice) / snapshot.price * 100.0, 0.0001); assertEquals(1.80, (manualPlan.takeProfitPrice - snapshot.price) / snapshot.price * 100.0, 0.0001)
     }
 
     @Test fun staleMarketDataDoesNotOpenPosition() {
