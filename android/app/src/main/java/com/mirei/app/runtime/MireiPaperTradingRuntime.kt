@@ -89,6 +89,7 @@ class MireiPaperTradingRuntime(
     private var lastEntryPlanReasons: List<String> = emptyList()
     private var holdingsSeeded = false
     private var lastScannerSummary = ""
+    private val recentlyClosedSymbols = linkedMapOf<String, Long>()
 
     fun applyRiskConfig(newConfig: TradingConfig) {
         require(newConfig.totalCapitalIdr == config.totalCapitalIdr) { "paper_capital_immutable_while_running" }
@@ -128,11 +129,23 @@ class MireiPaperTradingRuntime(
         val fresh = snapshots.filterValues { it.dataFresh }
         if (fresh.isEmpty()) { lastEntryPlanReasons = listOf("market_snapshot_stale"); return status(environment) }
         val markPrices = fresh.mapValues { it.value.price }
+
         fresh.forEach { (managedSymbol, snapshot) -> closeTriggeredPositions(managedSymbol, snapshot.price, nowMs) }
-        val riskSnapshot = RiskSnapshot(dailyPnlIdr, dailyStartBalanceIdr, engine.equityIdr(markPrices), engine.positionCount(), consecutiveLosses, fresh.size == snapshots.size, lastExchangeHealthy, environment.internetAvailable)
+
+        val riskSnapshot = RiskSnapshot(
+            dailyPnlIdr = dailyPnlIdr,
+            dailyStartBalanceIdr = dailyStartBalanceIdr,
+            equityIdr = engine.equityIdr(markPrices),
+            openPositions = engine.positionCount(),
+            consecutiveLosses = consecutiveLosses,
+            marketDataFresh = fresh.size == snapshots.size,
+            exchangeHealthy = lastExchangeHealthy,
+            internetAvailable = environment.internetAvailable,
+        )
         val decisions = linkedMapOf<String, MireiDecision>()
         val planReasons = linkedMapOf<String, List<String>>()
         var lastExecutionForTick: ExecutionResult? = null
+
         for ((managedSymbol, snapshot) in fresh) {
             val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot.copy(openPositions = engine.positionCount()))
             planReasons[managedSymbol] = plan.reasons
@@ -142,6 +155,7 @@ class MireiPaperTradingRuntime(
                 engine.positions().filter { it.symbol == managedSymbol }.toList().forEach { position ->
                     val execution = engine.close(position.id, snapshot.price, "ai_close", nowMs)
                     if (execution.success) {
+                        recentlyClosedSymbols[managedSymbol] = nowMs
                         lastExecutionForTick = execution
                         tickExecutions += execution
                         dailyPnlIdr += execution.pnlIdr
@@ -149,11 +163,16 @@ class MireiPaperTradingRuntime(
                     }
                 }
             } else if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
-                val execution = engine.open(exchangeId, managedSymbol, plan, nowMs)
+                val entryReason = if (recentlyClosedSymbols.containsKey(managedSymbol)) "re_entry" else "entry_filled"
+                val execution = engine.open(exchangeId, managedSymbol, plan, nowMs, entryReason)
                 lastExecutionForTick = execution
-                if (execution.success) tickExecutions += execution
+                if (execution.success) {
+                    tickExecutions += execution
+                    recentlyClosedSymbols.remove(managedSymbol)
+                }
             }
         }
+
         lastDecisions = decisions
         lastDecision = decisions[symbol] ?: decisions.values.firstOrNull()
         lastExecution = lastExecutionForTick ?: tickExecutions.lastOrNull()
@@ -211,8 +230,13 @@ class MireiPaperTradingRuntime(
 
     private fun closeTriggeredPositions(managedSymbol: String, marketPrice: Double, nowMs: Long) {
         engine.positions().filter { it.symbol == managedSymbol }.forEach { position ->
-            val reason = when { marketPrice <= position.stopLossPrice -> "stop_loss"; marketPrice >= position.takeProfitPrice -> "take_profit"; else -> null } ?: return@forEach
+            val reason = when {
+                marketPrice <= position.stopLossPrice -> "stop_loss"
+                marketPrice >= position.takeProfitPrice -> "take_profit"
+                else -> null
+            } ?: return@forEach
             close(position.id, marketPrice, reason, nowMs)
+            if (engine.position(position.id) == null) recentlyClosedSymbols[managedSymbol] = nowMs
         }
     }
 
