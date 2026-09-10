@@ -41,4 +41,26 @@ class TradingConfigRiskTargetsTest {
         assertEquals(1_000.0, larger.takeProfitAmountIdr, 1e-9)
         assertEquals(0.5, larger.quantity, 1e-12)
     }
+
+    @Test
+    fun initialCapitalBasisKeepsFirstBuyCapitalAsReference() {
+        val config = TradingConfig(
+            mode = ScalpingMode.BALANCED,
+            manualRiskMode = ManualRiskMode.AUTO,
+            riskReferenceMode = RiskReferenceMode.INITIAL_CAPITAL,
+        )
+
+        val targets = config.calculateRiskTargets(
+            entryPrice = 200_000.0,
+            stakeIdr = 25_000.0,
+            initialCapitalIdr = 50_000.0,
+        )
+
+        assertEquals(50_000.0, targets.referenceCapitalIdr, 1e-9)
+        assertEquals(250.0, targets.stopLossAmountIdr, 1e-9)
+        assertEquals(500.0, targets.takeProfitAmountIdr, 1e-9)
+        assertEquals(198_000.0, targets.stopLossPrice, 1e-9)
+        assertEquals(204_000.0, targets.takeProfitPrice, 1e-9)
+        assertEquals(0.125, targets.quantity, 1e-12)
+    }
 }
