@@ -12,10 +12,10 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import com.mirei.app.core.DecisionMode
-import com.mirei.app.core.ManualRiskMode
 import com.mirei.app.core.MireiState
 import com.mirei.app.core.ScalpingMode
 import com.mirei.app.core.TradingConfig
+import com.mirei.app.core.ManualRiskMode
 import com.mirei.app.storage.MireiDatabase
 import com.mirei.app.storage.TradeLedgerFactory
 
@@ -109,14 +109,7 @@ class MireiForegroundService : Service() {
     }
 
     private fun createRuntime() {
-        runtime = MireiPaperTradingRuntime(
-            config = config,
-            marketData = marketData,
-            tradeLedger = TradeLedgerFactory.create(this),
-            symbol = symbol,
-            exchangeId = exchangeId,
-            managedSymbols = managedSymbols,
-        )
+        runtime = MireiPaperTradingRuntime(config, marketData, TradeLedgerFactory.create(this), symbol, exchangeId, managedSymbols)
     }
 
     private fun applyRisk() {
@@ -134,8 +127,17 @@ class MireiForegroundService : Service() {
             }
             val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
             publishStatus(status)
+            persistDecisions(status)
             if (controller.state == MireiState.RUNNING) worker.postDelayed(this, TICK_MS)
         }
+    }
+
+    private fun persistDecisions(status: PaperRuntimeStatus) {
+        val db = MireiDatabase(this)
+        status.decisionsBySymbol.forEach { (pair, decision) ->
+            db.recordSuggestion(pair, decision.action.name, decision.confidence, decision.rationale, status.lastTickEpochMs)
+        }
+        status.lastExecution?.let { execution -> db.recordAudit("EXECUTION", "${execution.reason ?: "execution"}|${execution.orderId ?: "-"}|pnl=${execution.pnlIdr}", status.lastTickEpochMs) }
     }
 
     private fun closeAll() {
@@ -145,6 +147,7 @@ class MireiForegroundService : Service() {
             val status = runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
             if (wasRunning) controller.start()
             publishStatus(status)
+            persistDecisions(status)
             if (wasRunning) worker.post(runtimeLoop)
         }
     }
@@ -233,78 +236,18 @@ class MireiForegroundService : Service() {
     private fun loadConfig(): TradingConfig {
         val mode = runCatching { ScalpingMode.valueOf(prefs.getString(KEY_MODE, ScalpingMode.BALANCED.name)!!) }.getOrDefault(ScalpingMode.BALANCED)
         val manual = prefs.getBoolean(KEY_MANUAL, false)
-        val sl = prefs.getString(KEY_MANUAL_SL, null)?.toDoubleOrNull()
-        val tp = prefs.getString(KEY_MANUAL_TP, null)?.toDoubleOrNull()
-        return if (manual && sl != null && tp != null && tp > sl) TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp)
-        else TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION)
+        val sl = prefs.getString(KEY_MANUAL_SL, null)?.toDoubleOrNull(); val tp = prefs.getString(KEY_MANUAL_TP, null)?.toDoubleOrNull()
+        return if (manual && sl != null && tp != null && tp > sl) TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp) else TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
-        const val ACTION_START = "com.mirei.app.action.START"
-        const val ACTION_HOLD = "com.mirei.app.action.HOLD"
-        const val ACTION_STOP = "com.mirei.app.action.STOP"
-        const val ACTION_CLOSE_ALL = "com.mirei.app.action.CLOSE_ALL"
-        const val ACTION_REFRESH = "com.mirei.app.action.REFRESH"
-        const val ACTION_APPLY_RISK = "com.mirei.app.action.APPLY_RISK"
-        const val ACTION_DELETE_HISTORY = "com.mirei.app.action.DELETE_HISTORY"
-        const val ACTION_STATUS = "com.mirei.app.action.STATUS"
-        const val EXTRA_STATE = "state"
-        const val EXTRA_SYMBOL = "symbol"
-        const val EXTRA_EXCHANGE = "exchange"
-        const val EXTRA_INITIAL_ALLOCATIONS = "initial_allocations"
-        const val EXTRA_PRICE = "price"
-        const val EXTRA_BID = "bid"
-        const val EXTRA_ASK = "ask"
-        const val EXTRA_HIGH_24H = "high_24h"
-        const val EXTRA_LOW_24H = "low_24h"
-        const val EXTRA_VOLUME_24H = "volume_24h"
-        const val EXTRA_EQUITY = "equity"
-        const val EXTRA_BALANCE = "balance"
-        const val EXTRA_PNL = "daily_pnl"
-        const val EXTRA_POSITIONS = "positions"
-        const val EXTRA_CONFIDENCE = "confidence"
-        const val EXTRA_ACTION = "action"
-        const val EXTRA_RATIONALE = "rationale"
-        const val EXTRA_AGENT_SUMMARY = "agent_summary"
-        const val EXTRA_ENTRY_REASONS = "entry_reasons"
-        const val EXTRA_MOMENTUM = "momentum"
-        const val EXTRA_VOLATILITY = "volatility"
-        const val EXTRA_SENTIMENT = "sentiment"
-        const val EXTRA_FORECAST_CONFIDENCE = "forecast_confidence"
-        const val EXTRA_SPREAD = "spread"
-        const val EXTRA_CHANGE_TICK = "change_tick"
-        const val EXTRA_CHANGE_1M = "change_1m"
-        const val EXTRA_CHANGE_5M = "change_5m"
-        const val EXTRA_CHANGE_15M = "change_15m"
-        const val EXTRA_FLOW = "trade_flow"
-        const val EXTRA_TREND = "trend"
-        const val EXTRA_TRADE_COUNT = "trade_count"
-        const val EXTRA_BUY_VOLUME = "buy_volume"
-        const val EXTRA_SELL_VOLUME = "sell_volume"
-        const val EXTRA_LAST_TRADE = "last_trade"
-        const val EXTRA_SNAPSHOT_TIME = "snapshot_time"
-        const val EXTRA_SOURCE_AGE = "source_age"
-        const val EXTRA_MARKET_FRESH = "market_fresh"
-        const val EXTRA_INTERNET = "internet"
-        const val EXTRA_EXCHANGE_HEALTHY = "exchange_healthy"
-        const val EXTRA_ERROR = "error"
-        const val EXTRA_POSITIONS_DETAIL = "positions_detail"
-        const val EXTRA_SCANNER = "scanner"
-        const val EXTRA_TICK = "tick"
-        const val DEFAULT_SYMBOL = "BTC/IDR"
-        const val DEFAULT_EXCHANGE = "indodax"
+        const val ACTION_START = "com.mirei.app.action.START"; const val ACTION_HOLD = "com.mirei.app.action.HOLD"; const val ACTION_STOP = "com.mirei.app.action.STOP"; const val ACTION_CLOSE_ALL = "com.mirei.app.action.CLOSE_ALL"; const val ACTION_REFRESH = "com.mirei.app.action.REFRESH"; const val ACTION_APPLY_RISK = "com.mirei.app.action.APPLY_RISK"; const val ACTION_DELETE_HISTORY = "com.mirei.app.action.DELETE_HISTORY"; const val ACTION_STATUS = "com.mirei.app.action.STATUS"
+        const val EXTRA_STATE = "state"; const val EXTRA_SYMBOL = "symbol"; const val EXTRA_EXCHANGE = "exchange"; const val EXTRA_INITIAL_ALLOCATIONS = "initial_allocations"; const val EXTRA_PRICE = "price"; const val EXTRA_BID = "bid"; const val EXTRA_ASK = "ask"; const val EXTRA_HIGH_24H = "high_24h"; const val EXTRA_LOW_24H = "low_24h"; const val EXTRA_VOLUME_24H = "volume_24h"; const val EXTRA_EQUITY = "equity"; const val EXTRA_BALANCE = "balance"; const val EXTRA_PNL = "daily_pnl"; const val EXTRA_POSITIONS = "positions"; const val EXTRA_CONFIDENCE = "confidence"; const val EXTRA_ACTION = "action"; const val EXTRA_RATIONALE = "rationale"; const val EXTRA_AGENT_SUMMARY = "agent_summary"; const val EXTRA_ENTRY_REASONS = "entry_reasons"; const val EXTRA_MOMENTUM = "momentum"; const val EXTRA_VOLATILITY = "volatility"; const val EXTRA_SENTIMENT = "sentiment"; const val EXTRA_FORECAST_CONFIDENCE = "forecast_confidence"; const val EXTRA_SPREAD = "spread"; const val EXTRA_CHANGE_TICK = "change_tick"; const val EXTRA_CHANGE_1M = "change_1m"; const val EXTRA_CHANGE_5M = "change_5m"; const val EXTRA_CHANGE_15M = "change_15m"; const val EXTRA_FLOW = "trade_flow"; const val EXTRA_TREND = "trend"; const val EXTRA_TRADE_COUNT = "trade_count"; const val EXTRA_BUY_VOLUME = "buy_volume"; const val EXTRA_SELL_VOLUME = "sell_volume"; const val EXTRA_LAST_TRADE = "last_trade"; const val EXTRA_SNAPSHOT_TIME = "snapshot_time"; const val EXTRA_SOURCE_AGE = "source_age"; const val EXTRA_MARKET_FRESH = "market_fresh"; const val EXTRA_INTERNET = "internet"; const val EXTRA_EXCHANGE_HEALTHY = "exchange_healthy"; const val EXTRA_ERROR = "error"; const val EXTRA_POSITIONS_DETAIL = "positions_detail"; const val EXTRA_SCANNER = "scanner"; const val EXTRA_TICK = "tick"
+        const val DEFAULT_SYMBOL = "BTC/IDR"; const val DEFAULT_EXCHANGE = "indodax"
         val SUPPORTED_MARKETS = listOf("BTC/IDR", "ETH/IDR", "SOL/IDR", "XRP/IDR", "DOGE/IDR", "HYPE/IDR", "SUI/IDR", "USDT/IDR")
-        val SUPPORTED_EXCHANGES = listOf("indodax", "binance", "bybit", "gate", "kraken", "okx")
-        private const val CHANNEL_ID = "mirei_runtime"
-        private const val NOTIFICATION_ID = 1001
-        private const val TICK_MS = 5_000L
-        private const val SCAN_INTERVAL_MS = 30_000L
-        private const val PREFS_NAME = "mirei_settings"
-        private const val KEY_MODE = "mode"
-        private const val KEY_MANUAL = "manual_risk"
-        private const val KEY_MANUAL_SL = "manual_sl"
-        private const val KEY_MANUAL_TP = "manual_tp"
+        val SUPPORTED_EXCHANGES = listOf("indodax", "binance", "bingx", "bitget", "bybit", "gate", "htx", "hyperliquid", "kraken", "okx")
+        private const val CHANNEL_ID = "mirei_runtime"; private const val NOTIFICATION_ID = 1001; private const val TICK_MS = 5_000L; private const val SCAN_INTERVAL_MS = 30_000L; private const val PREFS_NAME = "mirei_settings"; private const val KEY_MODE = "mode"; private const val KEY_MANUAL = "manual_risk"; private const val KEY_MANUAL_SL = "manual_sl"; private const val KEY_MANUAL_TP = "manual_tp"
     }
 }
