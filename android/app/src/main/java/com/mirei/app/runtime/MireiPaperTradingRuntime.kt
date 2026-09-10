@@ -23,6 +23,7 @@ data class PaperRuntimeStatus(
     val activePositions: List<PaperPosition>,
     val lastDecision: MireiDecision?,
     val lastExecution: ExecutionResult?,
+    val recentExecutions: List<ExecutionResult> = emptyList(),
     val dailyPnlIdr: Double,
     val consecutiveLosses: Int,
     val marketSymbol: String = "",
@@ -78,6 +79,7 @@ class MireiPaperTradingRuntime(
     private var consecutiveLosses = 0
     private var lastDecision: MireiDecision? = null
     private var lastExecution: ExecutionResult? = null
+    private var tickExecutions: MutableList<ExecutionResult> = mutableListOf()
     private var lastError: String? = null
     private var lastSnapshot: MarketSnapshot? = null
     private var lastSnapshots: Map<String, MarketSnapshot> = emptyMap()
@@ -113,6 +115,7 @@ class MireiPaperTradingRuntime(
     }
 
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
+        tickExecutions = mutableListOf()
         lastError = null
         lastTickEpochMs = nowMs
         val snapshots = managedSymbols.distinct().take(3).mapNotNull { managedSymbol -> marketData.snapshot(managedSymbol)?.let { managedSymbol to it } }.toMap()
@@ -136,12 +139,14 @@ class MireiPaperTradingRuntime(
             val decision = orchestrator.evaluate(snapshot)
             decisions[managedSymbol] = decision
             if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
-                lastExecutionForTick = engine.open(exchangeId, managedSymbol, plan, nowMs)
+                val execution = engine.open(exchangeId, managedSymbol, plan, nowMs)
+                lastExecutionForTick = execution
+                if (execution.success) tickExecutions += execution
             }
         }
         lastDecisions = decisions
         lastDecision = decisions[symbol] ?: decisions.values.firstOrNull()
-        lastExecution = lastExecutionForTick
+        lastExecution = lastExecutionForTick ?: tickExecutions.lastOrNull()
         lastEntryPlanReasons = planReasons[symbol] ?: planReasons.values.firstOrNull().orEmpty()
         status(environment, markPrices)
     }.getOrElse { error ->
@@ -155,6 +160,7 @@ class MireiPaperTradingRuntime(
     fun updateScannerSummary(summary: String) { lastScannerSummary = summary }
 
     fun closeAll(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment(), reason: String = "manual_close_all"): PaperRuntimeStatus {
+        tickExecutions = mutableListOf()
         lastTickEpochMs = nowMs
         lastError = null
         if (!environment.internetAvailable || !environment.exchangeHealthy) { lastExchangeHealthy = false; lastError = "close_all_exchange_unavailable"; lastEntryPlanReasons = listOf("close_all_exchange_unavailable"); return status(environment) }
@@ -164,6 +170,7 @@ class MireiPaperTradingRuntime(
             lastExchangeHealthy = true
             close(position.id, snapshot.price, reason, nowMs)
         }
+        lastExecution = tickExecutions.lastOrNull()
         return status(environment)
     }
 
@@ -172,7 +179,7 @@ class MireiPaperTradingRuntime(
         val prices = if (markPrices.isNotEmpty()) markPrices else lastSnapshots.mapValues { it.value.price }
         return PaperRuntimeStatus(
             availableBalanceIdr = engine.availableBalanceIdr(), equityIdr = engine.equityIdr(prices), activePositions = engine.positions(),
-            lastDecision = lastDecision, lastExecution = lastExecution, dailyPnlIdr = dailyPnlIdr, consecutiveLosses = consecutiveLosses,
+            lastDecision = lastDecision, lastExecution = lastExecution, recentExecutions = tickExecutions.toList(), dailyPnlIdr = dailyPnlIdr, consecutiveLosses = consecutiveLosses,
             marketSymbol = snapshot?.symbol.orEmpty(), marketPrice = snapshot?.price ?: 0.0, marketBidPrice = snapshot?.bidPrice ?: 0.0,
             marketAskPrice = snapshot?.askPrice ?: 0.0, marketHigh24h = snapshot?.high24h ?: 0.0, marketLow24h = snapshot?.low24h ?: 0.0,
             marketVolume24h = snapshot?.volume24h ?: 0.0, marketMomentumPercent = snapshot?.momentumPercent ?: 0.0,
@@ -205,5 +212,6 @@ class MireiPaperTradingRuntime(
         dailyPnlIdr += result.pnlIdr
         consecutiveLosses = if (result.pnlIdr < 0.0) consecutiveLosses + 1 else 0
         lastExecution = result
+        tickExecutions += result
     }
 }
