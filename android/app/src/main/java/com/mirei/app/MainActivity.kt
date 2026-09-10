@@ -61,7 +61,7 @@ class MainActivity : Activity() {
 
         val scrollView = ScrollView(this).apply {
             isFillViewport = true
-            addView(content, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         setContentView(scrollView)
     }
