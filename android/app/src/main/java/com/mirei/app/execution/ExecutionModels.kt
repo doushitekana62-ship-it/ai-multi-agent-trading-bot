@@ -30,7 +30,6 @@ data class PaperPosition(
     val id: String,
     val exchangeId: String,
     val symbol: String,
-    /** Total capital allocated to this position, including its entry fee. */
     val stakeIdr: Double,
     val entryPrice: Double,
     val stopLossPrice: Double,
@@ -43,7 +42,6 @@ data class PaperLimitOrder(
     val id: String,
     val exchangeId: String,
     val symbol: String,
-    /** Total capital reserved for this order, including its eventual entry fee. */
     val quoteAmount: Double,
     val limitPrice: Double,
     val reservedIdr: Double,
@@ -65,6 +63,55 @@ class PaperExecutionEngine(
         require(slippagePercent >= 0.0)
     }
 
+    fun seedExistingHolding(
+        exchangeId: String,
+        symbol: String,
+        quoteAmount: Double,
+        marketPrice: Double,
+        stopLossPercent: Double,
+        takeProfitPercent: Double,
+        nowMs: Long,
+    ): ExecutionResult {
+        if (quoteAmount <= 0.0 || marketPrice <= 0.0) {
+            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_initial_holding")
+        }
+        if (positions.size >= config.maxOpenPositions) {
+            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
+        }
+        if (quoteAmount > availableBalanceIdr + 1e-9) {
+            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "initial_holding_exceeds_capital")
+        }
+        require(stopLossPercent > 0.0)
+        require(takeProfitPercent > stopLossPercent)
+
+        val entryFee = quoteAmount * feePercent / (100.0 + feePercent)
+        val entryNotional = quoteAmount - entryFee
+        val position = PaperPosition(
+            id = "paper-initial-$nowMs-${positions.size + 1}",
+            exchangeId = exchangeId,
+            symbol = symbol,
+            stakeIdr = quoteAmount,
+            entryPrice = marketPrice,
+            stopLossPrice = marketPrice * (1.0 - stopLossPercent / 100.0),
+            takeProfitPrice = marketPrice * (1.0 + takeProfitPercent / 100.0),
+            trailingActivationPrice = marketPrice * (1.0 + stopLossPercent / 100.0),
+            openedAtEpochMs = nowMs,
+        )
+        tradeLedger?.recordOpened(position, entryFee)
+        availableBalanceIdr -= quoteAmount
+        positions[position.id] = position
+        return ExecutionResult(
+            success = true,
+            orderId = position.id,
+            filledAmount = entryNotional / marketPrice,
+            averagePrice = marketPrice,
+            fee = entryFee,
+            entryFee = entryFee,
+            remainingBalanceIdr = availableBalanceIdr,
+            reason = "initial_holding_seeded",
+        )
+    }
+
     fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long): ExecutionResult =
         openInternal(exchangeId, symbol, plan, nowMs, reservedIdr = 0.0)
 
@@ -75,22 +122,13 @@ class PaperExecutionEngine(
         nowMs: Long,
         reservedIdr: Double,
     ): ExecutionResult {
-        if (!plan.allowed || plan.stakeIdr <= 0.0) {
-            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
-        }
-        if (positions.size >= config.maxOpenPositions) {
-            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
-        }
-
-        // stakeIdr is the complete cash allocation for the position. The fee is paid from it,
-        // so 3 x Rp50,000 positions remain possible inside exactly Rp150,000 of paper capital.
+        if (!plan.allowed || plan.stakeIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
+        if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         val entryFee = plan.stakeIdr * feePercent / (100.0 + feePercent)
         val entryNotional = plan.stakeIdr - entryFee
         val required = plan.stakeIdr
         if (reservedIdr > 0.0) {
-            if (reservedIdr + 1e-9 < required) {
-                return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
-            }
+            if (reservedIdr + 1e-9 < required) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
         } else if (required > availableBalanceIdr) {
             return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
         }
@@ -108,12 +146,8 @@ class PaperExecutionEngine(
             executionPrice * (plan.trailingActivationPrice / plan.entryPrice),
             nowMs,
         )
-
-        // Persist first. If persistence fails, no in-memory balance or position is committed.
         tradeLedger?.recordOpened(position, entryFee)
-        if (reservedIdr <= 0.0) {
-            availableBalanceIdr -= required
-        }
+        if (reservedIdr <= 0.0) availableBalanceIdr -= required
         positions[id] = position
         return ExecutionResult(
             true,
@@ -135,8 +169,7 @@ class PaperExecutionEngine(
         nowMs: Long = System.currentTimeMillis(),
     ): ExecutionResult {
         if (marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "invalid_market_price")
-        val position = positions[positionId]
-            ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "paper_position_not_found")
+        val position = positions[positionId] ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "paper_position_not_found")
         val executionPrice = marketPrice * (1.0 - slippagePercent / 100.0)
         val entryFee = position.stakeIdr * feePercent / (100.0 + feePercent)
         val entryNotional = position.stakeIdr - entryFee
@@ -145,8 +178,6 @@ class PaperExecutionEngine(
         val exitFee = exitNotional * feePercent / 100.0
         val proceedsAfterFee = exitNotional - exitFee
         val netPnl = proceedsAfterFee - position.stakeIdr
-
-        // Persist first. A ledger failure leaves the position and balance untouched for retry/recovery.
         tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, nowMs, reason)
         availableBalanceIdr += proceedsAfterFee
         positions.remove(positionId)
@@ -205,8 +236,6 @@ class PaperExecutionEngine(
         val entryNotional = position.stakeIdr - entryFee
         mark.coerceAtLeast(0.0) * (entryNotional / position.entryPrice)
     }
-
-    /** Removes only after an external reconciliation has established that capital was already settled. */
     fun forgetPositionAfterReconciliation(positionId: String): PaperPosition? = positions.remove(positionId)
 }
 
@@ -217,22 +246,17 @@ class PaperExchangeAdapter(
 ) : ExchangeAdapter {
     override val exchangeId: String = exchangeName
     override suspend fun fetchPrice(symbol: String): Double = prices()[symbol] ?: 0.0
-
     override suspend fun placeMarketBuy(symbol: String, quoteAmount: Double): ExecutionResult {
         val price = fetchPrice(symbol)
         if (price <= 0.0) return ExecutionResult(false, error = "paper_price_unavailable")
         return engine.open(exchangeId, symbol, EntryPlan(true, price, price * 0.995, price * 1.01, price * 1.005, quoteAmount, listOf("paper_market_entry")), System.currentTimeMillis())
     }
-
-    override suspend fun placeLimitBuy(symbol: String, quoteAmount: Double, limitPrice: Double): ExecutionResult =
-        engine.placeLimit(exchangeId, symbol, quoteAmount, limitPrice, System.currentTimeMillis())
-
+    override suspend fun placeLimitBuy(symbol: String, quoteAmount: Double, limitPrice: Double): ExecutionResult = engine.placeLimit(exchangeId, symbol, quoteAmount, limitPrice, System.currentTimeMillis())
     override suspend fun closePosition(positionId: String, reason: String): ExecutionResult {
         val position = engine.position(positionId) ?: return ExecutionResult(false, reason = reason, error = "paper_position_not_found")
         val price = fetchPrice(position.symbol)
         return engine.close(positionId, price, reason)
     }
-
     fun paperEngine(): PaperExecutionEngine = engine
 }
 
