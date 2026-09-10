@@ -181,7 +181,7 @@ class MireiUiPatchApplication : Application() {
 
         val dialog = AlertDialog.Builder(activity)
             .setTitle("MULAI SESI PAPER")
-            .setView(scroll, 0, 0, 0, 0)
+            .setView(scroll)
             .setNegativeButton("BATAL", null)
             .setPositiveButton("MULAI", null)
             .create()
