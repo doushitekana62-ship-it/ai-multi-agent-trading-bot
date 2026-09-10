@@ -66,6 +66,29 @@ class TradingConfigRiskTargetsTest {
     }
 
     @Test
+    fun manualTpSlWithInitialCapitalUsesTheFirstBuyAsTheMonetaryReference() {
+        val config = TradingConfig(
+            mode = ScalpingMode.AGGRESSIVE,
+            manualRiskMode = ManualRiskMode.MANUAL,
+            manualStopLossPercent = 0.50,
+            manualTakeProfitPercent = 1.00,
+            riskReferenceMode = RiskReferenceMode.INITIAL_CAPITAL,
+        )
+
+        val targets = config.calculateRiskTargets(
+            entryPrice = 43_283_000.0,
+            stakeIdr = 50_000.0,
+            initialCapitalIdr = 50_000.0,
+        )
+
+        assertEquals(50_000.0, targets.referenceCapitalIdr, 1e-9)
+        assertEquals(250.0, targets.stopLossAmountIdr, 1e-9)
+        assertEquals(500.0, targets.takeProfitAmountIdr, 1e-9)
+        assertEquals(43_715_830.0, targets.takeProfitPrice, 1e-6)
+        assertEquals(43_066_585.0, targets.stopLossPrice, 1e-6)
+    }
+
+    @Test
     fun referenceModeOnlyChangesExitTargetsNotEntryGateDecisionInputs() {
         val snapshot = MarketSnapshot(
             symbol = "TEST/IDR",
@@ -115,6 +138,7 @@ class TradingConfigRiskTargetsTest {
             dailyStartBalanceIdr = 150_000.0,
             equityIdr = 150_000.0,
             openPositions = 0,
+            holdDecisionCount = 0,
             consecutiveLosses = 0,
             marketDataFresh = true,
             exchangeHealthy = true,
