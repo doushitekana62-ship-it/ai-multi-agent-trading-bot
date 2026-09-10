@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -31,6 +32,8 @@ import java.util.Locale
  *
  * It keeps MainActivity's existing controls and runtime behavior intact, but
  * replaces only the Start button's cramped dialog with a scrollable form.
+ * The dialog title and action buttons stay outside the scroll area so the
+ * primary MULAI action is always reachable while the form itself scrolls.
  */
 class MireiUiPatchApplication : Application() {
     override fun onCreate() {
@@ -76,15 +79,21 @@ class MireiUiPatchApplication : Application() {
     private fun showStartDialog(activity: Activity) {
         val prefs = activity.getSharedPreferences("mirei_settings", Context.MODE_PRIVATE)
         val numberFormat = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }
-        val scroll = ScrollView(activity).apply { isFillViewport = true }
+        val scroll = ScrollView(activity).apply {
+            isFillViewport = false
+            clipToPadding = true
+            setPadding(0, 0, 0, 4)
+        }
         val outer = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16, 8, 16, 12)
+            setPadding(16, 4, 16, 14)
         }
         scroll.addView(outer, ViewGroup.LayoutParams(-1, -2))
 
+        outer.addView(label(activity, "Konfigurasi sesi sebelum runtime dimulai.", false))
+
         outer.addView(label(activity, "1. COIN & MODAL", true))
-        outer.addView(label(activity, "Pilih 1–3 coin. Modal pada baris coin menjadi modal beli pertama. Form dapat di-scroll; tombol MULAI tetap di bawah dialog.", false))
+        outer.addView(label(activity, "Pilih 1–3 coin. Modal pada baris coin menjadi modal beli pertama dan dapat menjadi acuan TP/SL.", false))
 
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         val rows = MireiForegroundService.SUPPORTED_MARKETS.mapIndexed { index, market ->
@@ -106,7 +115,7 @@ class MireiUiPatchApplication : Application() {
             val row = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = android.view.Gravity.CENTER_VERTICAL
-                setPadding(4, 5, 4, 5)
+                setPadding(4, 4, 4, 4)
             }
             row.addView(check, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(amount, LinearLayout.LayoutParams(132, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -165,22 +174,28 @@ class MireiUiPatchApplication : Application() {
         }
         fields.addView(slField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = 10 })
         fields.addView(tpField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        fields.visibility = if (manualSwitch.isChecked) View.VISIBLE else View.GONE
+        manualSwitch.setOnCheckedChangeListener { _, checked -> fields.visibility = if (checked) View.VISIBLE else View.GONE }
         outer.addView(fields)
         outer.addView(infoCard(activity, "AGGRESSIVE tetap memakai gate Mirei dan forecast. Jika TP/SL MANUAL aktif, angka di sini menjadi override; BALANCED dan SAFETY tidak diubah."))
 
         val dialog = AlertDialog.Builder(activity)
             .setTitle("MULAI SESI PAPER")
-            .setMessage("Konfigurasi sesi sebelum runtime dimulai.")
-            .setView(scroll)
+            .setView(scroll, 0, 0, 0, 0)
             .setNegativeButton("BATAL", null)
             .setPositiveButton("MULAI", null)
             .create()
 
         dialog.setOnShowListener {
-            dialog.window?.setLayout(
-                (activity.resources.displayMetrics.widthPixels * 0.94f).toInt(),
-                (activity.resources.displayMetrics.heightPixels * 0.88f).toInt()
-            )
+            dialog.window?.apply {
+                setLayout(
+                    (activity.resources.displayMetrics.widthPixels * 0.94f).toInt(),
+                    (activity.resources.displayMetrics.heightPixels * 0.90f).toInt()
+                )
+                setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).minHeight = 52
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).minHeight = 52
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val selected = rows.mapNotNull { (market, pair) ->
                     val (check, amount) = pair
@@ -188,11 +203,13 @@ class MireiUiPatchApplication : Application() {
                     else amount.text.toString().toDoubleOrNull()?.takeIf { it > 0.0 }?.let { market to it }
                 }
                 if (selected.isEmpty() || selected.size > 3) {
+                    dialog.setTitle("MULAI SESI PAPER · PERIKSA INPUT")
                     dialog.setMessage("Pilih minimal 1 dan maksimal 3 coin, dengan modal > 0.")
                     return@setOnClickListener
                 }
                 val total = selected.sumOf { it.second }
                 if (total > 150_000.0 + 1e-6) {
+                    dialog.setTitle("MULAI SESI PAPER · PERIKSA INPUT")
                     dialog.setMessage("Total modal Rp ${numberFormat.format(total)} melebihi Rp150.000.")
                     return@setOnClickListener
                 }
@@ -200,6 +217,7 @@ class MireiUiPatchApplication : Application() {
                 val sl = slField.text.toString().toDoubleOrNull()
                 val tp = tpField.text.toString().toDoubleOrNull()
                 if (manual && (sl == null || tp == null || sl <= 0.0 || tp <= sl)) {
+                    dialog.setTitle("MULAI SESI PAPER · PERIKSA INPUT")
                     dialog.setMessage("TP manual harus lebih besar dari SL manual dan keduanya harus > 0.")
                     return@setOnClickListener
                 }
