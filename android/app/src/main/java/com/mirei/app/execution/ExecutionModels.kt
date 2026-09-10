@@ -142,6 +142,15 @@ class PaperExecutionEngine(
         positions.entries.forEach { (id, position) -> positions[id] = position.copy(stopLossPrice = position.entryPrice * (1.0 - stopLossPercent / 100.0), takeProfitPrice = position.entryPrice * (1.0 + takeProfitPercent / 100.0), trailingActivationPrice = position.entryPrice * (1.0 + stopLossPercent / 100.0)) }
     }
 
+    fun updateTrailingStop(positionId: String, newStopLossPrice: Double): Boolean {
+        if (newStopLossPrice <= 0.0) return false
+        val position = positions[positionId] ?: return false
+        if (newStopLossPrice <= position.stopLossPrice) return false
+        if (newStopLossPrice >= position.entryPrice * 1.000001 && newStopLossPrice > position.takeProfitPrice) return false
+        positions[positionId] = position.copy(stopLossPrice = newStopLossPrice)
+        return true
+    }
+
     fun position(positionId: String): PaperPosition? = positions[positionId]
     fun positionCount(): Int = positions.size
     fun positions(): List<PaperPosition> = positions.values.toList()
