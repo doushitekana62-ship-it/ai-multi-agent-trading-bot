@@ -4,6 +4,7 @@ import com.mirei.app.agents.AgentAction
 import com.mirei.app.agents.DefaultMireiAgents
 import com.mirei.app.agents.MireiDecision
 import com.mirei.app.agents.MireiOrchestrator
+import com.mirei.app.core.ExitPolicy
 import com.mirei.app.core.MarketSnapshot
 import com.mirei.app.core.MireiDecisionEngine
 import com.mirei.app.core.RiskSnapshot
@@ -91,6 +92,7 @@ class MireiPaperTradingRuntime(
 ) {
     private var config = config
     private var decisionEngine = decisionEngine
+    private var exitPolicy = ExitPolicy(config)
     private val dailyStartBalanceIdr = config.totalCapitalIdr
     private var dailyPnlIdr = 0.0
     private var consecutiveLosses = 0
@@ -116,6 +118,7 @@ class MireiPaperTradingRuntime(
         require(newConfig.maxOpenPositions == config.maxOpenPositions) { "paper_position_limit_immutable_while_running" }
         config = newConfig
         decisionEngine = MireiDecisionEngine(newConfig)
+        exitPolicy = ExitPolicy(newConfig)
         engine.updateRiskTargets(newConfig.effectiveStopLossPercent(), newConfig.effectiveTakeProfitPercent())
     }
 
@@ -212,7 +215,10 @@ class MireiPaperTradingRuntime(
         if (fresh.isEmpty()) { lastEntryPlanReasons = listOf("market_snapshot_stale"); return status(environment) }
         val markPrices = fresh.mapValues { it.value.price }
 
-        fresh.forEach { (managedSymbol, snapshot) -> closeTriggeredPositions(managedSymbol, snapshot.price, nowMs) }
+        fresh.forEach { (managedSymbol, snapshot) ->
+            applyTrailingProtection(managedSymbol, snapshot)
+            closeTriggeredPositions(managedSymbol, snapshot.price, nowMs)
+        }
 
         val riskSnapshot = RiskSnapshot(
             dailyPnlIdr = dailyPnlIdr,
@@ -320,6 +326,23 @@ class MireiPaperTradingRuntime(
     }
 
     fun paperEngine(): PaperExecutionEngine = engine
+
+    private fun applyTrailingProtection(managedSymbol: String, snapshot: MarketSnapshot) {
+        engine.positions().filter { it.symbol == managedSymbol }.forEach { position ->
+            val initialStop = (2.0 * position.entryPrice - position.trailingActivationPrice).coerceAtLeast(0.00000001)
+            val plan = exitPolicy.evaluate(
+                entryPrice = position.entryPrice,
+                currentPrice = snapshot.price,
+                initialStopLossPrice = initialStop,
+                initialTakeProfitPrice = position.takeProfitPrice,
+                atrPercent = snapshot.volatilityPercent,
+                recentSwingLow = null,
+            )
+            if (plan.trailingStopPrice != null && plan.breakevenApplied) {
+                engine.updateTrailingStop(position.id, plan.trailingStopPrice)
+            }
+        }
+    }
 
     private fun closeTriggeredPositions(managedSymbol: String, marketPrice: Double, nowMs: Long) {
         engine.positions().filter { it.symbol == managedSymbol }.forEach { position ->
