@@ -11,12 +11,13 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import com.mirei.app.core.MireiState
+import com.mirei.app.core.TradingConfig
 import com.mirei.app.storage.TradeLedgerFactory
 
 class MireiForegroundService : Service() {
     private val controller = MireiRuntimeController()
-    private val config = com.mirei.app.core.TradingConfig()
-    private val symbol = "BTC/IDR"
+    private val config = TradingConfig()
+    private var symbol = DEFAULT_SYMBOL
     private lateinit var workerThread: HandlerThread
     private lateinit var worker: Handler
     private lateinit var runtime: MireiPaperTradingRuntime
@@ -34,12 +35,7 @@ class MireiForegroundService : Service() {
             workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
             worker = Handler(workerThread.looper)
             marketData = IndodaxMarketDataSource()
-            runtime = MireiPaperTradingRuntime(
-                config = config,
-                marketData = marketData,
-                tradeLedger = TradeLedgerFactory.create(this),
-                symbol = symbol,
-            )
+            createRuntime()
 
             val connectivity = getSystemService(ConnectivityManager::class.java)
             connectivityManager = connectivity
@@ -66,9 +62,14 @@ class MireiForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            startForeground(NOTIFICATION_ID, notification("Mirei ${controller.state.name}"))
+            startForeground(NOTIFICATION_ID, notification("Mirei ${controller.state.name} · $symbol"))
             when (intent?.action) {
                 ACTION_START -> {
+                    val requestedSymbol = intent.getStringExtra(EXTRA_SYMBOL)
+                    if (controller.state != MireiState.RUNNING && requestedSymbol != null && requestedSymbol in SUPPORTED_MARKETS) {
+                        symbol = requestedSymbol
+                        createRuntime()
+                    }
                     controller.start()
                     worker.removeCallbacksAndMessages(null)
                     worker.post(runtimeLoop)
@@ -105,6 +106,15 @@ class MireiForegroundService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun createRuntime() {
+        runtime = MireiPaperTradingRuntime(
+            config = config,
+            marketData = marketData,
+            tradeLedger = TradeLedgerFactory.create(this),
+            symbol = symbol,
+        )
+    }
+
     private val runtimeLoop = object : Runnable {
         override fun run() {
             if (controller.state != MireiState.RUNNING) return
@@ -138,7 +148,13 @@ class MireiForegroundService : Service() {
     private fun publishStatus(status: PaperRuntimeStatus) {
         val intent = Intent(ACTION_STATUS).setPackage(packageName).apply {
             putExtra(EXTRA_STATE, controller.state.name)
+            putExtra(EXTRA_SYMBOL, status.marketSymbol)
             putExtra(EXTRA_PRICE, status.marketPrice)
+            putExtra(EXTRA_BID, status.marketBidPrice)
+            putExtra(EXTRA_ASK, status.marketAskPrice)
+            putExtra(EXTRA_HIGH_24H, status.marketHigh24h)
+            putExtra(EXTRA_LOW_24H, status.marketLow24h)
+            putExtra(EXTRA_VOLUME_24H, status.marketVolume24h)
             putExtra(EXTRA_EQUITY, status.equityIdr)
             putExtra(EXTRA_BALANCE, status.availableBalanceIdr)
             putExtra(EXTRA_PNL, status.dailyPnlIdr)
@@ -146,13 +162,27 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_CONFIDENCE, status.lastDecision?.confidence ?: 0.0)
             putExtra(EXTRA_ACTION, status.lastDecision?.action?.name ?: "HOLD")
             putExtra(EXTRA_RATIONALE, status.lastDecision?.rationale ?: "no_decision")
-            putExtra(EXTRA_AGENT_SUMMARY, status.lastDecision?.observations?.joinToString(" | ") {
+            putExtra(EXTRA_AGENT_SUMMARY, status.lastDecision?.observations?.joinToString("\n") {
                 "${it.agent.name}:${it.action.name} ${(it.confidence * 100).toInt()}% ${it.rationale}"
             } ?: "")
             putExtra(EXTRA_ENTRY_REASONS, status.entryPlanReasons.joinToString(" | "))
             putExtra(EXTRA_MOMENTUM, status.marketMomentumPercent)
+            putExtra(EXTRA_VOLATILITY, status.marketVolatilityPercent)
             putExtra(EXTRA_SENTIMENT, status.marketSentimentScore)
             putExtra(EXTRA_FORECAST_CONFIDENCE, status.forecastConfidence)
+            putExtra(EXTRA_SPREAD, status.marketSpreadPercent)
+            putExtra(EXTRA_CHANGE_TICK, status.changeSinceLastTickPercent)
+            putExtra(EXTRA_CHANGE_1M, status.change1mPercent)
+            putExtra(EXTRA_CHANGE_5M, status.change5mPercent)
+            putExtra(EXTRA_CHANGE_15M, status.change15mPercent)
+            putExtra(EXTRA_FLOW, status.tradeFlowPercent)
+            putExtra(EXTRA_TREND, status.trendScorePercent)
+            putExtra(EXTRA_TRADE_COUNT, status.tradeCount)
+            putExtra(EXTRA_BUY_VOLUME, status.buyVolume)
+            putExtra(EXTRA_SELL_VOLUME, status.sellVolume)
+            putExtra(EXTRA_LAST_TRADE, status.lastTradeEpochMs)
+            putExtra(EXTRA_SNAPSHOT_TIME, status.snapshotEpochMs)
+            putExtra(EXTRA_SOURCE_AGE, status.sourceAgeMs)
             putExtra(EXTRA_MARKET_FRESH, status.marketDataFresh)
             putExtra(EXTRA_INTERNET, status.internetAvailable)
             putExtra(EXTRA_EXCHANGE_HEALTHY, status.exchangeHealthy)
@@ -160,7 +190,7 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_TICK, status.lastTickEpochMs)
         }
         sendBroadcast(intent)
-        publish("Mirei ${controller.state.name} · ${status.activePositions.size} position(s)")
+        publish("Mirei ${controller.state.name} · $symbol · ${status.activePositions.size} position(s)")
     }
 
     private fun publishHealth() {
@@ -188,7 +218,13 @@ class MireiForegroundService : Service() {
         const val ACTION_CLOSE_ALL = "com.mirei.app.action.CLOSE_ALL"
         const val ACTION_STATUS = "com.mirei.app.action.STATUS"
         const val EXTRA_STATE = "state"
+        const val EXTRA_SYMBOL = "symbol"
         const val EXTRA_PRICE = "price"
+        const val EXTRA_BID = "bid"
+        const val EXTRA_ASK = "ask"
+        const val EXTRA_HIGH_24H = "high_24h"
+        const val EXTRA_LOW_24H = "low_24h"
+        const val EXTRA_VOLUME_24H = "volume_24h"
         const val EXTRA_EQUITY = "equity"
         const val EXTRA_BALANCE = "balance"
         const val EXTRA_PNL = "daily_pnl"
@@ -199,13 +235,29 @@ class MireiForegroundService : Service() {
         const val EXTRA_AGENT_SUMMARY = "agent_summary"
         const val EXTRA_ENTRY_REASONS = "entry_reasons"
         const val EXTRA_MOMENTUM = "momentum"
+        const val EXTRA_VOLATILITY = "volatility"
         const val EXTRA_SENTIMENT = "sentiment"
         const val EXTRA_FORECAST_CONFIDENCE = "forecast_confidence"
+        const val EXTRA_SPREAD = "spread"
+        const val EXTRA_CHANGE_TICK = "change_tick"
+        const val EXTRA_CHANGE_1M = "change_1m"
+        const val EXTRA_CHANGE_5M = "change_5m"
+        const val EXTRA_CHANGE_15M = "change_15m"
+        const val EXTRA_FLOW = "trade_flow"
+        const val EXTRA_TREND = "trend"
+        const val EXTRA_TRADE_COUNT = "trade_count"
+        const val EXTRA_BUY_VOLUME = "buy_volume"
+        const val EXTRA_SELL_VOLUME = "sell_volume"
+        const val EXTRA_LAST_TRADE = "last_trade"
+        const val EXTRA_SNAPSHOT_TIME = "snapshot_time"
+        const val EXTRA_SOURCE_AGE = "source_age"
         const val EXTRA_MARKET_FRESH = "market_fresh"
         const val EXTRA_INTERNET = "internet"
         const val EXTRA_EXCHANGE_HEALTHY = "exchange_healthy"
         const val EXTRA_ERROR = "error"
         const val EXTRA_TICK = "tick"
+        const val DEFAULT_SYMBOL = "BTC/IDR"
+        val SUPPORTED_MARKETS = listOf("BTC/IDR", "ETH/IDR", "SOL/IDR", "XRP/IDR", "DOGE/IDR", "HYPE/IDR", "SUI/IDR", "USDT/IDR")
         private const val CHANNEL_ID = "mirei_runtime"
         private const val NOTIFICATION_ID = 1001
         private const val TICK_MS = 5_000L
