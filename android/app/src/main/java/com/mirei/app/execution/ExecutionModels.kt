@@ -42,6 +42,11 @@ data class PaperPosition(
 
 data class PaperLimitOrder(val id: String, val exchangeId: String, val symbol: String, val quoteAmount: Double, val limitPrice: Double, val reservedIdr: Double, val createdAtEpochMs: Long)
 
+data class PaperEngineState(
+    val availableBalanceIdr: Double,
+    val positions: List<PaperPosition>,
+)
+
 class PaperExecutionEngine(
     private val config: TradingConfig = TradingConfig(),
     private val feePercent: Double = 0.3,
@@ -144,6 +149,19 @@ class PaperExecutionEngine(
     fun availableBalanceIdr(): Double = availableBalanceIdr
     fun reservedBalanceIdr(): Double = limitOrders.values.sumOf { it.reservedIdr }
     fun equityIdr(markPrices: Map<String, Double>): Double = availableBalanceIdr + reservedBalanceIdr() + positions.values.sumOf { position -> val mark = markPrices[position.symbol] ?: position.entryPrice; val entryFee = if (position.entryReason == "initial_holding") 0.0 else position.stakeIdr * feePercent / (100.0 + feePercent); val entryNotional = position.stakeIdr - entryFee; mark.coerceAtLeast(0.0) * (entryNotional / position.entryPrice) }
+
+    fun snapshotState(): PaperEngineState = PaperEngineState(availableBalanceIdr, positions.values.toList())
+
+    fun restoreState(state: PaperEngineState) {
+        require(state.availableBalanceIdr >= 0.0) { "invalid_paper_balance_state" }
+        require(state.positions.size <= config.maxOpenPositions) { "paper_position_limit" }
+        positions.clear()
+        limitOrders.clear()
+        state.positions.forEach { position -> require(position.stakeIdr > 0.0 && position.entryPrice > 0.0); positions[position.id] = position }
+        availableBalanceIdr = state.availableBalanceIdr
+        positionSequence = state.positions.mapNotNull { it.id.substringAfterLast('-').toLongOrNull() }.maxOrNull() ?: 0L
+    }
+
     fun forgetPositionAfterReconciliation(positionId: String): PaperPosition? = positions.remove(positionId)
     private fun nextPositionId(prefix: String, nowMs: Long): String { positionSequence += 1; return "$prefix-$nowMs-$positionSequence" }
 }
