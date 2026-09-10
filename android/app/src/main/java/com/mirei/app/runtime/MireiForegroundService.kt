@@ -55,10 +55,7 @@ class MireiForegroundService : Service() {
                 ACTION_HOLD -> { controller.hold(); worker.removeCallbacksAndMessages(null); publishHealth() }
                 ACTION_STOP -> { controller.stop(); worker.removeCallbacksAndMessages(null); publishHealth(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
                 ACTION_CLOSE_ALL -> closeAll()
-                ACTION_REFRESH -> worker.post {
-                    if (controller.state == MireiState.RUNNING) { val status = runtime.tick(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)); publishStatus(status); persistDecisions(status) }
-                    else { runScanner(); publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))) }
-                }
+                ACTION_REFRESH -> worker.post { if (controller.state == MireiState.RUNNING) { val status = runtime.tick(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)); publishStatus(status); persistDecisions(status) } else { runScanner(); publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))) } }
                 ACTION_APPLY_RISK -> worker.post { applyRisk(); publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))) }
                 ACTION_DELETE_HISTORY -> { MireiDatabase(this).clearHistory(); publishHealth() }
             }
@@ -120,9 +117,9 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_SCANNER, status.scannerSummary); putExtra(EXTRA_TICK, status.lastTickEpochMs)
         }
         sendBroadcast(intent)
-        val action = status.lastDecision?.action?.name ?: "HOLD"; val execution = status.lastExecution
-        val event = when { !status.lastError.isNullOrBlank() -> "ERROR · ${status.lastError}"; execution?.success == true -> "${execution.reason ?: "execution"} · PnL Rp ${"%.0f".format(java.util.Locale.US, execution.pnlIdr)}"; else -> "decision $action ${(status.lastDecision?.confidence ?: 0.0) * 100.0 .let { "%.0f".format(java.util.Locale.US, it) }}%" }
-        publish("$event · ${status.activePositions.size} position(s) · ${symbol}")
+        val action = status.lastDecision?.action?.name ?: "HOLD"; val confidencePct = ((status.lastDecision?.confidence ?: 0.0) * 100.0).toInt(); val execution = status.lastExecution
+        val event = when { !status.lastError.isNullOrBlank() -> "ERROR · ${status.lastError}"; execution?.success == true -> "${execution.reason ?: "execution"} · PnL Rp ${"%.0f".format(java.util.Locale.US, execution.pnlIdr)}"; else -> "decision $action ${confidencePct}%" }
+        publish("$event · ${status.activePositions.size} position(s) · $symbol")
     }
 
     private fun publishHealth() = publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)))
