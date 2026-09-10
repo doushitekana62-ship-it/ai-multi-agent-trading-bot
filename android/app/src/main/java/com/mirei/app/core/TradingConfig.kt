@@ -7,7 +7,7 @@ data class TradingConfig(
     val positionSizeIdr: Double = 50_000.0,
     val maxOpenPositions: Int = 3,
     val baseStopLossPercent: Double = 0.25,
-    val baseTakeProfitPercent: Double = 0.60,
+    val baseTakeProfitPercent: Double = 0.85,
     val sentimentHoldThreshold: Double = -30.0,
     val trailingActivationR: Double = 1.0,
     val maxDailyLossPercent: Double = 3.0,
@@ -46,9 +46,9 @@ data class TradingConfig(
     fun effectiveTakeProfitPercent(): Double = when (manualRiskMode) {
         ManualRiskMode.MANUAL -> manualTakeProfitPercent!!
         ManualRiskMode.AUTO -> when (mode) {
-            ScalpingMode.AGGRESSIVE -> 0.50
-            ScalpingMode.BALANCED -> 0.60
-            ScalpingMode.SAFETY -> 0.70
+            ScalpingMode.AGGRESSIVE -> 0.95
+            ScalpingMode.BALANCED -> 0.85
+            ScalpingMode.SAFETY -> 0.75
         }
     }
 }
