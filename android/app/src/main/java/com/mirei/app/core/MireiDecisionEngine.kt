@@ -64,16 +64,23 @@ class MireiDecisionEngine(
         } else {
             (baseStop / volatilityFactor).coerceIn(baseStop * 0.50, baseStop)
         }
-        val stop = snapshot.price * (1.0 - riskLossPercent / 100.0)
-        val target = snapshot.price * (1.0 + baseTake / 100.0)
-        val activation = snapshot.price * (1.0 + (riskLossPercent * config.trailingActivationR) / 100.0)
         val stake = minOf(config.positionSizeIdr * risk.positionMultiplier, config.totalCapitalIdr / config.maxOpenPositions)
+
+        // The single automatic choice is calculated from both actual entry price
+        // and allocated capital. Manual mode keeps the explicit percentage override.
+        val targets = config.calculateRiskTargets(
+            entryPrice = snapshot.price,
+            stakeIdr = stake,
+            stopLossPercent = riskLossPercent,
+            takeProfitPercent = baseTake,
+        )
+        val activation = snapshot.price * (1.0 + (riskLossPercent * config.trailingActivationR) / 100.0)
 
         return EntryPlan(
             allowed = true,
             entryPrice = snapshot.price,
-            stopLossPrice = stop,
-            takeProfitPrice = target,
+            stopLossPrice = targets.stopLossPrice,
+            takeProfitPrice = targets.takeProfitPrice,
             trailingActivationPrice = activation,
             stakeIdr = stake,
             reasons = listOf("mirei_entry_gates_passed"),
