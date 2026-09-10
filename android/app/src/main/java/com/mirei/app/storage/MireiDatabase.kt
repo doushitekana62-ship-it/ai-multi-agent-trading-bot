@@ -20,8 +20,10 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     fun recordTradeOpened(position: PaperPosition, entryFeeIdr: Double) {
         require(entryFeeIdr >= 0.0)
         writableDatabase.insertOrThrow("trades", null, ContentValues().apply {
-            put("id", position.id); put("exchange_id", position.exchangeId); put("symbol", position.symbol); put("side", "BUY"); put("status", "OPEN")
-            put("entry_price", position.entryPrice); put("stake_idr", position.stakeIdr); put("fee_idr", entryFeeIdr); put("pnl_idr", 0.0); put("opened_at", position.openedAtEpochMs)
+            put("id", position.id); put("exchange_id", position.exchangeId); put("symbol", position.symbol)
+            put("side", if (position.id.startsWith("paper-initial-")) "INITIAL_HOLDING" else "BUY")
+            put("status", "OPEN"); put("entry_price", position.entryPrice); put("stake_idr", position.stakeIdr)
+            put("fee_idr", entryFeeIdr); put("pnl_idr", 0.0); put("opened_at", position.openedAtEpochMs)
         })
     }
 
@@ -32,10 +34,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     }
 
     fun recordAudit(eventType: String, details: String, nowMs: Long = System.currentTimeMillis()) = writableDatabase.insertOrThrow("audit_log", null, ContentValues().apply { put("created_at", nowMs); put("event_type", eventType); put("details", details) })
-
-    fun recordSuggestion(symbol: String, action: String, confidence: Double, reason: String, nowMs: Long = System.currentTimeMillis()): Long = writableDatabase.insertOrThrow("suggestions", null, ContentValues().apply {
-        put("created_at", nowMs); put("symbol", symbol); put("action", action); put("confidence", confidence); put("reason", reason)
-    })
+    fun recordSuggestion(symbol: String, action: String, confidence: Double, reason: String, nowMs: Long = System.currentTimeMillis()): Long = writableDatabase.insertOrThrow("suggestions", null, ContentValues().apply { put("created_at", nowMs); put("symbol", symbol); put("action", action); put("confidence", confidence); put("reason", reason) })
 
     fun recentTrades(limit: Int = 30): List<TradeRow> {
         val rows = mutableListOf<TradeRow>()
@@ -70,7 +69,6 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     private fun android.database.Cursor.getLongOrNull(index: Int): Long? = if (isNull(index)) null else getLong(index)
     private fun android.database.Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
     private fun Map<String, Int>.get(key: String): Int = checkNotNull(this[key])
-
     companion object { private const val DB_NAME = "mirei.db"; private const val DB_VERSION = 2 }
 }
 
