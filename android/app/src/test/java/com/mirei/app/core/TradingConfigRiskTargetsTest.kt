@@ -98,4 +98,40 @@ class TradingConfigRiskTargetsTest {
         assertEquals(entryPlan.stakeIdr, capitalPlan.stakeIdr, 1e-9)
         assertNotEquals(entryPlan.riskReferenceMode, capitalPlan.riskReferenceMode)
     }
+
+    @Test
+    fun extremeInitialCapitalCannotChangeEntryGateOutcome() {
+        val snapshot = MarketSnapshot(
+            symbol = "TEST/IDR",
+            price = 100_000.0,
+            momentumPercent = 4.0,
+            volatilityPercent = 0.5,
+            sentimentScore = 5.0,
+            forecastConfidence = 0.80,
+            dataFresh = true,
+        )
+        val risk = RiskSnapshot(
+            dailyPnlIdr = 0.0,
+            dailyStartBalanceIdr = 150_000.0,
+            equityIdr = 150_000.0,
+            openPositions = 0,
+            consecutiveLosses = 0,
+            marketDataFresh = true,
+            exchangeHealthy = true,
+            internetAvailable = true,
+        )
+        val entryEngine = MireiDecisionEngine(TradingConfig(riskReferenceMode = RiskReferenceMode.ENTRY_PRICE))
+        val capitalEngine = MireiDecisionEngine(TradingConfig(riskReferenceMode = RiskReferenceMode.INITIAL_CAPITAL))
+
+        val entryPlan = entryEngine.buildEntryPlan(snapshot, risk, initialCapitalIdr = 50_000.0)
+        val capitalPlan = capitalEngine.buildEntryPlan(snapshot, risk, initialCapitalIdr = 500_000.0)
+
+        assertEquals(true, entryPlan.allowed)
+        assertEquals(entryPlan.allowed, capitalPlan.allowed)
+        assertEquals(entryPlan.reasons, capitalPlan.reasons)
+        assertEquals(entryPlan.entryPrice, capitalPlan.entryPrice, 1e-9)
+        assertEquals(entryPlan.stakeIdr, capitalPlan.stakeIdr, 1e-9)
+        assertEquals(RiskReferenceMode.ENTRY_PRICE, entryPlan.riskReferenceMode)
+        assertEquals(RiskReferenceMode.INITIAL_CAPITAL, capitalPlan.riskReferenceMode)
+    }
 }
