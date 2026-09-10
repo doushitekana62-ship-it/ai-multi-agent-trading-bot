@@ -1,17 +1,17 @@
 package com.mirei.app.core
 
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
 
 class ExitPolicyTest {
     @Test
     fun baselineRiskTargetsMatchMireiRequirement() {
         val config = TradingConfig()
-        assertEquals(0.50, config.baseStopLossPercent)
-        assertEquals(1.00, config.baseTakeProfitPercent)
-        assertEquals(1.0, config.trailingActivationR)
-        assertEquals(3.0, config.maxDailyLossPercent)
+        assertEquals(0.50, config.baseStopLossPercent, 0.000001)
+        assertEquals(1.00, config.baseTakeProfitPercent, 0.000001)
+        assertEquals(1.0, config.trailingActivationR, 0.000001)
+        assertEquals(3.0, config.maxDailyLossPercent, 0.000001)
         assertEquals(3, config.maxConsecutiveLosses)
     }
 
