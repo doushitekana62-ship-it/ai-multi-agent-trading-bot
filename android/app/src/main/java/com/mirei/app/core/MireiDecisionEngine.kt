@@ -19,6 +19,7 @@ data class MarketSnapshot(
     val change5mPercent: Double = 0.0,
     val change15mPercent: Double = 0.0,
     val tradeFlowPercent: Double = 0.0,
+    val trendScorePercent: Double = 0.0,
     val tradeCount: Int = 0,
     val buyVolume: Double = 0.0,
     val sellVolume: Double = 0.0,
