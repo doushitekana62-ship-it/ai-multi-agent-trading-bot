@@ -8,6 +8,23 @@ data class MarketSnapshot(
     val sentimentScore: Double,
     val forecastConfidence: Double,
     val dataFresh: Boolean,
+    val bidPrice: Double = price,
+    val askPrice: Double = price,
+    val high24h: Double = price,
+    val low24h: Double = price,
+    val volume24h: Double = 0.0,
+    val spreadPercent: Double = 0.0,
+    val changeSinceLastTickPercent: Double = 0.0,
+    val change1mPercent: Double = 0.0,
+    val change5mPercent: Double = 0.0,
+    val change15mPercent: Double = 0.0,
+    val tradeFlowPercent: Double = 0.0,
+    val tradeCount: Int = 0,
+    val buyVolume: Double = 0.0,
+    val sellVolume: Double = 0.0,
+    val lastTradeEpochMs: Long = 0L,
+    val snapshotEpochMs: Long = 0L,
+    val sourceAgeMs: Long = 0L,
 )
 
 data class EntryPlan(
