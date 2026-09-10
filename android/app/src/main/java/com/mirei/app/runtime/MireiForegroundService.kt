@@ -59,28 +59,10 @@ class MireiForegroundService : Service() {
             marketData = IndodaxMarketDataSource()
             val saved = sessionStore.load()
             if (saved != null && saved.active) {
-                sessionStarted = true
-                sessionCreatedAtEpochMs = saved.sessionCreatedAtEpochMs
-                runStartedAtEpochMs = saved.runStartedAtEpochMs
-                runStoppedAtEpochMs = saved.runStoppedAtEpochMs
-                timestampResetAtEpochMs = saved.timestampResetAtEpochMs
-                symbol = saved.symbol.ifBlank { DEFAULT_SYMBOL }
-                exchangeId = saved.exchangeId.ifBlank { DEFAULT_EXCHANGE }
-                managedSymbols = saved.managedSymbols.ifEmpty { listOf(symbol) }.take(3)
+                restoreSessionMetadata(saved)
             }
             createRuntime()
-            if (saved != null && saved.active) {
-                runtime.restoreState(PaperRuntimePersistence(
-                    engineState = PaperEngineState(saved.availableBalanceIdr, saved.positions),
-                    dailyPnlIdr = saved.dailyPnlIdr,
-                    consecutiveLosses = saved.consecutiveLosses,
-                    holdingsSeeded = saved.holdingsSeeded,
-                    buyDecisionCount = saved.buyDecisionCount,
-                    holdDecisionCount = saved.holdDecisionCount,
-                    sellDecisionCount = saved.sellDecisionCount,
-                    initialCapitalBySymbol = saved.initialCapitalBySymbol,
-                ))
-            }
+            if (saved != null && saved.active) restoreRuntimeState(saved)
             val connectivity = getSystemService(ConnectivityManager::class.java)
             connectivityManager = connectivity
             internetAvailable = connectivity.activeNetwork != null
@@ -119,15 +101,33 @@ class MireiForegroundService : Service() {
 
     private fun startRuntime(intent: Intent) {
         if (sessionStarted) {
-            controller.start()
-            runStartedAtEpochMs = System.currentTimeMillis()
-            runStoppedAtEpochMs = 0L
-            persistSession()
             worker.removeCallbacksAndMessages(null)
             worker.post {
-                runCatching { runScanner() }
-                publishHealth()
-                worker.post(runtimeLoop)
+                runCatching {
+                    // STOP is a pause, not a new paper session. Rehydrate the persisted
+                    // portfolio before restarting so a recreated service cannot resume
+                    // from an empty/stale in-memory engine.
+                    sessionStore.load()?.takeIf { it.active }?.let { saved ->
+                        restoreSessionMetadata(saved)
+                        restoreRuntimeState(saved)
+                    }
+                    controller.start()
+                    val now = System.currentTimeMillis()
+                    runStartedAtEpochMs = now
+                    runStoppedAtEpochMs = 0L
+                    runScanner()
+                    lastScanEpochMs = now
+                    persistSession()
+                    publishHealth()
+
+                    // Evaluate immediately on START. A valid BUY can therefore create
+                    // a new paper position without waiting for Refresh or the next UI event.
+                    val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
+                    publishStatus(status)
+                    persistDecisions(status)
+                    persistSession()
+                    worker.postDelayed(runtimeLoop, TICK_MS)
+                }.onFailure { error -> handleRuntimeFailure("Mirei restart failed", error) }
             }
             return
         }
@@ -162,6 +162,30 @@ class MireiForegroundService : Service() {
                 worker.post(runtimeLoop)
             }.onFailure { error -> handleRuntimeFailure("Mirei start failed", error) }
         }
+    }
+
+    private fun restoreSessionMetadata(saved: PaperSessionSnapshot) {
+        sessionStarted = true
+        sessionCreatedAtEpochMs = saved.sessionCreatedAtEpochMs
+        runStartedAtEpochMs = saved.runStartedAtEpochMs
+        runStoppedAtEpochMs = saved.runStoppedAtEpochMs
+        timestampResetAtEpochMs = saved.timestampResetAtEpochMs
+        symbol = saved.symbol.ifBlank { DEFAULT_SYMBOL }
+        exchangeId = saved.exchangeId.ifBlank { DEFAULT_EXCHANGE }
+        managedSymbols = saved.managedSymbols.ifEmpty { listOf(symbol) }.take(3)
+    }
+
+    private fun restoreRuntimeState(saved: PaperSessionSnapshot) {
+        runtime.restoreState(PaperRuntimePersistence(
+            engineState = PaperEngineState(saved.availableBalanceIdr, saved.positions),
+            dailyPnlIdr = saved.dailyPnlIdr,
+            consecutiveLosses = saved.consecutiveLosses,
+            holdingsSeeded = saved.holdingsSeeded,
+            buyDecisionCount = saved.buyDecisionCount,
+            holdDecisionCount = saved.holdDecisionCount,
+            sellDecisionCount = saved.sellDecisionCount,
+            initialCapitalBySymbol = saved.initialCapitalBySymbol,
+        ))
     }
 
     private fun pauseRuntime(reason: String) {
@@ -312,6 +336,7 @@ class MireiForegroundService : Service() {
             val share = if (totalVolume > 0.0) snapshot.volume24h / totalVolume * 100.0 else 0.0
             listOf(pair, "%.2f".format(Locale.US, snapshot.price), "%.3f".format(Locale.US, snapshot.change1mPercent), "%.3f".format(Locale.US, snapshot.momentumPercent), "%.3f".format(Locale.US, snapshot.trendScorePercent), "%.2f".format(Locale.US, share)).joinToString("|")
         }
+        lastScannerSummary = lastScannerSummary
         runtime.updateScannerSummary(lastScannerSummary)
     }
 
