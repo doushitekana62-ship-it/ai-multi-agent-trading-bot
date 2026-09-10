@@ -29,26 +29,15 @@ class MireiOrchestrator(
         } else {
             winnerObservations.map { it.confidence.coerceIn(0.0, 1.0) }.average()
         }
-
         val rationale = when {
             winners.size > 1 -> "agent_vote_tie_hold"
             highestVotes == observations.size -> "agent_unanimous_vote"
             else -> "agent_majority_vote"
         }
 
-        // decisionMode remains part of the public constructor for compatibility.
-        // Conflict resolution is now deterministic and autonomous in Suggestion mode:
-        // majority wins; an exact tie is HOLD; no human confirmation is required.
-        if (decisionMode == DecisionMode.SUGGESTION) {
-            return MireiDecision(
-                action = action,
-                confidence = confidence,
-                observations = observations,
-                requiresHumanDecision = false,
-                rationale = rationale,
-            )
-        }
-
+        // Keep DecisionMode in the API for compatibility. In autonomous Suggestion,
+        // disagreement is resolved by deterministic voting rather than waiting for a
+        // human who may not be watching the application continuously.
         return MireiDecision(
             action = action,
             confidence = confidence,
