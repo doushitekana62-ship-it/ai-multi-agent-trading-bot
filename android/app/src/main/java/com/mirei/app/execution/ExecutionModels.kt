@@ -1,6 +1,7 @@
 package com.mirei.app.execution
 
 import com.mirei.app.core.EntryPlan
+import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.core.TradingConfig
 
 interface ExchangeAdapter {
@@ -38,6 +39,8 @@ data class PaperPosition(
     val trailingActivationPrice: Double,
     val openedAtEpochMs: Long,
     val entryReason: String = "entry_filled",
+    val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
+    val riskReferenceCapitalIdr: Double = 0.0,
 )
 
 data class PaperLimitOrder(val id: String, val exchangeId: String, val symbol: String, val quoteAmount: Double, val limitPrice: Double, val reservedIdr: Double, val createdAtEpochMs: Long)
@@ -60,17 +63,40 @@ class PaperExecutionEngine(
 
     init { require(feePercent >= 0.0); require(slippagePercent >= 0.0) }
 
-    fun seedExistingHolding(exchangeId: String, symbol: String, quoteAmount: Double, marketPrice: Double, stopLossPercent: Double, takeProfitPercent: Double, nowMs: Long): ExecutionResult {
+    fun seedExistingHolding(
+        exchangeId: String,
+        symbol: String,
+        quoteAmount: Double,
+        marketPrice: Double,
+        stopLossPercent: Double,
+        takeProfitPercent: Double,
+        nowMs: Long,
+        riskReferenceMode: RiskReferenceMode = config.riskReferenceMode,
+        initialCapitalIdr: Double = quoteAmount,
+    ): ExecutionResult {
         if (quoteAmount <= 0.0 || marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_initial_holding")
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         if (quoteAmount > availableBalanceIdr + 1e-9) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "initial_holding_exceeds_capital")
-        require(stopLossPercent > 0.0); require(takeProfitPercent > stopLossPercent)
+        require(stopLossPercent > 0.0); require(takeProfitPercent > stopLossPercent); require(initialCapitalIdr > 0.0)
         val before = availableBalanceIdr
-        val position = PaperPosition(nextPositionId("paper-initial", nowMs), exchangeId, symbol, quoteAmount, marketPrice, marketPrice * (1.0 - stopLossPercent / 100.0), marketPrice * (1.0 + takeProfitPercent / 100.0), marketPrice * (1.0 + stopLossPercent / 100.0), nowMs, "initial_holding")
+        val referenceCapital = when (riskReferenceMode) {
+            RiskReferenceMode.ENTRY_PRICE -> quoteAmount
+            RiskReferenceMode.INITIAL_CAPITAL -> initialCapitalIdr
+        }
+        val quantity = quoteAmount / marketPrice
+        val stopAmount = referenceCapital * stopLossPercent / 100.0
+        val takeAmount = referenceCapital * takeProfitPercent / 100.0
+        val position = PaperPosition(
+            nextPositionId("paper-initial", nowMs), exchangeId, symbol, quoteAmount, marketPrice,
+            (marketPrice - stopAmount / quantity).coerceAtLeast(marketPrice * 0.000001),
+            marketPrice + takeAmount / quantity,
+            marketPrice + stopAmount / quantity,
+            nowMs, "initial_holding", riskReferenceMode, referenceCapital,
+        )
         tradeLedger?.recordOpened(position, 0.0)
         availableBalanceIdr -= quoteAmount
         positions[position.id] = position
-        return ExecutionResult(true, position.id, quoteAmount / marketPrice, marketPrice, 0.0, entryFee = 0.0, remainingBalanceIdr = availableBalanceIdr, reason = "initial_holding_seeded", balanceBeforeIdr = before)
+        return ExecutionResult(true, position.id, quantity, marketPrice, 0.0, entryFee = 0.0, remainingBalanceIdr = availableBalanceIdr, reason = "initial_holding_seeded", balanceBeforeIdr = before)
     }
 
     fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, entryReason: String = "entry_filled"): ExecutionResult = openInternal(exchangeId, symbol, plan, nowMs, 0.0, entryReason)
@@ -86,8 +112,22 @@ class PaperExecutionEngine(
         require(plan.entryPrice > 0.0)
         val before = availableBalanceIdr
         val executionPrice = plan.entryPrice * (1.0 + slippagePercent / 100.0)
+        val entryRatio = executionPrice / plan.entryPrice
         val id = nextPositionId("paper", nowMs)
-        val position = PaperPosition(id, exchangeId, symbol, plan.stakeIdr, executionPrice, executionPrice * (plan.stopLossPrice / plan.entryPrice), executionPrice * (plan.takeProfitPrice / plan.entryPrice), executionPrice * (plan.trailingActivationPrice / plan.entryPrice), nowMs, entryReason)
+        val position = PaperPosition(
+            id = id,
+            exchangeId = exchangeId,
+            symbol = symbol,
+            stakeIdr = plan.stakeIdr,
+            entryPrice = executionPrice,
+            stopLossPrice = plan.stopLossPrice * entryRatio,
+            takeProfitPrice = plan.takeProfitPrice * entryRatio,
+            trailingActivationPrice = plan.trailingActivationPrice * entryRatio,
+            openedAtEpochMs = nowMs,
+            entryReason = entryReason,
+            riskReferenceMode = plan.riskReferenceMode,
+            riskReferenceCapitalIdr = plan.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: plan.stakeIdr,
+        )
         tradeLedger?.recordOpened(position, entryFee)
         if (reservedIdr <= 0.0) availableBalanceIdr -= required
         positions[id] = position
@@ -129,7 +169,7 @@ class PaperExecutionEngine(
         val order = limitOrders[orderId] ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_limit_order_not_found")
         if (marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_market_price")
         if (marketPrice > order.limitPrice) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_limit_not_reached")
-        val plan = EntryPlan(true, order.limitPrice, order.limitPrice * 0.995, order.limitPrice * 1.01, order.limitPrice * 1.005, order.quoteAmount, listOf("paper_limit_fill"))
+        val plan = EntryPlan(true, order.limitPrice, order.limitPrice * 0.995, order.limitPrice * 1.01, order.limitPrice * 1.005, order.quoteAmount, listOf("paper_limit_fill"), RiskReferenceMode.ENTRY_PRICE, order.quoteAmount)
         val result = openInternal(order.exchangeId, order.symbol, plan, nowMs, order.reservedIdr, "limit_fill")
         if (result.success) limitOrders.remove(orderId)
         return result.copy(orderId = orderId)
@@ -137,9 +177,23 @@ class PaperExecutionEngine(
 
     fun cancelLimit(orderId: String): Boolean { val order = limitOrders.remove(orderId) ?: return false; availableBalanceIdr += order.reservedIdr; return true }
 
-    fun updateRiskTargets(stopLossPercent: Double, takeProfitPercent: Double) {
-        require(stopLossPercent > 0.0); require(takeProfitPercent > stopLossPercent)
-        positions.entries.forEach { (id, position) -> positions[id] = position.copy(stopLossPrice = position.entryPrice * (1.0 - stopLossPercent / 100.0), takeProfitPrice = position.entryPrice * (1.0 + takeProfitPercent / 100.0), trailingActivationPrice = position.entryPrice * (1.0 + stopLossPercent / 100.0)) }
+    fun updateRiskTargets(newConfig: TradingConfig) {
+        positions.entries.forEach { (id, position) ->
+            val referenceCapital = when (newConfig.riskReferenceMode) {
+                RiskReferenceMode.ENTRY_PRICE -> position.stakeIdr
+                RiskReferenceMode.INITIAL_CAPITAL -> position.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: position.stakeIdr
+            }
+            val quantity = position.stakeIdr / position.entryPrice
+            val stopAmount = referenceCapital * newConfig.effectiveStopLossPercent() / 100.0
+            val takeAmount = referenceCapital * newConfig.effectiveTakeProfitPercent() / 100.0
+            positions[id] = position.copy(
+                stopLossPrice = (position.entryPrice - stopAmount / quantity).coerceAtLeast(position.entryPrice * 0.000001),
+                takeProfitPrice = position.entryPrice + takeAmount / quantity,
+                trailingActivationPrice = position.entryPrice + stopAmount / quantity,
+                riskReferenceMode = newConfig.riskReferenceMode,
+                riskReferenceCapitalIdr = referenceCapital,
+            )
+        }
     }
 
     fun updateTrailingStop(positionId: String, newStopLossPrice: Double): Boolean {
