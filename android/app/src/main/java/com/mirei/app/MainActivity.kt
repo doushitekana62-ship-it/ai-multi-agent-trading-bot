@@ -415,20 +415,14 @@ class MainActivity : Activity() {
 
         outer.addView(text("3. DASAR PEMANTAUAN TP / SL", 14f, true), margin(0, 6, 0, 0))
         val basisGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val entryRadio = RadioButton(this).apply { text = "Harga ENTRY COIN — TP/SL mengikuti harga entry posisi" }
-        val capitalRadio = RadioButton(this).apply { text = "MODAL BELI PERTAMA — target/rugi IDR dihitung dari modal pertama coin" }
+        val entryRadio = RadioButton(this).apply { id = View.generateViewId(); text = "Harga ENTRY COIN — TP/SL mengikuti harga entry posisi" }
+        val capitalRadio = RadioButton(this).apply { id = View.generateViewId(); text = "MODAL BELI PERTAMA — target/rugi IDR dihitung dari modal pertama coin" }
         basisGroup.addView(entryRadio)
         basisGroup.addView(capitalRadio)
         val savedBasis = riskPrefs.getString("risk_basis", RiskReferenceMode.ENTRY_PRICE.name)
         basisGroup.check(if (savedBasis == RiskReferenceMode.INITIAL_CAPITAL.name) capitalRadio.id else entryRadio.id)
-        entryRadio.id = View.generateViewId()
-        capitalRadio.id = View.generateViewId()
-        basisGroup.removeAllViews()
-        basisGroup.addView(entryRadio)
-        basisGroup.addView(capitalRadio)
-        basisGroup.check(if (savedBasis == RiskReferenceMode.INITIAL_CAPITAL.name) capitalRadio.id else entryRadio.id)
         outer.addView(basisGroup)
-        outer.addView(text("Pada mode MODAL BELI PERTAMA, tiap coin memakai modal pada baris coin sebagai acuan. Contoh Rp50.000 tetap Rp50.000 walaupun harga entry berbeda.", 12f))
+        outer.addView(text("Pada mode MODAL BELI PERTAMA, tiap coin memakai modal pada baris coin sebagai acuan. Contoh Rp50.000 tetap menjadi acuan walaupun harga entry berbeda.", 12f))
 
         outer.addView(text("4. TP / SL", 14f, true), margin(0, 6, 0, 0))
         val manualSwitch = Switch(this).apply { text = "TP / SL MANUAL"; isChecked = riskPrefs.getBoolean("manual_risk", false) }
@@ -605,7 +599,7 @@ private class MiniMarketChartView(context: Context, private val values: FloatArr
     private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val width = MeasureSpec.getSize(widthMeasure)
+        val width = MeasureSpec.getSize(widthMeasureSpec)
         setMeasuredDimension(width, 180)
     }
 
