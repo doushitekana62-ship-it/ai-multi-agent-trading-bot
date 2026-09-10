@@ -110,11 +110,7 @@ class PaperExecutionEngine(
         // Rp50.000 position size. Re-entry must not wait for loss recovery. Use all
         // remaining cash for the new paper position, then preserve the selected risk
         // basis when translating the target prices.
-        val effectiveStake = if (reservedIdr > 0.0) {
-            plan.stakeIdr
-        } else {
-            minOf(plan.stakeIdr, availableBalanceIdr)
-        }
+        val effectiveStake = if (reservedIdr > 0.0) plan.stakeIdr else minOf(plan.stakeIdr, availableBalanceIdr)
         if (effectiveStake <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
 
         val entryFee = effectiveStake * feePercent / (100.0 + feePercent)
@@ -125,12 +121,9 @@ class PaperExecutionEngine(
         val executionPrice = plan.entryPrice * (1.0 + slippagePercent / 100.0)
         val entryRatio = executionPrice / plan.entryPrice
         val stakeScale = if (effectiveStake > 0.0) plan.stakeIdr / effectiveStake else 1.0
-        val stopDistance = (plan.entryPrice - plan.stopLossPrice).coerceAtLeast(0.0) *
-            if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
-        val takeDistance = (plan.takeProfitPrice - plan.entryPrice).coerceAtLeast(0.0) *
-            if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
-        val trailingDistance = (plan.trailingActivationPrice - plan.entryPrice).coerceAtLeast(0.0) *
-            if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
+        val stopDistance = (plan.entryPrice - plan.stopLossPrice).coerceAtLeast(0.0) * if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
+        val takeDistance = (plan.takeProfitPrice - plan.entryPrice).coerceAtLeast(0.0) * if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
+        val trailingDistance = (plan.trailingActivationPrice - plan.entryPrice).coerceAtLeast(0.0) * if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
 
         val id = nextPositionId("paper", nowMs)
         val position = PaperPosition(
@@ -263,4 +256,6 @@ class ExchangeRegistry {
     fun register(handle: ExchangeHandle) { require(handle.id.isNotBlank()); require(handle.displayName.isNotBlank()); handles[handle.id] = handle }
     fun get(id: String): ExchangeHandle? = handles[id]
     fun all(): List<ExchangeHandle> = handles.values.toList()
+    fun ids(): List<String> = handles.keys.toList()
+    fun activeTradingAdapters(): List<ExchangeAdapter> = handles.values.filter { it.tradingEnabled }.map { it.adapter }
 }
