@@ -39,8 +39,8 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     fun recentTrades(limit: Int = 30): List<TradeRow> {
         val rows = mutableListOf<TradeRow>()
         readableDatabase.rawQuery("SELECT id, exchange_id, symbol, side, status, entry_price, exit_price, stake_idr, fee_idr, pnl_idr, opened_at, closed_at, exit_reason FROM trades ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?", arrayOf(limit.coerceIn(1, 200).toString())).use { cursor ->
-            val idx = cursor.columnIndexes()
-            while (cursor.moveToNext()) rows += TradeRow(cursor.getString(idx("id")), cursor.getString(idx("exchange_id")), cursor.getString(idx("symbol")), cursor.getString(idx("side")), cursor.getString(idx("status")), cursor.getDoubleOrNull(idx("entry_price")), cursor.getDoubleOrNull(idx("exit_price")), cursor.getDouble(idx("stake_idr")), cursor.getDouble(idx("fee_idr")), cursor.getDouble(idx("pnl_idr")), cursor.getLong(idx("opened_at")), cursor.getLongOrNull(idx("closed_at")), cursor.getStringOrNull(idx("exit_reason")))
+            val id = cursor.getColumnIndexOrThrow("id"); val exchangeId = cursor.getColumnIndexOrThrow("exchange_id"); val symbol = cursor.getColumnIndexOrThrow("symbol"); val side = cursor.getColumnIndexOrThrow("side"); val status = cursor.getColumnIndexOrThrow("status"); val entryPrice = cursor.getColumnIndexOrThrow("entry_price"); val exitPrice = cursor.getColumnIndexOrThrow("exit_price"); val stake = cursor.getColumnIndexOrThrow("stake_idr"); val fee = cursor.getColumnIndexOrThrow("fee_idr"); val pnl = cursor.getColumnIndexOrThrow("pnl_idr"); val opened = cursor.getColumnIndexOrThrow("opened_at"); val closed = cursor.getColumnIndexOrThrow("closed_at"); val reason = cursor.getColumnIndexOrThrow("exit_reason")
+            while (cursor.moveToNext()) rows += TradeRow(cursor.getString(id), cursor.getString(exchangeId), cursor.getString(symbol), cursor.getString(side), cursor.getString(status), cursor.getDoubleOrNull(entryPrice), cursor.getDoubleOrNull(exitPrice), cursor.getDouble(stake), cursor.getDouble(fee), cursor.getDouble(pnl), cursor.getLong(opened), cursor.getLongOrNull(closed), cursor.getStringOrNull(reason))
         }
         return rows
     }
@@ -48,8 +48,8 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     fun recentSuggestions(limit: Int = 50): List<DecisionRow> {
         val rows = mutableListOf<DecisionRow>()
         readableDatabase.rawQuery("SELECT created_at, symbol, action, confidence, reason FROM suggestions ORDER BY created_at DESC LIMIT ?", arrayOf(limit.coerceIn(1, 200).toString())).use { cursor ->
-            val idx = cursor.columnIndexes()
-            while (cursor.moveToNext()) rows += DecisionRow(cursor.getLong(idx("created_at")), cursor.getString(idx("symbol")), cursor.getString(idx("action")), cursor.getDouble(idx("confidence")), cursor.getString(idx("reason")))
+            val created = cursor.getColumnIndexOrThrow("created_at"); val symbol = cursor.getColumnIndexOrThrow("symbol"); val action = cursor.getColumnIndexOrThrow("action"); val confidence = cursor.getColumnIndexOrThrow("confidence"); val reason = cursor.getColumnIndexOrThrow("reason")
+            while (cursor.moveToNext()) rows += DecisionRow(cursor.getLong(created), cursor.getString(symbol), cursor.getString(action), cursor.getDouble(confidence), cursor.getString(reason))
         }
         return rows
     }
@@ -64,11 +64,10 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         } finally { writableDatabase.endTransaction() }
     }
 
-    private fun android.database.Cursor.columnIndexes(): Map<String, Int> = buildMap { for (i in 0 until columnCount) put(getColumnName(i), i) }
     private fun android.database.Cursor.getDoubleOrNull(index: Int): Double? = if (isNull(index)) null else getDouble(index)
     private fun android.database.Cursor.getLongOrNull(index: Int): Long? = if (isNull(index)) null else getLong(index)
     private fun android.database.Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
-    private fun Map<String, Int>.get(key: String): Int = checkNotNull(this[key])
+
     companion object { private const val DB_NAME = "mirei.db"; private const val DB_VERSION = 2 }
 }
 
