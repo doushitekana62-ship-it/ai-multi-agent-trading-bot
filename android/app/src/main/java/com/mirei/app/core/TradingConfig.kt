@@ -1,6 +1,7 @@
 package com.mirei.app.core
 
 enum class ManualRiskMode { AUTO, MANUAL }
+enum class RiskReferenceMode { ENTRY_PRICE, INITIAL_CAPITAL }
 
 data class RiskTargets(
     val stopLossPrice: Double,
@@ -8,6 +9,7 @@ data class RiskTargets(
     val stopLossAmountIdr: Double,
     val takeProfitAmountIdr: Double,
     val quantity: Double,
+    val referenceCapitalIdr: Double,
 )
 
 data class TradingConfig(
@@ -25,6 +27,7 @@ data class TradingConfig(
     val manualRiskMode: ManualRiskMode = ManualRiskMode.AUTO,
     val manualStopLossPercent: Double? = null,
     val manualTakeProfitPercent: Double? = null,
+    val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
 ) {
     init {
         require(totalCapitalIdr > 0)
@@ -61,26 +64,32 @@ data class TradingConfig(
     }
 
     /**
-     * Automatic TP/SL choice: derive the price targets from the actual entry price
-     * and the IDR capital allocated to the position. The capital first determines
-     * quantity, then the configured percentage determines the IDR risk/target, and
-     * those IDR amounts are converted back to coin prices.
+     * TP/SL can be monitored from either the current coin entry price or from
+     * the first-buy capital allocated to that symbol. The price trigger is
+     * always derived from actual quantity so both modes resolve to concrete
+     * coin prices while preserving the intended IDR amount at risk.
      */
     fun calculateRiskTargets(
         entryPrice: Double,
         stakeIdr: Double,
+        initialCapitalIdr: Double = stakeIdr,
         stopLossPercent: Double = effectiveStopLossPercent(),
         takeProfitPercent: Double = effectiveTakeProfitPercent(),
     ): RiskTargets {
         require(entryPrice > 0.0)
         require(stakeIdr > 0.0)
+        require(initialCapitalIdr > 0.0)
         require(stopLossPercent > 0.0)
         require(takeProfitPercent > stopLossPercent)
 
         val quantity = stakeIdr / entryPrice
-        val stopLossAmountIdr = stakeIdr * stopLossPercent / 100.0
-        val takeProfitAmountIdr = stakeIdr * takeProfitPercent / 100.0
-        val stopLossPrice = entryPrice - (stopLossAmountIdr / quantity)
+        val referenceCapital = when (riskReferenceMode) {
+            RiskReferenceMode.ENTRY_PRICE -> stakeIdr
+            RiskReferenceMode.INITIAL_CAPITAL -> initialCapitalIdr
+        }
+        val stopLossAmountIdr = referenceCapital * stopLossPercent / 100.0
+        val takeProfitAmountIdr = referenceCapital * takeProfitPercent / 100.0
+        val stopLossPrice = (entryPrice - (stopLossAmountIdr / quantity)).coerceAtLeast(entryPrice * 0.000001)
         val takeProfitPrice = entryPrice + (takeProfitAmountIdr / quantity)
 
         return RiskTargets(
@@ -89,6 +98,7 @@ data class TradingConfig(
             stopLossAmountIdr = stopLossAmountIdr,
             takeProfitAmountIdr = takeProfitAmountIdr,
             quantity = quantity,
+            referenceCapitalIdr = referenceCapital,
         )
     }
 }
