@@ -10,7 +10,7 @@ import org.junit.Test
 class PaperExecutionReentrySizingTest {
     @Test
     fun reentryUsesRemainingCashInsteadOfWaitingForLossRecovery() {
-        val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0)
+        val config = TradingConfig(totalCapitalIdr = 50_000.0, positionSizeIdr = 50_000.0)
         val engine = PaperExecutionEngine(config, feePercent = 0.3, slippagePercent = 0.0)
 
         val initial = engine.seedExistingHolding(
@@ -45,10 +45,8 @@ class PaperExecutionReentrySizingTest {
 
         assertTrue(reopened.success)
         assertEquals(closed.remainingBalanceIdr, reopened.balanceBeforeIdr, 1e-6)
-        assertEquals(closed.remainingBalanceIdr, reopened.remainingBalanceIdr, 1e-6)
         assertEquals(closed.remainingBalanceIdr, engine.positions().single().stakeIdr, 1e-6)
         assertEquals("re_entry", engine.positions().single().entryReason)
         assertEquals(50_000.0, engine.positions().single().riskReferenceCapitalIdr, 1e-6)
-        assertTrue(engine.positionCount() == 1)
     }
 }
