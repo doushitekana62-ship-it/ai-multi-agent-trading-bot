@@ -1,6 +1,7 @@
 package com.mirei.app.storage
 
 import android.content.Context
+import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.execution.PaperPosition
 import org.json.JSONArray
 import org.json.JSONObject
@@ -22,6 +23,7 @@ data class PaperSessionSnapshot(
     val buyDecisionCount: Int,
     val holdDecisionCount: Int,
     val sellDecisionCount: Int,
+    val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
 )
 
 class PaperSessionStore(context: Context) {
@@ -35,6 +37,7 @@ class PaperSessionStore(context: Context) {
             val array = root.optJSONArray("positions") ?: JSONArray()
             for (i in 0 until array.length()) {
                 val item = array.getJSONObject(i)
+                val storedMode = runCatching { RiskReferenceMode.valueOf(item.optString("riskReferenceMode", RiskReferenceMode.ENTRY_PRICE.name)) }.getOrDefault(RiskReferenceMode.ENTRY_PRICE)
                 positions += PaperPosition(
                     id = item.getString("id"),
                     exchangeId = item.getString("exchange"),
@@ -46,8 +49,13 @@ class PaperSessionStore(context: Context) {
                     trailingActivationPrice = item.getDouble("trailing"),
                     openedAtEpochMs = item.getLong("opened"),
                     entryReason = item.optString("reason", "entry_filled"),
+                    riskReferenceMode = storedMode,
+                    riskReferenceCapitalIdr = item.optDouble("riskReferenceCapital", item.optDouble("stake", 0.0)),
                 )
             }
+            val capitalObject = root.optJSONObject("initialCapitalBySymbol")
+            val initialCapitalBySymbol = linkedMapOf<String, Double>()
+            if (capitalObject != null) capitalObject.keys().forEach { key -> initialCapitalBySymbol[key] = capitalObject.optDouble(key, 0.0) }
             PaperSessionSnapshot(
                 active = root.optBoolean("active", false),
                 sessionCreatedAtEpochMs = root.optLong("sessionCreated", 0L),
@@ -65,6 +73,7 @@ class PaperSessionStore(context: Context) {
                 buyDecisionCount = root.optInt("buyCount", 0),
                 holdDecisionCount = root.optInt("holdCount", 0),
                 sellDecisionCount = root.optInt("sellCount", 0),
+                initialCapitalBySymbol = initialCapitalBySymbol,
             )
         }.getOrNull()
     }
@@ -86,6 +95,7 @@ class PaperSessionStore(context: Context) {
             put("buyCount", snapshot.buyDecisionCount)
             put("holdCount", snapshot.holdDecisionCount)
             put("sellCount", snapshot.sellDecisionCount)
+            put("initialCapitalBySymbol", JSONObject().apply { snapshot.initialCapitalBySymbol.forEach { (symbol, amount) -> put(symbol, amount) } })
             put("positions", JSONArray().apply {
                 snapshot.positions.forEach { position -> put(JSONObject().apply {
                     put("id", position.id)
@@ -98,6 +108,8 @@ class PaperSessionStore(context: Context) {
                     put("trailing", position.trailingActivationPrice)
                     put("opened", position.openedAtEpochMs)
                     put("reason", position.entryReason)
+                    put("riskReferenceMode", position.riskReferenceMode.name)
+                    put("riskReferenceCapital", position.riskReferenceCapitalIdr)
                 }) }
             })
         }
