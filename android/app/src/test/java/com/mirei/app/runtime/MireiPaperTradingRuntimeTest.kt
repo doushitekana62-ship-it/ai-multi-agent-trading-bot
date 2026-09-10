@@ -41,24 +41,29 @@ class MireiPaperTradingRuntimeTest {
             config = TradingConfig(mode = ScalpingMode.AGGRESSIVE, positionSizeIdr = 50_000.0, maxOpenPositions = 3),
             marketData = market,
             symbol = "BTC/IDR",
+            managedSymbols = listOf("BTC/IDR", "ETH/IDR", "SOL/IDR"),
             tradeLedger = ledger,
         )
-        val seeded = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 50_000.0), 1_000L).single()
-        assertTrue(seeded.success)
+        val seeded = runtime.seedInitialHoldings(
+            mapOf("BTC/IDR" to 50_000.0, "ETH/IDR" to 50_000.0, "SOL/IDR" to 50_000.0),
+            1_000L,
+        )
+        assertEquals(3, seeded.count { it.success })
 
-        market.bearish = true
+        market.bearishSymbol = "BTC/IDR"
         val close = runtime.tick(2_000L)
-        assertTrue(close.activePositions.isEmpty())
+        assertEquals(2, close.activePositions.size)
         assertTrue(close.recentExecutions.any { it.reason == "stop_loss" })
+        assertTrue(runtime.paperEngine().availableBalanceIdr() > 0.0)
         assertTrue(runtime.paperEngine().availableBalanceIdr() < 50_000.0)
 
-        market.bearish = false
+        market.bearishSymbol = null
         val reentry = runtime.tick(3_000L)
-        assertEquals(1, reentry.activePositions.size)
-        assertEquals("re_entry", reentry.activePositions.single().entryReason)
+        assertEquals(3, reentry.activePositions.size)
+        assertEquals(4, ledger.openedCount)
+        assertEquals("re_entry", reentry.activePositions.single { it.symbol == "BTC/IDR" }.entryReason)
         assertTrue(reentry.recentExecutions.any { it.reason == "re_entry" })
-        assertEquals(3_000L, reentry.activePositions.single().openedAtEpochMs)
-        assertEquals(50_000.0, reentry.activePositions.single().riskReferenceCapitalIdr, 0.001)
+        assertEquals(50_000.0, reentry.activePositions.single { it.symbol == "BTC/IDR" }.riskReferenceCapitalIdr, 0.001)
     }
 
     @Test fun positionCapPreventsFourthConcurrentEntry() {
@@ -123,9 +128,9 @@ private fun sampleBullishSnapshot() = MarketSnapshot("BTC/IDR", 10_000.0, 1.0, 0
 private class MutableMarket(var price: Double, private val fresh: Boolean = true) : PaperMarketDataSource { override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, price = price, dataFresh = fresh) }
 
 private class ScenarioMarket : PaperMarketDataSource {
-    var bearish = false
+    var bearishSymbol: String? = null
     override fun snapshot(symbol: String): MarketSnapshot {
-        return if (bearish) {
+        return if (bearishSymbol == symbol) {
             sampleBullishSnapshot().copy(symbol = symbol, price = 9_900.0, momentumPercent = -5.0, sentimentScore = -40.0, forecastConfidence = 0.90, changeSinceLastTickPercent = -0.5, change1mPercent = -0.5, change5mPercent = -0.5, change15mPercent = -0.5, tradeFlowPercent = -40.0, trendScorePercent = -5.0)
         } else {
             sampleBullishSnapshot().copy(symbol = symbol, price = 10_000.0, momentumPercent = 5.0, sentimentScore = 20.0, forecastConfidence = 0.90, changeSinceLastTickPercent = 0.5, change1mPercent = 0.5, change5mPercent = 0.5, change15mPercent = 0.5, tradeFlowPercent = 40.0, trendScorePercent = 5.0)
