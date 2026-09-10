@@ -15,7 +15,10 @@ import com.mirei.app.core.DecisionMode
 import com.mirei.app.core.MireiState
 import com.mirei.app.core.ScalpingMode
 import com.mirei.app.core.TradingConfig
+import com.mirei.app.execution.PaperEngineState
 import com.mirei.app.storage.MireiDatabase
+import com.mirei.app.storage.PaperSessionSnapshot
+import com.mirei.app.storage.PaperSessionStore
 import com.mirei.app.storage.TradeLedgerFactory
 import java.util.Locale
 
@@ -26,11 +29,16 @@ class MireiForegroundService : Service() {
     private var exchangeId = DEFAULT_EXCHANGE
     private var managedSymbols = listOf(DEFAULT_SYMBOL)
     private var sessionStarted = false
+    private var sessionCreatedAtEpochMs = 0L
+    private var runStartedAtEpochMs = 0L
+    private var runStoppedAtEpochMs = 0L
+    private var timestampResetAtEpochMs = 0L
     private lateinit var workerThread: HandlerThread
     private lateinit var worker: Handler
     private lateinit var runtime: MireiPaperTradingRuntime
     private lateinit var marketData: IndodaxMarketDataSource
     private lateinit var prefs: SharedPreferences
+    private lateinit var sessionStore: PaperSessionStore
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var internetAvailable = false
@@ -42,12 +50,35 @@ class MireiForegroundService : Service() {
         super.onCreate()
         try {
             prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            sessionStore = PaperSessionStore(this)
             config = loadConfig()
             getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_LOW))
             workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
             worker = Handler(workerThread.looper)
             marketData = IndodaxMarketDataSource()
+            val saved = sessionStore.load()
+            if (saved != null && saved.active) {
+                sessionStarted = true
+                sessionCreatedAtEpochMs = saved.sessionCreatedAtEpochMs
+                runStartedAtEpochMs = saved.runStartedAtEpochMs
+                runStoppedAtEpochMs = saved.runStoppedAtEpochMs
+                timestampResetAtEpochMs = saved.timestampResetAtEpochMs
+                symbol = saved.symbol.ifBlank { DEFAULT_SYMBOL }
+                exchangeId = saved.exchangeId.ifBlank { DEFAULT_EXCHANGE }
+                managedSymbols = saved.managedSymbols.ifEmpty { listOf(symbol) }.take(3)
+            }
             createRuntime()
+            if (saved != null && saved.active) {
+                runtime.restoreState(PaperRuntimePersistence(
+                    engineState = PaperEngineState(saved.availableBalanceIdr, saved.positions),
+                    dailyPnlIdr = saved.dailyPnlIdr,
+                    consecutiveLosses = saved.consecutiveLosses,
+                    holdingsSeeded = saved.holdingsSeeded,
+                    buyDecisionCount = saved.buyDecisionCount,
+                    holdDecisionCount = saved.holdDecisionCount,
+                    sellDecisionCount = saved.sellDecisionCount,
+                ))
+            }
             val connectivity = getSystemService(ConnectivityManager::class.java)
             connectivityManager = connectivity
             internetAvailable = connectivity.activeNetwork != null
@@ -68,25 +99,15 @@ class MireiForegroundService : Service() {
             startForeground(NOTIFICATION_ID, notification("${stateLabel()} · ${managedSymbols.size} market"))
             when (intent?.action) {
                 ACTION_START -> startRuntime(intent)
-                ACTION_HOLD -> { controller.hold(); worker.removeCallbacksAndMessages(null); publishHealth() }
-                ACTION_STOP -> { controller.stop(); worker.removeCallbacksAndMessages(null); publishHealth() }
+                ACTION_HOLD -> pauseRuntime("HOLD")
+                ACTION_STOP -> stopRuntime()
                 ACTION_CLOSE_ALL -> closeAll()
-                ACTION_REFRESH -> worker.post {
-                    if (sessionStarted) {
-                        runScanner()
-                        publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)))
-                    } else {
-                        runScanner()
-                        publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)))
-                    }
-                }
-                ACTION_APPLY_RISK -> worker.post {
-                    if (sessionStarted) {
-                        applyRisk()
-                        publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)))
-                    } else publishHealth()
-                }
-                ACTION_DELETE_HISTORY -> { MireiDatabase(this).clearHistory(); publishHealth() }
+                ACTION_HUMAN_VERIFY -> worker.post { humanVerify(intent) }
+                ACTION_REFRESH -> worker.post { runCatching { runScanner() }; publishHealth() }
+                ACTION_APPLY_RISK -> worker.post { runCatching { if (sessionStarted) applyRisk() }; publishHealth() }
+                ACTION_DELETE_HISTORY -> { runCatching { MireiDatabase(this).clearHistory() }; publishHealth() }
+                ACTION_RESET_SESSION -> resetSession()
+                ACTION_RESET_CLOCK -> resetClock()
             }
         } catch (error: Exception) {
             handleRuntimeFailure("Mirei action failed", error)
@@ -97,10 +118,13 @@ class MireiForegroundService : Service() {
     private fun startRuntime(intent: Intent) {
         if (sessionStarted) {
             controller.start()
+            runStartedAtEpochMs = System.currentTimeMillis()
+            runStoppedAtEpochMs = 0L
+            persistSession()
             worker.removeCallbacksAndMessages(null)
             worker.post {
-                runScanner()
-                publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)))
+                runCatching { runScanner() }
+                publishHealth()
                 worker.post(runtimeLoop)
             }
             return
@@ -116,17 +140,78 @@ class MireiForegroundService : Service() {
         controller.start()
         worker.removeCallbacksAndMessages(null)
         worker.post {
-            val seeded = runtime.seedInitialHoldings(allocations, System.currentTimeMillis())
-            if (seeded.size != allocations.size || seeded.any { !it.success }) {
-                publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, false)))
-                return@post
-            }
-            sessionStarted = true
-            runScanner()
-            lastScanEpochMs = System.currentTimeMillis()
-            publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)))
-            worker.post(runtimeLoop)
+            runCatching {
+                val seeded = runtime.seedInitialHoldings(allocations, System.currentTimeMillis())
+                if (seeded.size != allocations.size || seeded.any { !it.success }) {
+                    controller.stop()
+                    publishHealth()
+                    return@runCatching
+                }
+                val now = System.currentTimeMillis()
+                sessionStarted = true
+                sessionCreatedAtEpochMs = now
+                runStartedAtEpochMs = now
+                runStoppedAtEpochMs = 0L
+                timestampResetAtEpochMs = 0L
+                runScanner()
+                lastScanEpochMs = now
+                persistSession()
+                publishHealth()
+                worker.post(runtimeLoop)
+            }.onFailure { error -> handleRuntimeFailure("Mirei start failed", error) }
         }
+    }
+
+    private fun pauseRuntime(reason: String) {
+        controller.hold()
+        worker.removeCallbacksAndMessages(null)
+        runStoppedAtEpochMs = System.currentTimeMillis()
+        persistSession()
+        runCatching { MireiDatabase(this).recordAudit("SESSION_PAUSED", reason, runStoppedAtEpochMs) }
+        publishHealth()
+    }
+
+    private fun stopRuntime() {
+        controller.stop()
+        worker.removeCallbacksAndMessages(null)
+        runStoppedAtEpochMs = System.currentTimeMillis()
+        persistSession()
+        runCatching { MireiDatabase(this).recordAudit("SESSION_STOPPED", "runtime_paused", runStoppedAtEpochMs) }
+        publishHealth()
+    }
+
+    private fun resetSession() {
+        controller.stop()
+        worker.removeCallbacksAndMessages(null)
+        sessionStarted = false
+        sessionCreatedAtEpochMs = 0L
+        runStartedAtEpochMs = 0L
+        runStoppedAtEpochMs = System.currentTimeMillis()
+        timestampResetAtEpochMs = 0L
+        sessionStore.clearSession()
+        config = loadConfig()
+        createRuntime()
+        runCatching { MireiDatabase(this).recordAudit("SESSION_RESET", "portfolio_session_reset_without_history_delete") }
+        publishHealth()
+    }
+
+    private fun resetClock() {
+        val now = System.currentTimeMillis()
+        timestampResetAtEpochMs = now
+        if (controller.state == MireiState.RUNNING) runStartedAtEpochMs = now else runStoppedAtEpochMs = now
+        persistSession()
+        publishHealth()
+    }
+
+    private fun humanVerify(intent: Intent) {
+        if (!sessionStarted || controller.state != MireiState.RUNNING) { publishHealth(); return }
+        val requestedSymbol = intent.getStringExtra(EXTRA_HUMAN_SYMBOL)?.takeIf { it in managedSymbols } ?: symbol
+        val confirmed = intent.getStringExtra(EXTRA_HUMAN_AGENTS).orEmpty().split(',').map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        val status = runtime.confirmHumanBuy(requestedSymbol, confirmed, System.currentTimeMillis())
+        persistDecisions(status)
+        persistSession()
+        runCatching { if (status.recentExecutions.isNotEmpty()) MireiDatabase(this).recordAudit("HUMAN_VERIFIED_ENTRY", "symbol=$requestedSymbol|agents=${confirmed.joinToString(",")}", status.lastTickEpochMs) }
+        publishStatus(status)
     }
 
     private fun parseAllocations(raw: String): LinkedHashMap<String, Double> = linkedMapOf<String, Double>().apply {
@@ -138,57 +223,81 @@ class MireiForegroundService : Service() {
         }
     }
 
-    private fun createRuntime() {
-        runtime = MireiPaperTradingRuntime(config, marketData, TradeLedgerFactory.create(this), symbol, exchangeId, managedSymbols)
-    }
+    private fun createRuntime() { runtime = MireiPaperTradingRuntime(config, marketData, TradeLedgerFactory.create(this), symbol, exchangeId, managedSymbols) }
 
-    private fun applyRisk() {
-        config = loadConfig()
-        runtime.applyRiskConfig(config)
-    }
+    private fun applyRisk() { config = loadConfig(); runtime.applyRiskConfig(config); persistSession() }
 
     private val runtimeLoop = object : Runnable {
         override fun run() {
             if (controller.state != MireiState.RUNNING || !sessionStarted) return
-            val now = System.currentTimeMillis()
-            if (now - lastScanEpochMs >= SCAN_INTERVAL_MS) {
-                runScanner()
-                lastScanEpochMs = now
+            try {
+                val now = System.currentTimeMillis()
+                if (now - lastScanEpochMs >= SCAN_INTERVAL_MS) { runScanner(); lastScanEpochMs = now }
+                val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
+                publishStatus(status)
+                persistDecisions(status)
+                persistSession()
+            } catch (error: Exception) {
+                handleRuntimeFailure("Mirei runtime loop failed", error)
+            } finally {
+                if (controller.state == MireiState.RUNNING && sessionStarted) worker.postDelayed(this, TICK_MS)
             }
-            val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
-            publishStatus(status)
-            persistDecisions(status)
-            if (controller.state == MireiState.RUNNING) worker.postDelayed(this, TICK_MS)
         }
     }
 
+    private fun persistSession() {
+        if (!sessionStarted) return
+        val state = runtime.persistenceState()
+        sessionStore.save(PaperSessionSnapshot(
+            active = true,
+            sessionCreatedAtEpochMs = sessionCreatedAtEpochMs,
+            runStartedAtEpochMs = runStartedAtEpochMs,
+            runStoppedAtEpochMs = runStoppedAtEpochMs,
+            timestampResetAtEpochMs = timestampResetAtEpochMs,
+            symbol = symbol,
+            exchangeId = exchangeId,
+            managedSymbols = managedSymbols,
+            availableBalanceIdr = state.engineState.availableBalanceIdr,
+            dailyPnlIdr = state.dailyPnlIdr,
+            consecutiveLosses = state.consecutiveLosses,
+            holdingsSeeded = state.holdingsSeeded,
+            positions = state.engineState.positions,
+            buyDecisionCount = state.buyDecisionCount,
+            holdDecisionCount = state.holdDecisionCount,
+            sellDecisionCount = state.sellDecisionCount,
+        ))
+    }
+
     private fun persistDecisions(status: PaperRuntimeStatus) {
-        val db = MireiDatabase(this)
-        status.decisionsBySymbol.forEach { (pair, decision) ->
-            db.recordSuggestion(pair, decision.action.name, decision.confidence, decision.rationale, status.lastTickEpochMs)
-        }
-        status.recentExecutions.forEach { execution ->
-            val eventType = when (execution.reason) {
-                "stop_loss" -> "SL_CLOSE"
-                "take_profit" -> "TP_CLOSE"
-                "manual_close_all" -> "MANUAL_CLOSE"
-                "re_entry" -> "RE_ENTRY"
-                "entry_filled" -> "OPEN"
-                else -> "EXECUTION"
+        runCatching {
+            val db = MireiDatabase(this)
+            status.decisionsBySymbol.forEach { (pair, decision) -> db.recordSuggestion(pair, decision.action.name, decision.confidence, decision.rationale, status.lastTickEpochMs) }
+            status.recentExecutions.forEach { execution ->
+                val eventType = when (execution.reason) {
+                    "stop_loss" -> "SL_CLOSE"
+                    "take_profit" -> "TP_CLOSE"
+                    "manual_close_all" -> "MANUAL_CLOSE"
+                    "re_entry", "human_verified_re_entry" -> "RE_ENTRY"
+                    "entry_filled", "human_verified_entry" -> "OPEN"
+                    else -> "EXECUTION"
+                }
+                db.recordAudit(eventType, "${execution.reason ?: "execution"}|${execution.orderId ?: "-"}|pnl=${execution.pnlIdr}|balance_before=${execution.balanceBeforeIdr}|balance_after=${execution.remainingBalanceIdr}", status.lastTickEpochMs)
             }
-            db.recordAudit(eventType, "${execution.reason ?: "execution"}|${execution.orderId ?: "-"}|pnl=${execution.pnlIdr}|balance=${execution.remainingBalanceIdr}", status.lastTickEpochMs)
         }
     }
 
     private fun closeAll() {
-        val wasRunning = controller.state == MireiState.RUNNING
-        controller.closeAll()
         worker.post {
-            val status = runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
+            val status = runCatching { runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)) }.getOrElse {
+                handleRuntimeFailure("Mirei close all failed", it)
+                runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
+            }
             persistDecisions(status)
-            if (wasRunning) controller.start()
+            controller.stop()
+            runStoppedAtEpochMs = System.currentTimeMillis()
+            persistSession()
+            runCatching { MireiDatabase(this).recordAudit("SESSION_CLOSED", "all_positions_closed", runStoppedAtEpochMs) }
             publishStatus(status)
-            if (wasRunning) worker.post(runtimeLoop)
         }
     }
 
@@ -204,7 +313,8 @@ class MireiForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        try { networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } } catch (_: Exception) { }
+        runCatching { persistSession() }
+        runCatching { networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } }
         if (::workerThread.isInitialized) workerThread.quitSafely()
         networkCallback = null
         connectivityManager = null
@@ -213,6 +323,7 @@ class MireiForegroundService : Service() {
 
     private fun handleRuntimeFailure(message: String, error: Throwable) {
         controller.onEngineError()
+        runCatching { MireiDatabase(this).recordAudit("RUNTIME_ERROR", "$message|${error.javaClass.simpleName}|${error.message ?: ""}") }
         runCatching { publish("ERROR · $message · ${error.javaClass.simpleName}", force = true) }
         runCatching { publishHealth() }
     }
@@ -271,9 +382,18 @@ class MireiForegroundService : Service() {
             })
             putExtra(EXTRA_SCANNER, status.scannerSummary)
             putExtra(EXTRA_TICK, status.lastTickEpochMs)
+            putExtra(EXTRA_BUY_COUNT, status.buyDecisionCount)
+            putExtra(EXTRA_HOLD_COUNT, status.holdDecisionCount)
+            putExtra(EXTRA_SELL_COUNT, status.sellDecisionCount)
+            putExtra(EXTRA_HUMAN_REQUIRED, status.humanVerificationRequired)
+            putExtra(EXTRA_HUMAN_ALLOWED, status.humanAllowedIndicators.joinToString(","))
+            putExtra(EXTRA_HUMAN_BLOCKED, status.humanBlockedIndicators.joinToString(","))
+            putExtra(EXTRA_SESSION_CREATED, sessionCreatedAtEpochMs)
+            putExtra(EXTRA_RUN_STARTED, runStartedAtEpochMs)
+            putExtra(EXTRA_RUN_STOPPED, runStoppedAtEpochMs)
+            putExtra(EXTRA_CLOCK_RESET, timestampResetAtEpochMs)
         }
         sendBroadcast(intent)
-
         val meaningfulEvent = when {
             !status.lastError.isNullOrBlank() -> "ERROR:${status.lastError}"
             status.recentExecutions.isNotEmpty() -> status.recentExecutions.last().let { execution -> "EXEC:${execution.orderId}:${execution.reason}:${execution.pnlIdr}:${status.lastTickEpochMs}" }
@@ -335,20 +455,25 @@ class MireiForegroundService : Service() {
         const val ACTION_REFRESH = "com.mirei.app.action.REFRESH"
         const val ACTION_APPLY_RISK = "com.mirei.app.action.APPLY_RISK"
         const val ACTION_DELETE_HISTORY = "com.mirei.app.action.DELETE_HISTORY"
+        const val ACTION_HUMAN_VERIFY = "com.mirei.app.action.HUMAN_VERIFY"
+        const val ACTION_RESET_SESSION = "com.mirei.app.action.RESET_SESSION"
+        const val ACTION_RESET_CLOCK = "com.mirei.app.action.RESET_CLOCK"
         const val ACTION_STATUS = "com.mirei.app.action.STATUS"
         const val EXTRA_STATE = "state"
         const val EXTRA_SYMBOL = "symbol"
         const val EXTRA_EXCHANGE = "exchange"
         const val EXTRA_INITIAL_ALLOCATIONS = "initial_allocations"
+        const val EXTRA_HUMAN_SYMBOL = "human_symbol"
+        const val EXTRA_HUMAN_AGENTS = "human_agents"
         const val EXTRA_PRICE = "price"
         const val EXTRA_BID = "bid"
         const val EXTRA_ASK = "ask"
-        const val EXTRA_HIGH_24H = "high_24h"
-        const val EXTRA_LOW_24H = "low_24h"
-        const val EXTRA_VOLUME_24H = "volume_24h"
+        const val EXTRA_HIGH_24H = "high24h"
+        const val EXTRA_LOW_24H = "low24h"
+        const val EXTRA_VOLUME_24H = "volume24h"
         const val EXTRA_EQUITY = "equity"
         const val EXTRA_BALANCE = "balance"
-        const val EXTRA_PNL = "daily_pnl"
+        const val EXTRA_PNL = "pnl"
         const val EXTRA_POSITIONS = "positions"
         const val EXTRA_CONFIDENCE = "confidence"
         const val EXTRA_ACTION = "action"
@@ -364,7 +489,7 @@ class MireiForegroundService : Service() {
         const val EXTRA_CHANGE_1M = "change_1m"
         const val EXTRA_CHANGE_5M = "change_5m"
         const val EXTRA_CHANGE_15M = "change_15m"
-        const val EXTRA_FLOW = "trade_flow"
+        const val EXTRA_FLOW = "flow"
         const val EXTRA_TREND = "trend"
         const val EXTRA_TRADE_COUNT = "trade_count"
         const val EXTRA_BUY_VOLUME = "buy_volume"
@@ -380,6 +505,16 @@ class MireiForegroundService : Service() {
         const val EXTRA_POSITIONS_DETAIL = "positions_detail"
         const val EXTRA_SCANNER = "scanner"
         const val EXTRA_TICK = "tick"
+        const val EXTRA_BUY_COUNT = "buy_count"
+        const val EXTRA_HOLD_COUNT = "hold_count"
+        const val EXTRA_SELL_COUNT = "sell_count"
+        const val EXTRA_HUMAN_REQUIRED = "human_required"
+        const val EXTRA_HUMAN_ALLOWED = "human_allowed"
+        const val EXTRA_HUMAN_BLOCKED = "human_blocked"
+        const val EXTRA_SESSION_CREATED = "session_created"
+        const val EXTRA_RUN_STARTED = "run_started"
+        const val EXTRA_RUN_STOPPED = "run_stopped"
+        const val EXTRA_CLOCK_RESET = "clock_reset"
         const val DEFAULT_SYMBOL = "BTC/IDR"
         const val DEFAULT_EXCHANGE = "indodax"
         val SUPPORTED_MARKETS = listOf("BTC/IDR", "ETH/IDR", "HYPE/IDR", "FARTCOIN/IDR", "SOL/IDR", "XRP/IDR", "DOGE/IDR", "ADA/IDR", "SUI/IDR", "TRX/IDR")
