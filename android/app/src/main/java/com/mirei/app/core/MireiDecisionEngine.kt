@@ -36,13 +36,15 @@ data class EntryPlan(
     val trailingActivationPrice: Double,
     val stakeIdr: Double,
     val reasons: List<String>,
+    val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
+    val riskReferenceCapitalIdr: Double = 0.0,
 )
 
 class MireiDecisionEngine(
     private val config: TradingConfig,
     private val riskPolicy: RiskPolicy = RiskPolicy(config),
 ) {
-    fun buildEntryPlan(snapshot: MarketSnapshot, riskSnapshot: RiskSnapshot): EntryPlan {
+    fun buildEntryPlan(snapshot: MarketSnapshot, riskSnapshot: RiskSnapshot, initialCapitalIdr: Double? = null): EntryPlan {
         val risk = riskPolicy.evaluate(riskSnapshot)
         val reasons = mutableListOf<String>()
         if (!risk.allowedToOpen) reasons += risk.reasons
@@ -53,7 +55,7 @@ class MireiDecisionEngine(
         if (snapshot.momentumPercent <= 0.0) reasons += "momentum_not_positive"
 
         if (!risk.allowedToOpen || reasons.isNotEmpty()) {
-            return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, reasons.ifEmpty { listOf("no_trade") })
+            return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, reasons.ifEmpty { listOf("no_trade") }, config.riskReferenceMode)
         }
 
         val baseStop = config.effectiveStopLossPercent()
@@ -65,16 +67,15 @@ class MireiDecisionEngine(
             (baseStop / volatilityFactor).coerceIn(baseStop * 0.50, baseStop)
         }
         val stake = minOf(config.positionSizeIdr * risk.positionMultiplier, config.totalCapitalIdr / config.maxOpenPositions)
-
-        // The single automatic choice is calculated from both actual entry price
-        // and allocated capital. Manual mode keeps the explicit percentage override.
+        val initialCapital = initialCapitalIdr?.takeIf { it > 0.0 } ?: stake
         val targets = config.calculateRiskTargets(
             entryPrice = snapshot.price,
             stakeIdr = stake,
+            initialCapitalIdr = initialCapital,
             stopLossPercent = riskLossPercent,
             takeProfitPercent = baseTake,
         )
-        val activation = snapshot.price * (1.0 + (riskLossPercent * config.trailingActivationR) / 100.0)
+        val activation = snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR
 
         return EntryPlan(
             allowed = true,
@@ -84,6 +85,8 @@ class MireiDecisionEngine(
             trailingActivationPrice = activation,
             stakeIdr = stake,
             reasons = listOf("mirei_entry_gates_passed"),
+            riskReferenceMode = config.riskReferenceMode,
+            riskReferenceCapitalIdr = targets.referenceCapitalIdr,
         )
     }
 
