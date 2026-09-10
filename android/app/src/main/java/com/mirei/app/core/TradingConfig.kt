@@ -64,10 +64,15 @@ data class TradingConfig(
     }
 
     /**
-     * TP/SL can be monitored from either the current coin entry price or from
-     * the first-buy capital allocated to that symbol. The price trigger is
-     * always derived from actual quantity so both modes resolve to concrete
-     * coin prices while preserving the intended IDR amount at risk.
+     * Calculates exit thresholds only. This function is deliberately outside
+     * Mirei's entry decision gates: changing riskReferenceMode must never turn
+     * a BUY/SELL/HOLD decision into another decision.
+     *
+     * ENTRY_PRICE means the configured percentages are applied to the current
+     * position entry price. INITIAL_CAPITAL means the configured percentages
+     * define an IDR profit/loss budget from the first capital allocated to the
+     * symbol, then that IDR threshold is translated into the current position's
+     * concrete coin price using its actual quantity.
      */
     fun calculateRiskTargets(
         entryPrice: Double,
