@@ -47,9 +47,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) {
-            db.execSQL("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
-        }
+        if (oldVersion < 2) db.execSQL("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
     }
 
     fun recordTradeOpened(position: PaperPosition, entryFeeIdr: Double) {
@@ -125,8 +123,73 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         },
     )
 
+    fun recentTrades(limit: Int = 30): List<TradeRow> {
+        val rows = mutableListOf<TradeRow>()
+        readableDatabase.rawQuery(
+            "SELECT id, exchange_id, symbol, side, status, entry_price, exit_price, stake_idr, fee_idr, pnl_idr, opened_at, closed_at, exit_reason FROM trades ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?",
+            arrayOf(limit.coerceIn(1, 200).toString()),
+        ).use { cursor ->
+            val idx = cursor.columnIndexes()
+            while (cursor.moveToNext()) {
+                rows += TradeRow(
+                    id = cursor.getString(idx("id")),
+                    exchangeId = cursor.getString(idx("exchange_id")),
+                    symbol = cursor.getString(idx("symbol")),
+                    side = cursor.getString(idx("side")),
+                    status = cursor.getString(idx("status")),
+                    entryPrice = cursor.getDoubleOrNull(idx("entry_price")),
+                    exitPrice = cursor.getDoubleOrNull(idx("exit_price")),
+                    stakeIdr = cursor.getDouble(idx("stake_idr")),
+                    feeIdr = cursor.getDouble(idx("fee_idr")),
+                    pnlIdr = cursor.getDouble(idx("pnl_idr")),
+                    openedAtEpochMs = cursor.getLong(idx("opened_at")),
+                    closedAtEpochMs = cursor.getLongOrNull(idx("closed_at")),
+                    exitReason = cursor.getStringOrNull(idx("exit_reason")),
+                )
+            }
+        }
+        return rows
+    }
+
+    fun clearHistory() {
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.delete("trades", null, null)
+            writableDatabase.delete("suggestions", null, null)
+            writableDatabase.delete("audit_log", null, null)
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+    }
+
+    private fun android.database.Cursor.columnIndexes(): Map<String, Int> = buildMap {
+        for (i in 0 until columnCount) put(getColumnName(i), i)
+    }
+
+    private fun android.database.Cursor.getDoubleOrNull(index: Int): Double? = if (isNull(index)) null else getDouble(index)
+    private fun android.database.Cursor.getLongOrNull(index: Int): Long? = if (isNull(index)) null else getLong(index)
+    private fun android.database.Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
+    private fun Map<String, Int>.get(key: String): Int = checkNotNull(this[key])
+
     companion object {
         private const val DB_NAME = "mirei.db"
         private const val DB_VERSION = 2
     }
 }
+
+data class TradeRow(
+    val id: String,
+    val exchangeId: String,
+    val symbol: String,
+    val side: String,
+    val status: String,
+    val entryPrice: Double?,
+    val exitPrice: Double?,
+    val stakeIdr: Double,
+    val feeIdr: Double,
+    val pnlIdr: Double,
+    val openedAtEpochMs: Long,
+    val closedAtEpochMs: Long?,
+    val exitReason: String?,
+)
