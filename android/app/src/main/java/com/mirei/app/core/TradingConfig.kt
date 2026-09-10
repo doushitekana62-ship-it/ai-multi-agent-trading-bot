@@ -6,8 +6,8 @@ data class TradingConfig(
     val totalCapitalIdr: Double = 150_000.0,
     val positionSizeIdr: Double = 50_000.0,
     val maxOpenPositions: Int = 3,
-    val baseStopLossPercent: Double = 0.25,
-    val baseTakeProfitPercent: Double = 0.85,
+    val baseStopLossPercent: Double = 0.15,
+    val baseTakeProfitPercent: Double = 0.50,
     val sentimentHoldThreshold: Double = -30.0,
     val trailingActivationR: Double = 1.0,
     val maxDailyLossPercent: Double = 3.0,
@@ -37,18 +37,18 @@ data class TradingConfig(
     fun effectiveStopLossPercent(): Double = when (manualRiskMode) {
         ManualRiskMode.MANUAL -> manualStopLossPercent!!
         ManualRiskMode.AUTO -> when (mode) {
-            ScalpingMode.AGGRESSIVE -> 0.20
-            ScalpingMode.BALANCED -> 0.25
-            ScalpingMode.SAFETY -> 0.30
+            ScalpingMode.AGGRESSIVE -> 0.10
+            ScalpingMode.BALANCED -> 0.15
+            ScalpingMode.SAFETY -> 0.20
         }
     }
 
     fun effectiveTakeProfitPercent(): Double = when (manualRiskMode) {
         ManualRiskMode.MANUAL -> manualTakeProfitPercent!!
         ManualRiskMode.AUTO -> when (mode) {
-            ScalpingMode.AGGRESSIVE -> 0.95
-            ScalpingMode.BALANCED -> 0.85
-            ScalpingMode.SAFETY -> 0.75
+            ScalpingMode.AGGRESSIVE -> 0.35
+            ScalpingMode.BALANCED -> 0.50
+            ScalpingMode.SAFETY -> 0.65
         }
     }
 }
