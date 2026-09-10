@@ -52,15 +52,15 @@ class MireiUiPatchApplication : Application() {
         val root = activity.window.decorView
         fun patch() {
             findButtons(root).filter { it.text?.toString() == "MULAI" }.forEach { button ->
-                if (button.getTag(TAG_PATCHED) == true) return@forEach
-                button.setTag(TAG_PATCHED, true)
+                if (button.getTag() == TAG_PATCHED) return@forEach
+                button.setTag(TAG_PATCHED)
                 button.setOnClickListener { showStartDialog(activity) }
             }
         }
         patch()
         val observer = root.viewTreeObserver
-        if (observer.isAlive && root.getTag(TAG_OBSERVER) != true) {
-            root.setTag(TAG_OBSERVER, true)
+        if (observer.isAlive && root.getTag() != TAG_OBSERVER) {
+            root.setTag(TAG_OBSERVER)
             observer.addOnGlobalLayoutListener { patch() }
         }
     }
