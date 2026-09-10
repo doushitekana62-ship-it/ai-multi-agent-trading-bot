@@ -138,7 +138,6 @@ class TradingConfigRiskTargetsTest {
             dailyStartBalanceIdr = 150_000.0,
             equityIdr = 150_000.0,
             openPositions = 0,
-            holdDecisionCount = 0,
             consecutiveLosses = 0,
             marketDataFresh = true,
             exchangeHealthy = true,
