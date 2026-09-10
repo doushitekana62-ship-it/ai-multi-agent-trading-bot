@@ -104,29 +104,48 @@ class PaperExecutionEngine(
     private fun openInternal(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, reservedIdr: Double, entryReason: String): ExecutionResult {
         if (!plan.allowed || plan.stakeIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
-        val entryFee = plan.stakeIdr * feePercent / (100.0 + feePercent)
-        val entryNotional = plan.stakeIdr - entryFee
-        val required = plan.stakeIdr
-        if (reservedIdr > 0.0) { if (reservedIdr + 1e-9 < required) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation") }
-        else if (required > availableBalanceIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
-        require(plan.entryPrice > 0.0)
+        if (reservedIdr > 0.0 && reservedIdr + 1e-9 < plan.stakeIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
+
+        // A losing close can leave available paper cash slightly below the nominal
+        // Rp50.000 position size. Re-entry must not wait for loss recovery. Use all
+        // remaining cash for the new paper position, then preserve the selected risk
+        // basis when translating the target prices.
+        val effectiveStake = if (reservedIdr > 0.0) {
+            plan.stakeIdr
+        } else {
+            minOf(plan.stakeIdr, availableBalanceIdr)
+        }
+        if (effectiveStake <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
+
+        val entryFee = effectiveStake * feePercent / (100.0 + feePercent)
+        val entryNotional = effectiveStake - entryFee
+        val required = effectiveStake
         val before = availableBalanceIdr
+        require(plan.entryPrice > 0.0)
         val executionPrice = plan.entryPrice * (1.0 + slippagePercent / 100.0)
         val entryRatio = executionPrice / plan.entryPrice
+        val stakeScale = if (effectiveStake > 0.0) plan.stakeIdr / effectiveStake else 1.0
+        val stopDistance = (plan.entryPrice - plan.stopLossPrice).coerceAtLeast(0.0) *
+            if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
+        val takeDistance = (plan.takeProfitPrice - plan.entryPrice).coerceAtLeast(0.0) *
+            if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
+        val trailingDistance = (plan.trailingActivationPrice - plan.entryPrice).coerceAtLeast(0.0) *
+            if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
+
         val id = nextPositionId("paper", nowMs)
         val position = PaperPosition(
             id = id,
             exchangeId = exchangeId,
             symbol = symbol,
-            stakeIdr = plan.stakeIdr,
+            stakeIdr = effectiveStake,
             entryPrice = executionPrice,
-            stopLossPrice = plan.stopLossPrice * entryRatio,
-            takeProfitPrice = plan.takeProfitPrice * entryRatio,
-            trailingActivationPrice = plan.trailingActivationPrice * entryRatio,
+            stopLossPrice = (executionPrice - stopDistance * entryRatio).coerceAtLeast(executionPrice * 0.000001),
+            takeProfitPrice = executionPrice + takeDistance * entryRatio,
+            trailingActivationPrice = executionPrice + trailingDistance * entryRatio,
             openedAtEpochMs = nowMs,
             entryReason = entryReason,
             riskReferenceMode = plan.riskReferenceMode,
-            riskReferenceCapitalIdr = plan.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: plan.stakeIdr,
+            riskReferenceCapitalIdr = plan.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: effectiveStake,
         )
         tradeLedger?.recordOpened(position, entryFee)
         if (reservedIdr <= 0.0) availableBalanceIdr -= required
@@ -241,10 +260,12 @@ class PaperExchangeAdapter(private val prices: () -> Map<String, Double>, privat
 data class ExchangeHandle(val id: String, val displayName: String, val adapter: ExchangeAdapter, val tradingEnabled: Boolean = false)
 class ExchangeRegistry {
     private val handles = linkedMapOf<String, ExchangeHandle>()
-    fun register(handle: ExchangeHandle) { require(handle.id.isNotBlank()); require(handle.displayName.isNotBlank()); require(handle.adapter.exchangeId == handle.id); handles[handle.id] = handle }
-    fun remove(exchangeId: String): ExchangeHandle? = handles.remove(exchangeId)
-    fun get(exchangeId: String): ExchangeHandle? = handles[exchangeId]
-    fun activeTradingAdapters(): List<ExchangeAdapter> = handles.values.filter { it.tradingEnabled }.map { it.adapter }
-    fun ids(): List<String> = handles.keys.toList()
+    fun register(handle: ExchangeHandle) { require(handle.id.isNotBlank()); require(handle.displayName.isNotBlank()); handles[handle.id] = handle }
+    fun get(id: String): ExchangeHandle? = handles[id]
     fun all(): List<ExchangeHandle> = handles.values.toList()
+}
+
+interface TradeLedger {
+    fun recordOpened(position: PaperPosition, entryFee: Double)
+    fun recordClosed(position: PaperPosition, exitPrice: Double, fee: Double, pnlIdr: Double, closedAtEpochMs: Long, reason: String)
 }
