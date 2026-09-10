@@ -13,14 +13,9 @@ import com.mirei.app.execution.PaperExecutionEngine
 import com.mirei.app.execution.PaperPosition
 import com.mirei.app.execution.TradeLedger
 
-interface PaperMarketDataSource {
-    fun snapshot(symbol: String): MarketSnapshot?
-}
+interface PaperMarketDataSource { fun snapshot(symbol: String): MarketSnapshot? }
 
-data class RuntimeEnvironment(
-    val internetAvailable: Boolean = true,
-    val exchangeHealthy: Boolean = true,
-)
+data class RuntimeEnvironment(val internetAvailable: Boolean = true, val exchangeHealthy: Boolean = true)
 
 data class PaperRuntimeStatus(
     val availableBalanceIdr: Double,
@@ -62,10 +57,11 @@ data class PaperRuntimeStatus(
     val entryPlanReasons: List<String> = emptyList(),
     val decisionsBySymbol: Map<String, MireiDecision> = emptyMap(),
     val snapshotsBySymbol: Map<String, MarketSnapshot> = emptyMap(),
+    val scannerSummary: String = "",
 )
 
 class MireiPaperTradingRuntime(
-    private val config: TradingConfig = TradingConfig(),
+    config: TradingConfig = TradingConfig(),
     private val marketData: PaperMarketDataSource,
     tradeLedger: TradeLedger? = null,
     private val symbol: String,
@@ -73,8 +69,10 @@ class MireiPaperTradingRuntime(
     private val managedSymbols: List<String> = listOf(symbol),
     private val engine: PaperExecutionEngine = PaperExecutionEngine(config, tradeLedger = tradeLedger),
     private val orchestrator: MireiOrchestrator = MireiOrchestrator(DefaultMireiAgents.create(), config.decisionMode),
-    private val decisionEngine: MireiDecisionEngine = MireiDecisionEngine(config),
+    decisionEngine: MireiDecisionEngine = MireiDecisionEngine(config),
 ) {
+    private var config = config
+    private var decisionEngine = decisionEngine
     private val dailyStartBalanceIdr = config.totalCapitalIdr
     private var dailyPnlIdr = 0.0
     private var consecutiveLosses = 0
@@ -88,6 +86,15 @@ class MireiPaperTradingRuntime(
     private var lastExchangeHealthy = false
     private var lastEntryPlanReasons: List<String> = emptyList()
     private var holdingsSeeded = false
+    private var lastScannerSummary = ""
+
+    fun applyRiskConfig(newConfig: TradingConfig) {
+        require(newConfig.totalCapitalIdr == config.totalCapitalIdr) { "paper_capital_immutable_while_running" }
+        require(newConfig.maxOpenPositions == config.maxOpenPositions) { "paper_position_limit_immutable_while_running" }
+        config = newConfig
+        decisionEngine = MireiDecisionEngine(newConfig)
+        engine.updateRiskTargets(newConfig.effectiveStopLossPercent(), newConfig.effectiveTakeProfitPercent())
+    }
 
     fun seedInitialHoldings(allocations: Map<String, Double>, nowMs: Long): List<ExecutionResult> {
         if (holdingsSeeded || allocations.isEmpty()) return emptyList()
@@ -98,112 +105,62 @@ class MireiPaperTradingRuntime(
         for ((managedSymbol, amount) in normalized) {
             val snapshot = marketData.snapshot(managedSymbol) ?: continue
             if (!snapshot.dataFresh) continue
-            results += engine.seedExistingHolding(
-                exchangeId = exchangeId,
-                symbol = managedSymbol,
-                quoteAmount = amount,
-                marketPrice = snapshot.price,
-                stopLossPercent = config.effectiveStopLossPercent(),
-                takeProfitPercent = config.effectiveTakeProfitPercent(),
-                nowMs = nowMs,
-            )
+            results += engine.seedExistingHolding(exchangeId, managedSymbol, amount, snapshot.price, config.effectiveStopLossPercent(), config.effectiveTakeProfitPercent(), nowMs)
         }
         holdingsSeeded = results.any { it.success }
         if (results.none { it.success }) lastError = "initial_holdings_not_seeded"
         return results
     }
 
-    fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus =
-        runCatching {
-            lastError = null
-            lastTickEpochMs = nowMs
-            val snapshots = managedSymbols.distinct().take(3).mapNotNull { managedSymbol ->
-                marketData.snapshot(managedSymbol)?.let { managedSymbol to it }
-            }.toMap()
-            lastSnapshots = snapshots
-            lastSnapshot = snapshots[symbol] ?: snapshots.values.firstOrNull()
-            lastExchangeHealthy = snapshots.isNotEmpty() && environment.exchangeHealthy
-            if (snapshots.isEmpty()) {
-                lastError = "market_data_unavailable"
-                lastEntryPlanReasons = listOf("market_data_unavailable")
-                lastDecision = null
-                return status(environment)
+    fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
+        lastError = null
+        lastTickEpochMs = nowMs
+        val snapshots = managedSymbols.distinct().take(3).mapNotNull { managedSymbol -> marketData.snapshot(managedSymbol)?.let { managedSymbol to it } }.toMap()
+        lastSnapshots = snapshots
+        lastSnapshot = snapshots[symbol] ?: snapshots.values.firstOrNull()
+        lastExchangeHealthy = snapshots.isNotEmpty() && environment.exchangeHealthy
+        if (snapshots.isEmpty()) { lastError = "market_data_unavailable"; lastEntryPlanReasons = listOf("market_data_unavailable"); lastDecision = null; return status(environment) }
+        if (!environment.internetAvailable) { lastEntryPlanReasons = listOf("internet_unavailable"); return status(environment) }
+        if (!environment.exchangeHealthy) { lastEntryPlanReasons = listOf("exchange_unhealthy"); return status(environment) }
+        val fresh = snapshots.filterValues { it.dataFresh }
+        if (fresh.isEmpty()) { lastEntryPlanReasons = listOf("market_snapshot_stale"); return status(environment) }
+        val markPrices = fresh.mapValues { it.value.price }
+        fresh.forEach { (managedSymbol, snapshot) -> closeTriggeredPositions(managedSymbol, snapshot.price, nowMs) }
+        val riskSnapshot = RiskSnapshot(dailyPnlIdr, dailyStartBalanceIdr, engine.equityIdr(markPrices), engine.positionCount(), consecutiveLosses, fresh.size == snapshots.size, lastExchangeHealthy, environment.internetAvailable)
+        val decisions = linkedMapOf<String, MireiDecision>()
+        val planReasons = linkedMapOf<String, List<String>>()
+        var lastExecutionForTick: ExecutionResult? = null
+        for ((managedSymbol, snapshot) in fresh) {
+            val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot.copy(openPositions = engine.positionCount()))
+            planReasons[managedSymbol] = plan.reasons
+            val decision = orchestrator.evaluate(snapshot)
+            decisions[managedSymbol] = decision
+            if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
+                lastExecutionForTick = engine.open(exchangeId, managedSymbol, plan, nowMs)
             }
-            if (!environment.internetAvailable) {
-                lastEntryPlanReasons = listOf("internet_unavailable")
-                return status(environment)
-            }
-            if (!environment.exchangeHealthy) {
-                lastEntryPlanReasons = listOf("exchange_unhealthy")
-                return status(environment)
-            }
-
-            val fresh = snapshots.filterValues { it.dataFresh }
-            if (fresh.isEmpty()) {
-                lastEntryPlanReasons = listOf("market_snapshot_stale")
-                return status(environment)
-            }
-            val markPrices = fresh.mapValues { it.value.price }
-            fresh.forEach { (managedSymbol, snapshot) -> closeTriggeredPositions(managedSymbol, snapshot.price, nowMs) }
-
-            val riskSnapshot = RiskSnapshot(
-                dailyPnlIdr = dailyPnlIdr,
-                dailyStartBalanceIdr = dailyStartBalanceIdr,
-                equityIdr = engine.equityIdr(markPrices),
-                openPositions = engine.positionCount(),
-                consecutiveLosses = consecutiveLosses,
-                marketDataFresh = fresh.size == snapshots.size,
-                exchangeHealthy = lastExchangeHealthy,
-                internetAvailable = environment.internetAvailable,
-            )
-            val decisions = linkedMapOf<String, MireiDecision>()
-            val planReasons = linkedMapOf<String, List<String>>()
-            var lastExecutionForTick: ExecutionResult? = null
-            for ((managedSymbol, snapshot) in fresh) {
-                val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot.copy(openPositions = engine.positionCount()))
-                planReasons[managedSymbol] = plan.reasons
-                val decision = orchestrator.evaluate(snapshot)
-                decisions[managedSymbol] = decision
-                if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
-                    val result = engine.open(exchangeId, managedSymbol, plan, nowMs)
-                    lastExecutionForTick = result
-                }
-            }
-            lastDecisions = decisions
-            lastDecision = decisions[symbol] ?: decisions.values.firstOrNull()
-            lastExecution = lastExecutionForTick
-            lastEntryPlanReasons = planReasons[symbol] ?: planReasons.values.firstOrNull().orEmpty()
-            status(environment, markPrices)
-        }.getOrElse { error ->
-            lastError = error.message ?: error.javaClass.simpleName
-            lastEntryPlanReasons = listOf("runtime_error")
-            lastTickEpochMs = nowMs
-            lastExchangeHealthy = false
-            status(environment)
         }
+        lastDecisions = decisions
+        lastDecision = decisions[symbol] ?: decisions.values.firstOrNull()
+        lastExecution = lastExecutionForTick
+        lastEntryPlanReasons = planReasons[symbol] ?: planReasons.values.firstOrNull().orEmpty()
+        status(environment, markPrices)
+    }.getOrElse { error ->
+        lastError = error.message ?: error.javaClass.simpleName
+        lastEntryPlanReasons = listOf("runtime_error")
+        lastTickEpochMs = nowMs
+        lastExchangeHealthy = false
+        status(environment)
+    }
 
-    fun closeAll(
-        nowMs: Long,
-        environment: RuntimeEnvironment = RuntimeEnvironment(),
-        reason: String = "manual_close_all",
-    ): PaperRuntimeStatus {
+    fun updateScannerSummary(summary: String) { lastScannerSummary = summary }
+
+    fun closeAll(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment(), reason: String = "manual_close_all"): PaperRuntimeStatus {
         lastTickEpochMs = nowMs
         lastError = null
-        if (!environment.internetAvailable || !environment.exchangeHealthy) {
-            lastExchangeHealthy = false
-            lastError = "close_all_exchange_unavailable"
-            lastEntryPlanReasons = listOf("close_all_exchange_unavailable")
-            return status(environment)
-        }
-        val positions = engine.positions()
-        for (position in positions) {
+        if (!environment.internetAvailable || !environment.exchangeHealthy) { lastExchangeHealthy = false; lastError = "close_all_exchange_unavailable"; lastEntryPlanReasons = listOf("close_all_exchange_unavailable"); return status(environment) }
+        engine.positions().toList().forEach { position ->
             val snapshot = marketData.snapshot(position.symbol)
-            if (snapshot == null || !snapshot.dataFresh) {
-                lastExchangeHealthy = false
-                lastError = "close_all_market_data_unavailable"
-                lastEntryPlanReasons = listOf("close_all_market_data_unavailable")
-                break
-            }
+            if (snapshot == null || !snapshot.dataFresh) { lastExchangeHealthy = false; lastError = "close_all_market_data_unavailable"; lastEntryPlanReasons = listOf("close_all_market_data_unavailable"); return@forEach }
             lastExchangeHealthy = true
             close(position.id, snapshot.price, reason, nowMs)
         }
@@ -214,45 +171,22 @@ class MireiPaperTradingRuntime(
         val snapshot = lastSnapshot
         val prices = if (markPrices.isNotEmpty()) markPrices else lastSnapshots.mapValues { it.value.price }
         return PaperRuntimeStatus(
-            availableBalanceIdr = engine.availableBalanceIdr(),
-            equityIdr = engine.equityIdr(prices),
-            activePositions = engine.positions(),
-            lastDecision = lastDecision,
-            lastExecution = lastExecution,
-            dailyPnlIdr = dailyPnlIdr,
-            consecutiveLosses = consecutiveLosses,
-            marketSymbol = snapshot?.symbol.orEmpty(),
-            marketPrice = snapshot?.price ?: 0.0,
-            marketBidPrice = snapshot?.bidPrice ?: 0.0,
-            marketAskPrice = snapshot?.askPrice ?: 0.0,
-            marketHigh24h = snapshot?.high24h ?: 0.0,
-            marketLow24h = snapshot?.low24h ?: 0.0,
-            marketVolume24h = snapshot?.volume24h ?: 0.0,
-            marketMomentumPercent = snapshot?.momentumPercent ?: 0.0,
-            marketVolatilityPercent = snapshot?.volatilityPercent ?: 0.0,
-            marketSentimentScore = snapshot?.sentimentScore ?: 0.0,
-            forecastConfidence = snapshot?.forecastConfidence ?: 0.0,
-            marketSpreadPercent = snapshot?.spreadPercent ?: 0.0,
-            changeSinceLastTickPercent = snapshot?.changeSinceLastTickPercent ?: 0.0,
-            change1mPercent = snapshot?.change1mPercent ?: 0.0,
-            change5mPercent = snapshot?.change5mPercent ?: 0.0,
-            change15mPercent = snapshot?.change15mPercent ?: 0.0,
-            tradeFlowPercent = snapshot?.tradeFlowPercent ?: 0.0,
-            trendScorePercent = snapshot?.trendScorePercent ?: 0.0,
-            tradeCount = snapshot?.tradeCount ?: 0,
-            buyVolume = snapshot?.buyVolume ?: 0.0,
-            sellVolume = snapshot?.sellVolume ?: 0.0,
-            lastTradeEpochMs = snapshot?.lastTradeEpochMs ?: 0L,
-            snapshotEpochMs = snapshot?.snapshotEpochMs ?: 0L,
-            sourceAgeMs = snapshot?.sourceAgeMs ?: 0L,
-            marketDataFresh = snapshot?.dataFresh == true,
-            internetAvailable = environment.internetAvailable,
-            exchangeHealthy = lastExchangeHealthy && environment.exchangeHealthy && environment.internetAvailable,
-            lastTickEpochMs = lastTickEpochMs,
-            lastError = lastError,
-            entryPlanReasons = lastEntryPlanReasons,
-            decisionsBySymbol = lastDecisions,
-            snapshotsBySymbol = lastSnapshots,
+            availableBalanceIdr = engine.availableBalanceIdr(), equityIdr = engine.equityIdr(prices), activePositions = engine.positions(),
+            lastDecision = lastDecision, lastExecution = lastExecution, dailyPnlIdr = dailyPnlIdr, consecutiveLosses = consecutiveLosses,
+            marketSymbol = snapshot?.symbol.orEmpty(), marketPrice = snapshot?.price ?: 0.0, marketBidPrice = snapshot?.bidPrice ?: 0.0,
+            marketAskPrice = snapshot?.askPrice ?: 0.0, marketHigh24h = snapshot?.high24h ?: 0.0, marketLow24h = snapshot?.low24h ?: 0.0,
+            marketVolume24h = snapshot?.volume24h ?: 0.0, marketMomentumPercent = snapshot?.momentumPercent ?: 0.0,
+            marketVolatilityPercent = snapshot?.volatilityPercent ?: 0.0, marketSentimentScore = snapshot?.sentimentScore ?: 0.0,
+            forecastConfidence = snapshot?.forecastConfidence ?: 0.0, marketSpreadPercent = snapshot?.spreadPercent ?: 0.0,
+            changeSinceLastTickPercent = snapshot?.changeSinceLastTickPercent ?: 0.0, change1mPercent = snapshot?.change1mPercent ?: 0.0,
+            change5mPercent = snapshot?.change5mPercent ?: 0.0, change15mPercent = snapshot?.change15mPercent ?: 0.0,
+            tradeFlowPercent = snapshot?.tradeFlowPercent ?: 0.0, trendScorePercent = snapshot?.trendScorePercent ?: 0.0,
+            tradeCount = snapshot?.tradeCount ?: 0, buyVolume = snapshot?.buyVolume ?: 0.0, sellVolume = snapshot?.sellVolume ?: 0.0,
+            lastTradeEpochMs = snapshot?.lastTradeEpochMs ?: 0L, snapshotEpochMs = snapshot?.snapshotEpochMs ?: 0L,
+            sourceAgeMs = snapshot?.sourceAgeMs ?: 0L, marketDataFresh = snapshot?.dataFresh == true,
+            internetAvailable = environment.internetAvailable, exchangeHealthy = lastExchangeHealthy && environment.exchangeHealthy && environment.internetAvailable,
+            lastTickEpochMs = lastTickEpochMs, lastError = lastError, entryPlanReasons = lastEntryPlanReasons,
+            decisionsBySymbol = lastDecisions, snapshotsBySymbol = lastSnapshots, scannerSummary = lastScannerSummary,
         )
     }
 
@@ -260,11 +194,7 @@ class MireiPaperTradingRuntime(
 
     private fun closeTriggeredPositions(managedSymbol: String, marketPrice: Double, nowMs: Long) {
         engine.positions().filter { it.symbol == managedSymbol }.forEach { position ->
-            val reason = when {
-                marketPrice <= position.stopLossPrice -> "stop_loss"
-                marketPrice >= position.takeProfitPrice -> "take_profit"
-                else -> null
-            } ?: return@forEach
+            val reason = when { marketPrice <= position.stopLossPrice -> "stop_loss"; marketPrice >= position.takeProfitPrice -> "take_profit"; else -> null } ?: return@forEach
             close(position.id, marketPrice, reason, nowMs)
         }
     }
