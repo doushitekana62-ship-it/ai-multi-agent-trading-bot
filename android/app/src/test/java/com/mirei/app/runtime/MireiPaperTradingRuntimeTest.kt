@@ -1,5 +1,6 @@
 package com.mirei.app.runtime
 
+import com.mirei.app.agents.AgentAction
 import com.mirei.app.core.MarketSnapshot
 import com.mirei.app.core.MireiDecisionEngine
 import com.mirei.app.core.ManualRiskMode
@@ -9,6 +10,7 @@ import com.mirei.app.core.TradingConfig
 import com.mirei.app.execution.PaperPosition
 import com.mirei.app.execution.TradeLedger
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,10 +34,15 @@ class MireiPaperTradingRuntimeTest {
         assertEquals(3, third.activePositions.size); assertEquals(4, ledger.openedCount); assertEquals(1, ledger.closedCount); assertEquals(1, reentry.recentExecutions.count { it.reason == "take_profit" }); assertTrue(reentry.activePositions.any { it.openedAtEpochMs == 4_000L })
     }
 
-    @Test fun stopLossReleasesCapitalAndNextValidSignalIsMarkedReEntry() {
+    @Test fun stopLossReleasesCapitalAndAggressiveReentersWithoutLossRecovery() {
         val market = ScenarioMarket()
         val ledger = RecordingLedger()
-        val runtime = MireiPaperTradingRuntime(config = TradingConfig(positionSizeIdr = 50_000.0), marketData = market, symbol = "BTC/IDR", tradeLedger = ledger)
+        val runtime = MireiPaperTradingRuntime(
+            config = TradingConfig(mode = ScalpingMode.AGGRESSIVE, positionSizeIdr = 50_000.0, maxOpenPositions = 3),
+            marketData = market,
+            symbol = "BTC/IDR",
+            tradeLedger = ledger,
+        )
         val seeded = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 50_000.0), 1_000L).single()
         assertTrue(seeded.success)
 
@@ -43,15 +50,15 @@ class MireiPaperTradingRuntimeTest {
         val close = runtime.tick(2_000L)
         assertTrue(close.activePositions.isEmpty())
         assertTrue(close.recentExecutions.any { it.reason == "stop_loss" })
-        assertEquals(1, ledger.closedCount)
-        assertTrue(runtime.paperEngine().availableBalanceIdr() > 0.0)
+        assertTrue(runtime.paperEngine().availableBalanceIdr() < 50_000.0)
 
         market.bearish = false
         val reentry = runtime.tick(3_000L)
         assertEquals(1, reentry.activePositions.size)
         assertEquals("re_entry", reentry.activePositions.single().entryReason)
         assertTrue(reentry.recentExecutions.any { it.reason == "re_entry" })
-        assertTrue(reentry.activePositions.single().openedAtEpochMs == 3_000L)
+        assertEquals(3_000L, reentry.activePositions.single().openedAtEpochMs)
+        assertEquals(50_000.0, reentry.activePositions.single().riskReferenceCapitalIdr, 0.001)
     }
 
     @Test fun positionCapPreventsFourthConcurrentEntry() {
@@ -88,10 +95,26 @@ class MireiPaperTradingRuntimeTest {
         assertTrue(status.activePositions.isEmpty()); assertEquals(null, status.lastExecution); assertEquals(listOf("market_snapshot_stale"), status.entryPlanReasons)
     }
 
-    @Test fun conflictingAgentsExposeDecisionAndEntryReasons() {
-        val market = object : PaperMarketDataSource { override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, momentumPercent = -0.10, sentimentScore = 10.0, forecastConfidence = 0.65, changeSinceLastTickPercent = -0.10, change1mPercent = -0.10, change5mPercent = -0.10, change15mPercent = -0.10, trendScorePercent = 0.0) }
+    @Test fun conflictingAgentsUseMajorityVoteAndNeverRequireHumanConfirmation() {
+        val market = object : PaperMarketDataSource {
+            override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(
+                symbol = symbol,
+                momentumPercent = -0.10,
+                sentimentScore = 10.0,
+                forecastConfidence = 0.65,
+                changeSinceLastTickPercent = -0.10,
+                change1mPercent = -0.10,
+                change5mPercent = -0.10,
+                change15mPercent = -0.10,
+                trendScorePercent = 0.0,
+            )
+        }
         val status = MireiPaperTradingRuntime(marketData = market, symbol = "BTC/IDR").tick(1_000L)
-        assertTrue(status.activePositions.isEmpty()); assertTrue(status.lastDecision!!.requiresHumanDecision); assertEquals("agent_conflict_requires_human_decision", status.lastDecision!!.rationale); assertTrue(status.lastDecision!!.observations.any { it.rationale == "market_trend_not_confirmed" }); assertTrue(status.lastDecision!!.observations.any { it.rationale == "forecast_direction_or_confidence_weak" }); assertEquals(listOf("momentum_not_positive"), status.entryPlanReasons)
+        assertTrue(status.activePositions.isEmpty())
+        assertFalse(status.lastDecision!!.requiresHumanDecision)
+        assertEquals(AgentAction.HOLD, status.lastDecision!!.action)
+        assertEquals("agent_majority_vote", status.lastDecision!!.rationale)
+        assertEquals(listOf("mirei_entry_gates_passed"), status.entryPlanReasons)
     }
 }
 
