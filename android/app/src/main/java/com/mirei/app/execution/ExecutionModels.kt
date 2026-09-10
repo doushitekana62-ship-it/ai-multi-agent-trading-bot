@@ -264,8 +264,3 @@ class ExchangeRegistry {
     fun get(id: String): ExchangeHandle? = handles[id]
     fun all(): List<ExchangeHandle> = handles.values.toList()
 }
-
-interface TradeLedger {
-    fun recordOpened(position: PaperPosition, entryFee: Double)
-    fun recordClosed(position: PaperPosition, exitPrice: Double, fee: Double, pnlIdr: Double, closedAtEpochMs: Long, reason: String)
-}
