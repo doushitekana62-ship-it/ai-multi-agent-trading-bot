@@ -138,7 +138,17 @@ class MireiPaperTradingRuntime(
             planReasons[managedSymbol] = plan.reasons
             val decision = orchestrator.evaluate(snapshot)
             decisions[managedSymbol] = decision
-            if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
+            if (decision.action == AgentAction.CLOSE && !decision.requiresHumanDecision) {
+                engine.positions().filter { it.symbol == managedSymbol }.toList().forEach { position ->
+                    val execution = engine.close(position.id, snapshot.price, "ai_close", nowMs)
+                    if (execution.success) {
+                        lastExecutionForTick = execution
+                        tickExecutions += execution
+                        dailyPnlIdr += execution.pnlIdr
+                        consecutiveLosses = if (execution.pnlIdr < 0.0) consecutiveLosses + 1 else 0
+                    }
+                }
+            } else if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
                 val execution = engine.open(exchangeId, managedSymbol, plan, nowMs)
                 lastExecutionForTick = execution
                 if (execution.success) tickExecutions += execution
