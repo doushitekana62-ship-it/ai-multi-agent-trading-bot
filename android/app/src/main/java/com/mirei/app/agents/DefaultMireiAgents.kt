@@ -3,13 +3,13 @@ package com.mirei.app.agents
 import com.mirei.app.core.MarketSnapshot
 import kotlin.math.abs
 
-/** Deterministic paper agents driven by the live market snapshot. */
+/** Deterministic paper agents driven by the same shared semantic evidence. */
 class CandleTheoryAgent : MireiAgent {
     override val type: AgentType = AgentType.CANDLE
 
     override fun evaluate(snapshot: MarketSnapshot): AgentObservation {
-        val signal = (snapshot.change1mPercent * 35.0 + snapshot.change5mPercent * 12.0 + snapshot.change15mPercent * 4.0)
-            .coerceIn(-100.0, 100.0)
+        val evidence = MireiAgentEvidenceLibrary.analyze(snapshot)
+        val signal = evidence.candleScore
         val confidence = (0.55 + abs(signal) / 220.0).coerceIn(0.55, 0.95)
         return when {
             signal > 2.0 -> AgentObservation(type, AgentAction.BUY, confidence, "short_term_price_action_bullish")
@@ -23,12 +23,13 @@ class MomentumAgent : MireiAgent {
     override val type: AgentType = AgentType.MARKET
 
     override fun evaluate(snapshot: MarketSnapshot): AgentObservation {
-        val signal = snapshot.trendScorePercent
+        val evidence = MireiAgentEvidenceLibrary.analyze(snapshot)
+        val signal = evidence.momentumScore
         val confidence = (0.55 + abs(signal) / 220.0).coerceIn(0.55, 0.95)
         return when {
-            signal > 2.0 -> AgentObservation(type, AgentAction.BUY, confidence, "market_trend_positive")
-            signal < -2.0 -> AgentObservation(type, AgentAction.CLOSE, confidence, "market_trend_negative")
-            else -> AgentObservation(type, AgentAction.HOLD, confidence, "market_trend_not_confirmed")
+            signal > 2.0 -> AgentObservation(type, AgentAction.BUY, confidence, "shared_market_momentum_positive")
+            signal < -2.0 -> AgentObservation(type, AgentAction.CLOSE, confidence, "shared_market_momentum_negative")
+            else -> AgentObservation(type, AgentAction.HOLD, confidence, "shared_market_momentum_not_confirmed")
         }
     }
 }
@@ -37,12 +38,14 @@ class SentimentAgent : MireiAgent {
     override val type: AgentType = AgentType.SENTIMENT
 
     override fun evaluate(snapshot: MarketSnapshot): AgentObservation {
-        val score = snapshot.sentimentScore
-        val confidence = (0.55 + abs(score) / 220.0).coerceIn(0.55, 0.95)
+        val evidence = MireiAgentEvidenceLibrary.analyze(snapshot)
+        val demand = evidence.demandScore
+        val forecastSupport = evidence.forecastDirectionScore
+        val confidence = (0.55 + abs(demand) / 220.0 + evidence.forecastAgreement * 0.10).coerceIn(0.55, 0.95)
         return when {
-            score <= -30.0 -> AgentObservation(type, AgentAction.CLOSE, confidence, "trade_flow_and_price_sentiment_negative")
-            score >= 8.0 -> AgentObservation(type, AgentAction.BUY, confidence, "trade_flow_and_price_sentiment_positive")
-            else -> AgentObservation(type, AgentAction.HOLD, confidence, "trade_flow_sentiment_neutral")
+            demand <= -12.0 && forecastSupport < -1.0 -> AgentObservation(type, AgentAction.CLOSE, confidence, "demand_negative_with_forecast_support")
+            demand >= 7.0 && forecastSupport > 1.0 -> AgentObservation(type, AgentAction.BUY, confidence, "demand_positive_with_forecast_support")
+            else -> AgentObservation(type, AgentAction.HOLD, confidence, "demand_not_confirmed_by_forecast")
         }
     }
 }
@@ -51,16 +54,18 @@ class ForecastAgent : MireiAgent {
     override val type: AgentType = AgentType.FORECAST
 
     override fun evaluate(snapshot: MarketSnapshot): AgentObservation {
-        val confidence = snapshot.forecastConfidence.coerceIn(0.50, 0.95)
+        val evidence = MireiAgentEvidenceLibrary.analyze(snapshot)
+        val direction = evidence.forecastDirectionScore
+        val confidence = MireiAgentEvidenceLibrary.forecastConfidence(snapshot, evidence)
         val action = when {
-            snapshot.trendScorePercent <= -2.0 && confidence >= 0.55 -> AgentAction.CLOSE
-            snapshot.trendScorePercent >= 2.0 && confidence >= 0.65 -> AgentAction.BUY
+            direction <= -2.5 && confidence >= 0.55 -> AgentAction.CLOSE
+            direction >= 2.5 && confidence >= 0.55 -> AgentAction.BUY
             else -> AgentAction.HOLD
         }
         val reason = when (action) {
-            AgentAction.BUY -> "price_momentum_flow_forecast_bullish"
-            AgentAction.CLOSE -> "price_momentum_flow_forecast_bearish"
-            AgentAction.HOLD -> "forecast_direction_or_confidence_weak"
+            AgentAction.BUY -> "forecast_supported_by_shared_agent_evidence"
+            AgentAction.CLOSE -> "forecast_bearish_supported_by_shared_agent_evidence"
+            AgentAction.HOLD -> "forecast_direction_or_shared_evidence_weak"
         }
         return AgentObservation(type, action, confidence, reason)
     }
