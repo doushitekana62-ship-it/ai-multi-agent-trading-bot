@@ -1,6 +1,7 @@
 package com.mirei.app.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class TradingConfigRiskTargetsTest {
@@ -62,5 +63,39 @@ class TradingConfigRiskTargetsTest {
         assertEquals(198_000.0, targets.stopLossPrice, 1e-9)
         assertEquals(204_000.0, targets.takeProfitPrice, 1e-9)
         assertEquals(0.125, targets.quantity, 1e-12)
+    }
+
+    @Test
+    fun referenceModeOnlyChangesExitTargetsNotEntryGateDecisionInputs() {
+        val snapshot = MarketSnapshot(
+            symbol = "TEST/IDR",
+            price = 100_000.0,
+            momentumPercent = 5.0,
+            volatilityPercent = 0.5,
+            sentimentScore = 10.0,
+            forecastConfidence = 0.80,
+            dataFresh = true,
+        )
+        val risk = RiskSnapshot(
+            dailyPnlIdr = 0.0,
+            dailyStartBalanceIdr = 150_000.0,
+            equityIdr = 150_000.0,
+            openPositions = 0,
+            consecutiveLosses = 0,
+            marketDataFresh = true,
+            exchangeHealthy = true,
+            internetAvailable = true,
+        )
+        val entryConfig = TradingConfig(riskReferenceMode = RiskReferenceMode.ENTRY_PRICE)
+        val initialCapitalConfig = TradingConfig(riskReferenceMode = RiskReferenceMode.INITIAL_CAPITAL)
+
+        val entryPlan = MireiDecisionEngine(entryConfig).buildEntryPlan(snapshot, risk, 50_000.0)
+        val capitalPlan = MireiDecisionEngine(initialCapitalConfig).buildEntryPlan(snapshot, risk, 50_000.0)
+
+        assertEquals(entryPlan.allowed, capitalPlan.allowed)
+        assertEquals(entryPlan.reasons, capitalPlan.reasons)
+        assertEquals(entryPlan.entryPrice, capitalPlan.entryPrice, 1e-9)
+        assertEquals(entryPlan.stakeIdr, capitalPlan.stakeIdr, 1e-9)
+        assertNotEquals(entryPlan.riskReferenceMode, capitalPlan.riskReferenceMode)
     }
 }
