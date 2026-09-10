@@ -2,6 +2,14 @@ package com.mirei.app.core
 
 enum class ManualRiskMode { AUTO, MANUAL }
 
+data class RiskTargets(
+    val stopLossPrice: Double,
+    val takeProfitPrice: Double,
+    val stopLossAmountIdr: Double,
+    val takeProfitAmountIdr: Double,
+    val quantity: Double,
+)
+
 data class TradingConfig(
     val totalCapitalIdr: Double = 150_000.0,
     val positionSizeIdr: Double = 50_000.0,
@@ -50,5 +58,37 @@ data class TradingConfig(
             ScalpingMode.BALANCED -> 1.00
             ScalpingMode.SAFETY -> 1.25
         }
+    }
+
+    /**
+     * Automatic TP/SL choice: derive the price targets from the actual entry price
+     * and the IDR capital allocated to the position. The capital first determines
+     * quantity, then the configured percentage determines the IDR risk/target, and
+     * those IDR amounts are converted back to coin prices.
+     */
+    fun calculateRiskTargets(
+        entryPrice: Double,
+        stakeIdr: Double,
+        stopLossPercent: Double = effectiveStopLossPercent(),
+        takeProfitPercent: Double = effectiveTakeProfitPercent(),
+    ): RiskTargets {
+        require(entryPrice > 0.0)
+        require(stakeIdr > 0.0)
+        require(stopLossPercent > 0.0)
+        require(takeProfitPercent > stopLossPercent)
+
+        val quantity = stakeIdr / entryPrice
+        val stopLossAmountIdr = stakeIdr * stopLossPercent / 100.0
+        val takeProfitAmountIdr = stakeIdr * takeProfitPercent / 100.0
+        val stopLossPrice = entryPrice - (stopLossAmountIdr / quantity)
+        val takeProfitPrice = entryPrice + (takeProfitAmountIdr / quantity)
+
+        return RiskTargets(
+            stopLossPrice = stopLossPrice,
+            takeProfitPrice = takeProfitPrice,
+            stopLossAmountIdr = stopLossAmountIdr,
+            takeProfitAmountIdr = takeProfitAmountIdr,
+            quantity = quantity,
+        )
     }
 }
