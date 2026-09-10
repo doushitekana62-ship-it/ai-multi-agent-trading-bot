@@ -2,9 +2,9 @@ package com.mirei.app.execution
 
 import com.mirei.app.core.EntryPlan
 import com.mirei.app.core.TradingConfig
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
 
 class PaperExecutionTrailingTest {
     @Test
@@ -29,6 +29,6 @@ class PaperExecutionTrailingTest {
         assertTrue(tightened > original)
 
         assertEquals(false, engine.updateTrailingStop(id, tightened - 0.1))
-        assertEquals(tightened, engine.position(id)!!.stopLossPrice)
+        assertEquals(tightened, engine.position(id)!!.stopLossPrice, 0.000001)
     }
 }
