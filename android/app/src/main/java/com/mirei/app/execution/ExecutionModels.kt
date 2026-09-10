@@ -106,11 +106,13 @@ class PaperExecutionEngine(
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         if (reservedIdr > 0.0 && reservedIdr + 1e-9 < plan.stakeIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
 
-        // A losing close can leave available paper cash slightly below the nominal
-        // Rp50.000 position size. Re-entry must not wait for loss recovery. Use all
-        // remaining cash for the new paper position, then preserve the selected risk
-        // basis when translating the target prices.
-        val effectiveStake = if (reservedIdr > 0.0) plan.stakeIdr else minOf(plan.stakeIdr, availableBalanceIdr)
+        val allowPartialReentry = entryReason == "re_entry" || entryReason == "human_verified_re_entry"
+        val effectiveStake = when {
+            reservedIdr > 0.0 -> plan.stakeIdr
+            allowPartialReentry -> minOf(plan.stakeIdr, availableBalanceIdr)
+            plan.stakeIdr <= availableBalanceIdr + 1e-9 -> plan.stakeIdr
+            else -> return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
+        }
         if (effectiveStake <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
 
         val entryFee = effectiveStake * feePercent / (100.0 + feePercent)
