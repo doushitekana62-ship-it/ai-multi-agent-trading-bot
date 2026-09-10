@@ -9,7 +9,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -40,17 +40,17 @@ class MainActivity : Activity() {
         content.addView(TextView(this).apply {
             text = "Mirei ミレイ"
             textSize = 30f
-        }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, -2))
         content.addView(TextView(this).apply {
             text = "Android-first trading runtime"
             textSize = 16f
-        }, LinearLayout.LayoutParams(MATCH_PARENT, -2))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, -2))
         status = TextView(this).apply {
             text = "\nState: STOP\nMode: Suggestion\nExecution: PAPER ONLY\n\nSYSTEM HEALTH\nMarket data: OFFLINE\nInternet: UNKNOWN\nExchange: UNKNOWN"
             textSize = 17f
             setLineSpacing(0f, 1.05f)
         }
-        content.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, -2).apply {
+        content.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, -2).apply {
             topMargin = 24
             bottomMargin = 16
         })
@@ -61,7 +61,7 @@ class MainActivity : Activity() {
 
         val scrollView = ScrollView(this).apply {
             isFillViewport = true
-            addView(content, ScrollView.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(content, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         setContentView(scrollView)
     }
