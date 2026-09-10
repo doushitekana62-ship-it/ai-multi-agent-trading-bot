@@ -8,7 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -20,7 +23,6 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
@@ -44,6 +46,7 @@ class MainActivity : Activity() {
     private val riskPrefs by lazy { getSharedPreferences("mirei_settings", MODE_PRIVATE) }
     private var currentIntent: Intent? = null
     private var currentMenu = Menu.RINGKASAN
+    private var menuSpinner: Spinner? = null
     private var liveSwitchUpdating = false
 
     private enum class Menu(val label: String) {
@@ -104,17 +107,24 @@ class MainActivity : Activity() {
         shell.addView(text("Asisten trading crypto · lokal · paper trading", 14f), margin(0, 2, 0, 8))
         statusCard = card("BERHENTI · PAPER ONLY")
         shell.addView(statusCard, margin(0, 0, 0, 8))
-        val menuScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val menuBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        Menu.values().forEach { menu ->
-            menuBar.addView(Button(this).apply {
-                text = menu.label
-                textSize = 11f
-                setOnClickListener { currentMenu = menu; renderCurrentMenu() }
-            }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = 5 })
+
+        shell.addView(text("MENU", 12f, true), margin(0, 0, 0, 2))
+        val menu = Spinner(this)
+        menuSpinner = menu
+        menu.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, Menu.values().map { it.label })
+        menu.setSelection(currentMenu.ordinal)
+        menu.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selected = Menu.values().getOrNull(position) ?: return
+                if (selected != currentMenu) {
+                    currentMenu = selected
+                    renderCurrentMenu()
+                }
+            }
         }
-        menuScroll.addView(menuBar, ViewGroup.LayoutParams(-2, -2))
-        shell.addView(menuScroll, margin(0, 0, 0, 6))
+        shell.addView(menu, margin(0, 0, 0, 8))
+
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, 16) }
         val scroll = ScrollView(this).apply { isFillViewport = true; addView(content, ViewGroup.LayoutParams(-1, -2)) }
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -143,6 +153,7 @@ class MainActivity : Activity() {
 
     private fun renderCurrentMenu() {
         content.removeAllViews()
+        menuSpinner?.setSelection(currentMenu.ordinal, false)
         runCatching {
             when (currentMenu) {
                 Menu.RINGKASAN -> renderSummary()
@@ -169,7 +180,13 @@ class MainActivity : Activity() {
         val health = "Internet: ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_INTERNET, false)) "OK" else "PUTUS"}\n" +
             "Market: ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)) "SEGAR" else "STALE"}\n" +
             "Exchange: ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_EXCHANGE_HEALTHY, false)) "OK" else "TIDAK SIAP"}"
-        content.addView(card("STATUS\n${stateLabel(i.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP")}\n\nNILAI AKUN\nRp ${numberFormat.format(i.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0))}\n\nKAS TERSEDIA\nRp ${numberFormat.format(i.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0))}\n\nPnL TEREALISASI\nRp ${signedMoney(pnl)}\n\nPOSISI AKTIF\n${i.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)}\n\nKEPUTUSAN\n$action · $confidence%\n$reason\n\nKESEHATAN\n$health", 14f))
+        val riskBlock = humanReasons(i.getStringExtra(MireiForegroundService.EXTRA_ENTRY_REASONS).orEmpty())
+        val latestExecution = i.getStringExtra(MireiForegroundService.EXTRA_RECENT_EXECUTIONS).orEmpty().ifBlank { "Belum ada OPEN/CLOSE pada tick terakhir." }
+        content.addView(card("STATUS\n${stateLabel(i.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP")}\n\nNILAI AKUN\nRp ${numberFormat.format(i.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0))}\n\nKAS TERSEDIA\nRp ${numberFormat.format(i.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0))}\n\nPnL TEREALISASI\nRp ${signedMoney(pnl)}\n\nPOSISI AKTIF\n${i.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)}\n\nKEPUTUSAN TERAKHIR\n$action · $confidence%\n$reason\n\nKESEHATAN\n$health", 14f))
+        addTitle("EVENT TERAKHIR")
+        content.addView(card(latestExecution, 13f))
+        addTitle("GATE / BLOK RISIKO TERAKHIR")
+        content.addView(card(riskBlock, 13f))
         addTitle("HITUNGAN KEPUTUSAN")
         content.addView(card("BUY / MASUK: ${i.getIntExtra(MireiForegroundService.EXTRA_BUY_COUNT, 0)}\nHOLD / TAHAN: ${i.getIntExtra(MireiForegroundService.EXTRA_HOLD_COUNT, 0)}\nSELL / KELUAR: ${i.getIntExtra(MireiForegroundService.EXTRA_SELL_COUNT, 0)}\n\nAngka ini adalah jumlah keputusan engine selama sesi aktif, bukan jumlah order.", 14f))
         addTitle("WAKTU APLIKASI")
@@ -193,7 +210,12 @@ class MainActivity : Activity() {
     private fun renderMarket() {
         addTitle("PASAR")
         val i = currentIntent ?: run { content.addView(card("Belum ada snapshot pasar.")); return }
-        content.addView(card("${i.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: "BTC/IDR"}\nHarga Rp ${numberFormat.format(i.getDoubleExtra(MireiForegroundService.EXTRA_PRICE, 0.0))}\n1M ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_1M, 0.0))}% · 5M ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_5M, 0.0))}% · 15M ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_15M, 0.0))}%\nMomentum ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_MOMENTUM, 0.0))}% · Trend ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_TREND, 0.0))}%\nFlow ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_FLOW, 0.0))}% · Forecast ${(i.getDoubleExtra(MireiForegroundService.EXTRA_FORECAST_CONFIDENCE, 0.0) * 100).toInt()}%\nSpread ${fmt(i.getDoubleExtra(MireiForegroundService.EXTRA_SPREAD, 0.0))}%\nData ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)) "SEGAR" else "STALE"}", 14f))
+        val change1m = i.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_1M, 0.0)
+        val change5m = i.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_5M, 0.0)
+        val change15m = i.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_15M, 0.0)
+        content.addView(card("${i.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: "BTC/IDR"}\nHarga Rp ${numberFormat.format(i.getDoubleExtra(MireiForegroundService.EXTRA_PRICE, 0.0))}\n1M ${signed(change1m)}% · 5M ${signed(change5m)}% · 15M ${signed(change15m)}%\nMomentum ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_MOMENTUM, 0.0))}% · Trend ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_TREND, 0.0))}%\nFlow ${signed(i.getDoubleExtra(MireiForegroundService.EXTRA_FLOW, 0.0))}% · Forecast ${(i.getDoubleExtra(MireiForegroundService.EXTRA_FORECAST_CONFIDENCE, 0.0) * 100).toInt()}%\nSpread ${fmt(i.getDoubleExtra(MireiForegroundService.EXTRA_SPREAD, 0.0))}%\nData ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)) "SEGAR" else "STALE"}", 14f))
+        addTitle("GRAFIK PERUBAHAN 1M → 5M → 15M")
+        content.addView(MiniMarketChartView(this, floatArrayOf(change15m.toFloat(), change5m.toFloat(), change1m.toFloat())))
         addTitle("SCANNER")
         val rows = i.getStringExtra(MireiForegroundService.EXTRA_SCANNER).orEmpty().lines().filter { it.isNotBlank() }.take(10)
         if (rows.isEmpty()) content.addView(card("Belum ada hasil scanner.")) else rows.forEach { line ->
@@ -207,14 +229,19 @@ class MainActivity : Activity() {
         val rows = parsePositions(currentIntent?.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty())
         if (rows.isEmpty()) { content.addView(card("Tidak ada posisi aktif.")); return }
         rows.forEach { row ->
-            content.addView(card("${row["symbol"].orEmpty()}\nModal Rp ${numberFormat.format(row["stake"].orEmpty().toDoubleOrNull() ?: 0.0)}\nEntry Rp ${numberFormat.format(row["entry"].orEmpty().toDoubleOrNull() ?: 0.0)}\nSekarang Rp ${numberFormat.format(row["current"].orEmpty().toDoubleOrNull() ?: 0.0)}\nNilai Rp ${numberFormat.format(row["value"].orEmpty().toDoubleOrNull() ?: 0.0)}\nPnL belum terealisasi Rp ${signedMoney(row["unrealized"].orEmpty().toDoubleOrNull() ?: 0.0)}\n\nTake Profit Rp ${numberFormat.format(row["tp"].orEmpty().toDoubleOrNull() ?: 0.0)}\nStop Loss Rp ${numberFormat.format(row["sl"].orEmpty().toDoubleOrNull() ?: 0.0)}\nAsal: ${humanEntryReason(row["entry_reason"].orEmpty())}", 14f))
+            val entry = row["entry"].orEmpty().toDoubleOrNull() ?: 0.0
+            val opened = row["opened"].orEmpty().toLongOrNull() ?: 0L
+            val age = if (opened > 0L) formatAge(opened) else "—"
+            val trailing = row["trailing"].orEmpty().toDoubleOrNull()
+            val trailingText = trailing?.let { "Rp ${numberFormat.format(it)}" } ?: "dikelola otomatis sekitar 1R"
+            content.addView(card("${row["symbol"].orEmpty()}\nModal Rp ${numberFormat.format(row["stake"].orEmpty().toDoubleOrNull() ?: 0.0)}\nEntry Rp ${numberFormat.format(entry)}\nSekarang Rp ${numberFormat.format(row["current"].orEmpty().toDoubleOrNull() ?: 0.0)}\nNilai Rp ${numberFormat.format(row["value"].orEmpty().toDoubleOrNull() ?: 0.0)}\nPnL belum terealisasi Rp ${signedMoney(row["unrealized"].orEmpty().toDoubleOrNull() ?: 0.0)}\n\nTake Profit Rp ${numberFormat.format(row["tp"].orEmpty().toDoubleOrNull() ?: 0.0)}\nStop Loss Rp ${numberFormat.format(row["sl"].orEmpty().toDoubleOrNull() ?: 0.0)}\nTrailing ${trailingText}\nUmur posisi $age\nAsal: ${humanEntryReason(row["entry_reason"].orEmpty())}", 14f))
         }
     }
 
     private fun renderActivity() {
         addTitle("AKTIVITAS · SESI INI")
         val sessionStart = currentIntent?.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L) ?: 0L
-        content.addView(card("Hanya event sejak sesi ini ditampilkan.\n\nUrutan yang dicari:\nOPEN / HOLDING AWAL → CLOSE → modal kembali → RE-ENTRY bila gate valid.", 13f))
+        content.addView(card("Hanya event sejak sesi ini ditampilkan.\n\nUrutan yang dicari:\nOPEN / HOLDING AWAL → CLOSE → modal kembali → RE-ENTRY bila gate valid.\n\nEvent RE-ENTRY adalah bukti paling jelas bahwa modal hasil close dipakai kembali setelah gate valid.", 13f))
         runCatching {
             val db = MireiDatabase(this)
             val trades = db.recentTrades(100).filter { sessionStart == 0L || it.openedAtEpochMs >= sessionStart }
@@ -273,12 +300,12 @@ class MainActivity : Activity() {
     }
 
     private fun renderRisk() {
-        addTitle("RISIKO")
+        addTitle("RISIKO / KELUAR")
         val mode = riskPrefs.getString("mode", "BALANCED") ?: "BALANCED"
         val manual = riskPrefs.getBoolean("manual_risk", false)
         val sl = riskPrefs.getString("manual_sl", "0.50") ?: "0.50"
         val tp = riskPrefs.getString("manual_tp", "1.00") ?: "1.00"
-        content.addView(card("Mode trading: ${modeLabel(mode)}\nTP/SL: ${if (manual) "MANUAL · TP $tp% / SL $sl%" else "OTOMATIS sesuai mode"}\nMaksimum posisi: 3\nBatas rugi harian: 3%\nLoss beruntun maksimum: 3\n\nLoss sebelumnya bukan syarat recovery. Re-entry tetap menunggu gate Mirei.", 14f))
+        content.addView(card("Mode trading: ${modeLabel(mode)}\nTP/SL: ${if (manual) "MANUAL · TP $tp% / SL $sl%" else "OTOMATIS sesuai mode"}\nTrailing: AKTIF sekitar 1R dan hanya boleh memperketat stop, tidak melonggarkan risiko.\nMaksimum posisi: 3\nBatas rugi harian: 3%\nLoss beruntun maksimum: 3\n\nLoss sebelumnya bukan syarat recovery. Re-entry tetap menunggu gate Mirei.", 14f))
         content.addView(button("UBAH MODE / TP / SL") { showRiskDialog() })
         content.addView(button("TERAPKAN PENGATURAN RISIKO") { send(MireiForegroundService.ACTION_APPLY_RISK) })
     }
@@ -326,7 +353,8 @@ class MainActivity : Activity() {
         val manual = riskPrefs.getBoolean("manual_risk", false)
         val sl = riskPrefs.getString("manual_sl", "0.50") ?: "0.50"
         val tp = riskPrefs.getString("manual_tp", "1.00") ?: "1.00"
-        content.addView(card("Bahasa: Indonesia\nTimeframe utama: 1 menit\nDecision Mode: Suggestion\nModal sesi: dipilih saat MULAI\nPosisi: maksimum 3\nMode trading: ${modeLabel(mode)}\nTP/SL: ${if (manual) "MANUAL · TP $tp% / SL $sl%" else "OTOMATIS"}", 14f))
+        val symbol = currentIntent?.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: "—"
+        content.addView(card("Bahasa: Indonesia\nTimeframe utama: 1 menit\nDecision Mode: Suggestion\nCoin sesi: $symbol\nModal sesi: dipilih saat MULAI\nPosisi: maksimum 3\nMode trading: ${modeLabel(mode)}\nTP/SL: ${if (manual) "MANUAL · TP $tp% / SL $sl%" else "OTOMATIS"}", 14f))
         content.addView(button("PILIH MODE / TP / SL") { showRiskDialog() })
         content.addView(button("RESET TIMESTAMP") { send(MireiForegroundService.ACTION_RESET_CLOCK) })
         content.addView(button("SESI PAPER BARU") {
@@ -369,14 +397,12 @@ class MainActivity : Activity() {
         }
         val marketScroll = ScrollView(this).apply { addView(list) }
         outer.addView(marketScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 330))
-
         outer.addView(text("MODE TRADING", 14f, true))
         val modeSpinner = Spinner(this)
         val modes = arrayOf("AGGRESSIVE", "BALANCED", "SAFETY")
         modeSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, modes)
         modeSpinner.setSelection(modes.indexOf(riskPrefs.getString("mode", "BALANCED")).coerceAtLeast(0))
         outer.addView(modeSpinner)
-
         val manualSwitch = Switch(this).apply { text = "TP / SL MANUAL"; isChecked = riskPrefs.getBoolean("manual_risk", false) }
         outer.addView(manualSwitch)
         val riskFields = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -388,7 +414,6 @@ class MainActivity : Activity() {
         manualSwitch.setOnCheckedChangeListener { _, checked -> riskFields.visibility = if (checked) View.VISIBLE else View.GONE }
         outer.addView(riskFields)
         outer.addView(card("Decision Mode: SUGGESTION\nJika agent bertentangan, Mirei meminta verifikasi manusia. Mirei tetap memegang gate risiko/freshness/posisi.", 12.5f))
-
         AlertDialog.Builder(this).setTitle("MULAI SESI PAPER").setMessage("Konfigurasi sesi sebelum runtime dimulai.").setView(outer).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create().also { dialog ->
             dialog.setOnShowListener {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -396,22 +421,13 @@ class MainActivity : Activity() {
                         val (check, amount) = pair
                         if (!check.isChecked) null else amount.text.toString().toDoubleOrNull()?.takeIf { it > 0.0 }?.let { market to it }
                     }
-                    if (selected.isEmpty() || selected.size > 3) {
-                        dialog.setMessage("Pilih minimal 1 dan maksimal 3 coin, dengan modal > 0.")
-                        return@setOnClickListener
-                    }
+                    if (selected.isEmpty() || selected.size > 3) { dialog.setMessage("Pilih minimal 1 dan maksimal 3 coin, dengan modal > 0."); return@setOnClickListener }
                     val total = selected.sumOf { it.second }
-                    if (total > 150_000.0 + 1e-6) {
-                        dialog.setMessage("Total modal Rp ${numberFormat.format(total)} melebihi Rp150.000.")
-                        return@setOnClickListener
-                    }
+                    if (total > 150_000.0 + 1e-6) { dialog.setMessage("Total modal Rp ${numberFormat.format(total)} melebihi Rp150.000."); return@setOnClickListener }
                     val manual = manualSwitch.isChecked
                     val sl = slField.text.toString().toDoubleOrNull()
                     val tp = tpField.text.toString().toDoubleOrNull()
-                    if (manual && (sl == null || tp == null || sl <= 0.0 || tp <= sl)) {
-                        dialog.setMessage("TP manual harus lebih besar dari SL manual dan keduanya harus > 0.")
-                        return@setOnClickListener
-                    }
+                    if (manual && (sl == null || tp == null || sl <= 0.0 || tp <= sl)) { dialog.setMessage("TP manual harus lebih besar dari SL manual dan keduanya harus > 0."); return@setOnClickListener }
                     val mode = modeSpinner.selectedItem.toString()
                     riskPrefs.edit().putString("mode", mode).putBoolean("manual_risk", manual).putString("manual_sl", (sl ?: 0.50).toString()).putString("manual_tp", (tp ?: 1.00).toString()).apply()
                     val allocations = selected.joinToString(";") { "${it.first}=${it.second}" }
@@ -444,16 +460,14 @@ class MainActivity : Activity() {
         fields.visibility = if (manualSwitch.isChecked) View.VISIBLE else View.GONE
         manualSwitch.setOnCheckedChangeListener { _, checked -> fields.visibility = if (checked) View.VISIBLE else View.GONE }
         box.addView(fields)
+        box.addView(card("Trailing: aktif sekitar 1R. Sistem hanya boleh menaikkan stop setelah profit mencapai aktivasi; tidak boleh melonggarkan stop.", 12.5f))
         AlertDialog.Builder(this).setTitle("MODE & TP / SL").setMessage("Mirei akan memakai konfigurasi ini hanya setelah validasi risk engine.").setView(box).setNegativeButton("BATAL", null).setPositiveButton("SIMPAN", null).create().also { dialog ->
             dialog.setOnShowListener {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                     val manual = manualSwitch.isChecked
                     val slValue = sl.text.toString().toDoubleOrNull()
                     val tpValue = tp.text.toString().toDoubleOrNull()
-                    if (manual && (slValue == null || tpValue == null || slValue <= 0.0 || tpValue <= slValue)) {
-                        dialog.setMessage("TP manual harus > SL manual dan keduanya > 0.")
-                        return@setOnClickListener
-                    }
+                    if (manual && (slValue == null || tpValue == null || slValue <= 0.0 || tpValue <= slValue)) { dialog.setMessage("TP manual harus > SL manual dan keduanya > 0."); return@setOnClickListener }
                     riskPrefs.edit().putString("mode", modeSpinner.selectedItem.toString()).putBoolean("manual_risk", manual).putString("manual_sl", (slValue ?: 0.50).toString()).putString("manual_tp", (tpValue ?: 1.00).toString()).apply()
                     send(MireiForegroundService.ACTION_APPLY_RISK)
                     dialog.dismiss()
@@ -493,6 +507,11 @@ class MainActivity : Activity() {
         return card("MULAI: ${if (start > 0L) formatClock(start) else "—"}\nSTOP / JEDA / CLOSE: ${if (stop > 0L) formatClock(stop) else "—"}\nRESET TIMESTAMP: ${if (reset > 0L) formatClock(reset) else "—"}\nFORMAT: MM//DD//HH/MM", 13f)
     }
 
+    private fun formatAge(openedAt: Long): String {
+        val seconds = ((System.currentTimeMillis() - openedAt).coerceAtLeast(0L)) / 1000L
+        return "${seconds / 60}m ${seconds % 60}s"
+    }
+
     private fun parsePositions(raw: String): List<Map<String, String>> = raw.lines().filter { it.isNotBlank() }.map { line ->
         line.split('|').mapNotNull { token -> val idx = token.indexOf('='); if (idx > 0) token.substring(0, idx) to token.substring(idx + 1) else null }.toMap() + mapOf("symbol" to line.substringBefore('|'))
     }
@@ -514,4 +533,34 @@ class MainActivity : Activity() {
     private fun button(label: String, onClick: () -> Unit): Button = Button(this).apply { text = label; setOnClickListener { onClick() }; layoutParams = margin(0, 4, 0, 6) }
     private fun weight(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = 4 }
     private fun margin(l: Int, t: Int, r: Int, b: Int): ViewGroup.MarginLayoutParams = ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = l; topMargin = t; rightMargin = r; bottomMargin = b }
+}
+
+private class MiniMarketChartView(context: Context, private val values: FloatArray) : View(context) {
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.CYAN; strokeWidth = 5f; style = Paint.Style.STROKE }
+    private val zeroPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; strokeWidth = 2f }
+    private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        setMeasuredDimension(width, 180)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.drawColor(Color.rgb(24, 34, 43))
+        if (values.isEmpty()) return
+        val left = 18f
+        val right = width - 18f
+        val centerY = height / 2f
+        val maxAbs = values.maxOf { kotlin.math.abs(it) }.coerceAtLeast(0.01f)
+        canvas.drawLine(left, centerY, right, centerY, zeroPaint)
+        val path = Path()
+        values.forEachIndexed { index, value ->
+            val x = if (values.size == 1) (left + right) / 2f else left + (right - left) * index / (values.size - 1).toFloat()
+            val y = centerY - (value / maxAbs) * (height * 0.38f)
+            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            canvas.drawCircle(x, y, 6f, pointPaint)
+        }
+        canvas.drawPath(path, linePaint)
+    }
 }
