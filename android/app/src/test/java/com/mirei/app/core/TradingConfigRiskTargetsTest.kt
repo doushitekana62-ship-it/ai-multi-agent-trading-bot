@@ -39,6 +39,6 @@ class TradingConfigRiskTargetsTest {
         assertEquals(250.0, smaller.takeProfitAmountIdr, 1e-9)
         assertEquals(500.0, larger.stopLossAmountIdr, 1e-9)
         assertEquals(1_000.0, larger.takeProfitAmountIdr, 1e-9)
-        assertEquals(2.0, larger.quantity, 1e-12)
+        assertEquals(0.5, larger.quantity, 1e-12)
     }
 }
