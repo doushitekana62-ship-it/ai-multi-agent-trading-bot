@@ -13,6 +13,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import com.mirei.app.core.DecisionMode
 import com.mirei.app.core.MireiState
+import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.core.ScalpingMode
 import com.mirei.app.core.TradingConfig
 import com.mirei.app.execution.PaperEngineState
@@ -77,6 +78,7 @@ class MireiForegroundService : Service() {
                     buyDecisionCount = saved.buyDecisionCount,
                     holdDecisionCount = saved.holdDecisionCount,
                     sellDecisionCount = saved.sellDecisionCount,
+                    initialCapitalBySymbol = saved.initialCapitalBySymbol,
                 ))
             }
             val connectivity = getSystemService(ConnectivityManager::class.java)
@@ -265,6 +267,7 @@ class MireiForegroundService : Service() {
             buyDecisionCount = state.buyDecisionCount,
             holdDecisionCount = state.holdDecisionCount,
             sellDecisionCount = state.sellDecisionCount,
+            initialCapitalBySymbol = state.initialCapitalBySymbol,
         ))
     }
 
@@ -378,7 +381,7 @@ class MireiForegroundService : Service() {
                 val unrealized = value - p.stakeIdr
                 val tpDistance = (p.takeProfitPrice / p.entryPrice - 1.0) * 100.0
                 val slDistance = (1.0 - p.stopLossPrice / p.entryPrice) * 100.0
-                "${p.symbol}|stake=${"%.2f".format(Locale.US, p.stakeIdr)}|entry=${"%.2f".format(Locale.US, p.entryPrice)}|current=${"%.2f".format(Locale.US, current)}|value=${"%.2f".format(Locale.US, value)}|unrealized=${"%.2f".format(Locale.US, unrealized)}|tp=${"%.2f".format(Locale.US, p.takeProfitPrice)}|sl=${"%.2f".format(Locale.US, p.stopLossPrice)}|tp_pct=${"%.3f".format(Locale.US, tpDistance)}|sl_pct=${"%.3f".format(Locale.US, slDistance)}|entry_reason=${p.entryReason}"
+                "${p.symbol}|stake=${"%.2f".format(Locale.US, p.stakeIdr)}|entry=${"%.2f".format(Locale.US, p.entryPrice)}|current=${"%.2f".format(Locale.US, current)}|value=${"%.2f".format(Locale.US, value)}|unrealized=${"%.2f".format(Locale.US, unrealized)}|tp=${"%.2f".format(Locale.US, p.takeProfitPrice)}|sl=${"%.2f".format(Locale.US, p.stopLossPrice)}|tp_pct=${"%.3f".format(Locale.US, tpDistance)}|sl_pct=${"%.3f".format(Locale.US, slDistance)}|entry_reason=${p.entryReason}|risk_basis=${p.riskReferenceMode.name}|risk_capital=${"%.2f".format(Locale.US, p.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: p.stakeIdr)}"
             })
             putExtra(EXTRA_SCANNER, status.scannerSummary)
             putExtra(EXTRA_TICK, status.lastTickEpochMs)
@@ -392,6 +395,7 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_RUN_STARTED, runStartedAtEpochMs)
             putExtra(EXTRA_RUN_STOPPED, runStoppedAtEpochMs)
             putExtra(EXTRA_CLOCK_RESET, timestampResetAtEpochMs)
+            putExtra(EXTRA_RISK_BASIS, config.riskReferenceMode.name)
         }
         sendBroadcast(intent)
         val meaningfulEvent = when {
@@ -438,10 +442,11 @@ class MireiForegroundService : Service() {
         val manual = prefs.getBoolean(KEY_MANUAL, false)
         val sl = prefs.getString(KEY_MANUAL_SL, null)?.toDoubleOrNull()
         val tp = prefs.getString(KEY_MANUAL_TP, null)?.toDoubleOrNull()
+        val referenceMode = runCatching { RiskReferenceMode.valueOf(prefs.getString(KEY_RISK_BASIS, RiskReferenceMode.ENTRY_PRICE.name)!!) }.getOrDefault(RiskReferenceMode.ENTRY_PRICE)
         return if (manual && sl != null && tp != null && tp > sl) {
-            TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = com.mirei.app.core.ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp)
+            TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = com.mirei.app.core.ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp, riskReferenceMode = referenceMode)
         } else {
-            TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION)
+            TradingConfig(mode = mode, decisionMode = DecisionMode.SUGGESTION, riskReferenceMode = referenceMode)
         }
     }
 
@@ -515,6 +520,7 @@ class MireiForegroundService : Service() {
         const val EXTRA_RUN_STARTED = "run_started"
         const val EXTRA_RUN_STOPPED = "run_stopped"
         const val EXTRA_CLOCK_RESET = "clock_reset"
+        const val EXTRA_RISK_BASIS = "risk_basis"
         const val DEFAULT_SYMBOL = "BTC/IDR"
         const val DEFAULT_EXCHANGE = "indodax"
         val SUPPORTED_MARKETS = listOf("BTC/IDR", "ETH/IDR", "HYPE/IDR", "FARTCOIN/IDR", "SOL/IDR", "XRP/IDR", "DOGE/IDR", "ADA/IDR", "SUI/IDR", "TRX/IDR")
@@ -528,5 +534,6 @@ class MireiForegroundService : Service() {
         private const val KEY_MANUAL = "manual_risk"
         private const val KEY_MANUAL_SL = "manual_sl"
         private const val KEY_MANUAL_TP = "manual_tp"
+        private const val KEY_RISK_BASIS = "risk_basis"
     }
 }
