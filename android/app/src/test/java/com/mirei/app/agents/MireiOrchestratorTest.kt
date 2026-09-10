@@ -3,7 +3,7 @@ package com.mirei.app.agents
 import com.mirei.app.core.DecisionMode
 import com.mirei.app.core.MarketSnapshot
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class MireiOrchestratorTest {
@@ -23,24 +23,43 @@ class MireiOrchestratorTest {
     }
 
     @Test
-    fun suggestionModeHoldsOnConflict() {
+    fun conflictUsesMajorityVoteWithoutHumanConfirmation() {
         val decision = MireiOrchestrator(
-            listOf(agent(AgentType.MARKET, AgentAction.BUY), agent(AgentType.SENTIMENT, AgentAction.HOLD)),
+            listOf(
+                agent(AgentType.MARKET, AgentAction.BUY),
+                agent(AgentType.SENTIMENT, AgentAction.HOLD),
+                agent(AgentType.CANDLE, AgentAction.BUY),
+                agent(AgentType.FORECAST, AgentAction.CLOSE),
+            ),
+            DecisionMode.SUGGESTION,
+        ).evaluate(snapshot)
+
+        assertEquals(AgentAction.BUY, decision.action)
+        assertFalse(decision.requiresHumanDecision)
+        assertEquals("agent_majority_vote", decision.rationale)
+    }
+
+    @Test
+    fun exactTieMeansHoldWithoutHumanConfirmation() {
+        val decision = MireiOrchestrator(
+            listOf(agent(AgentType.MARKET, AgentAction.BUY), agent(AgentType.SENTIMENT, AgentAction.CLOSE)),
             DecisionMode.SUGGESTION,
         ).evaluate(snapshot)
 
         assertEquals(AgentAction.HOLD, decision.action)
-        assertTrue(decision.requiresHumanDecision)
+        assertFalse(decision.requiresHumanDecision)
+        assertEquals("agent_vote_tie_hold", decision.rationale)
     }
 
     @Test
-    fun consensusBuyDoesNotRequireHumanDecision() {
+    fun unanimousBuyRemainsBuy() {
         val decision = MireiOrchestrator(
             listOf(agent(AgentType.MARKET, AgentAction.BUY), agent(AgentType.CANDLE, AgentAction.BUY)),
             DecisionMode.SUGGESTION,
         ).evaluate(snapshot)
 
         assertEquals(AgentAction.BUY, decision.action)
-        assertEquals(false, decision.requiresHumanDecision)
+        assertFalse(decision.requiresHumanDecision)
+        assertEquals("agent_unanimous_vote", decision.rationale)
     }
 }
