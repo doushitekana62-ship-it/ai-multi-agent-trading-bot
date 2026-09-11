@@ -1,2 +1,0 @@
-CI217 validation marker.
-Dashboard renderer is persistent and does not rebuild the ScrollView child hierarchy on runtime ticks.
