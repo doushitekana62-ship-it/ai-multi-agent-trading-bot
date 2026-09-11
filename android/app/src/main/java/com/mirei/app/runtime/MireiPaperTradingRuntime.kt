@@ -112,8 +112,6 @@ class MireiPaperTradingRuntime(
     private var holdingsSeeded = false
     private var lastScannerSummary = ""
     private val recentlyClosedSymbols = linkedMapOf<String, Long>()
-    // This map starts as the first buy capital and advances after every successful TP.
-    // It is persisted in the existing session field so old sessions remain compatible.
     private var initialCapitalBySymbol: MutableMap<String, Double> = linkedMapOf()
     private var buyDecisionCount = 0
     private var holdDecisionCount = 0
@@ -159,8 +157,6 @@ class MireiPaperTradingRuntime(
     fun restoreState(state: PaperRuntimePersistence) {
         engine.restoreState(state.engineState)
         dailyPnlIdr = state.dailyPnlIdr
-        // A STOP -> START with an empty portfolio is a fresh trading run. Do not let
-        // an old three-loss lock permanently prevent the new run from evaluating BUY.
         consecutiveLosses = if (state.engineState.positions.isEmpty()) 0 else state.consecutiveLosses
         holdingsSeeded = state.holdingsSeeded
         buyDecisionCount = state.buyDecisionCount
@@ -222,6 +218,20 @@ class MireiPaperTradingRuntime(
         return status(RuntimeEnvironment(internetAvailable = true, exchangeHealthy = lastExchangeHealthy), markPrices)
     }
 
+    /** Adds paper cash while keeping every active position intact. */
+    fun topUp(amountIdr: Double, nowMs: Long = System.currentTimeMillis()): PaperRuntimeStatus {
+        val execution = engine.topUp(amountIdr)
+        tickExecutions = mutableListOf()
+        if (execution.success) {
+            lastExecution = execution
+            lastError = null
+            lastTickEpochMs = nowMs
+        } else {
+            lastError = execution.error ?: "top_up_failed"
+        }
+        return status(RuntimeEnvironment(internetAvailable = true, exchangeHealthy = lastExchangeHealthy))
+    }
+
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
         tickExecutions = mutableListOf()
         lastError = null
@@ -268,9 +278,6 @@ class MireiPaperTradingRuntime(
                 AgentAction.CLOSE -> sellDecisionCount++
             }
 
-            // TP is a deterministic strategy event: after a successful TP close,
-            // immediately start the next cycle with modal + realized TP profit.
-            // This continuation is independent of the next agent vote.
             if (managedSymbol in tpClosedSymbols && engine.positionCount() < config.maxOpenPositions) {
                 val cycleCapital = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: config.positionSizeIdr
                 val compoundPlan = buildTakeProfitReentryPlan(snapshot, cycleCapital)
@@ -285,8 +292,6 @@ class MireiPaperTradingRuntime(
             }
 
             if (decision.action == AgentAction.CLOSE && !decision.requiresHumanDecision) {
-                // Unlimited-hold positions are not closed by an AI bearish vote.
-                // They remain open until TP or an explicit user close.
                 engine.positions().filter { it.symbol == managedSymbol && it.stopLossPrice != 0.0 }.toList().forEach { position ->
                     val execution = engine.close(position.id, snapshot.price, "ai_close", nowMs)
                     if (execution.success) {
@@ -402,9 +407,6 @@ class MireiPaperTradingRuntime(
             recentlyClosedSymbols[managedSymbol] = nowMs
             if (reason == "take_profit") {
                 val previousCycleCapital = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: position.stakeIdr
-                // Net PnL already includes paper fees/slippage. This makes the next
-                // modal exactly modal + realized TP profit, with fees reflected in the
-                // actual simulator rather than ignored.
                 initialCapitalBySymbol[managedSymbol] = maxOf(position.stakeIdr, previousCycleCapital + result.pnlIdr)
                 tpClosedSymbols += managedSymbol
             }
