@@ -13,14 +13,21 @@ data class TradingInstrument(
     val assetClass: AssetClass,
     val quote: String,
     val providers: List<String>,
+    /** Metadata only: no live order adapter is enabled by Mirei paper runtime. */
     val liveAdapterReady: Boolean = false,
+    /** True only where the current paper market-data/runtime path is implemented. */
+    val paperRuntimeReady: Boolean = assetClass == AssetClass.CRYPTO && quote == "IDR" && providers.contains("Indodax"),
 )
 
+/**
+ * Expansion catalog. Non-crypto entries are intentionally metadata/future-provider
+ * definitions; MireiForegroundService currently remains Indodax crypto paper-only.
+ */
 object TradingUniverse {
     val instruments: List<TradingInstrument> = listOf(
-        TradingInstrument("BTC/IDR", "Bitcoin / Rupiah", AssetClass.CRYPTO, "IDR", listOf("Indodax", "Bybit", "OKX"), true),
-        TradingInstrument("ETH/IDR", "Ethereum / Rupiah", AssetClass.CRYPTO, "IDR", listOf("Indodax", "Bybit", "OKX"), true),
-        TradingInstrument("SOL/IDR", "Solana / Rupiah", AssetClass.CRYPTO, "IDR", listOf("Indodax", "Bybit", "OKX"), true),
+        TradingInstrument("BTC/IDR", "Bitcoin / Rupiah", AssetClass.CRYPTO, "IDR", listOf("Indodax", "Bybit", "OKX")),
+        TradingInstrument("ETH/IDR", "Ethereum / Rupiah", AssetClass.CRYPTO, "IDR", listOf("Indodax", "Bybit", "OKX")),
+        TradingInstrument("SOL/IDR", "Solana / Rupiah", AssetClass.CRYPTO, "IDR", listOf("Indodax", "Bybit", "OKX")),
         TradingInstrument("AAPL", "Apple", AssetClass.STOCKS, "USD", listOf("Alpaca")),
         TradingInstrument("TSLA", "Tesla", AssetClass.STOCKS, "USD", listOf("Alpaca")),
         TradingInstrument("EUR_USD", "Euro / US Dollar", AssetClass.FOREX, "USD", listOf("OANDA")),
@@ -30,4 +37,5 @@ object TradingUniverse {
     )
 
     fun byClass(assetClass: AssetClass): List<TradingInstrument> = instruments.filter { it.assetClass == assetClass }
+    fun paperReady(): List<TradingInstrument> = instruments.filter { it.paperRuntimeReady }
 }
