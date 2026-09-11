@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:name=".MireiUiPatchApplication"
+        android:name=".MireiMergedDashboardApplication"
         android:allowBackup="false"
         android:label="Mirei ミレイ"
         android:supportsRtl="true"
