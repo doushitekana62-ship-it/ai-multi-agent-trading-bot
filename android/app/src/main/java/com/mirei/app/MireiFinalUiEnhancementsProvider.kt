@@ -67,7 +67,6 @@ class MireiFinalUiEnhancementsProvider : ContentProvider() {
 
     private fun confirmResume(activity: Activity) {
         val i = currentIntent(activity) ?: return
-        val money = ::money
         AlertDialog.Builder(activity)
             .setTitle("LANJUTKAN SESI PAPER")
             .setMessage(
@@ -147,20 +146,25 @@ class MireiFinalUiEnhancementsProvider : ContentProvider() {
         content.addView(TextView(activity).apply { tag = POSITION_TAG; visibility = View.GONE })
         title(content, "POSISI AKTIF")
         rows.forEach { row ->
-            val capital = row["risk_capital"].orEmpty().toDoubleOrNull() ?: row["stake"].orEmpty().toDoubleOrNull() ?: 0.0
-            val tp = row["target_tp_pct"].orEmpty().toDoubleOrNull() ?: row["tp_pct"].orEmpty().toDoubleOrNull() ?: 0.0
-            val sl = row["target_sl_pct"].orEmpty().toDoubleOrNull() ?: row["sl_pct"].orEmpty().toDoubleOrNull() ?: 0.0
+            val stake = row["stake"].orEmpty().toDoubleOrNull() ?: 0.0
+            val entry = row["entry"].orEmpty().toDoubleOrNull() ?: 0.0
+            val tpPrice = row["tp"].orEmpty().toDoubleOrNull() ?: 0.0
+            val slPrice = row["sl"].orEmpty().toDoubleOrNull() ?: 0.0
+            val capital = row["risk_capital"].orEmpty().toDoubleOrNull()?.takeIf { it > 0.0 } ?: stake
+            val quantity = if (entry > 0.0) stake / entry else 0.0
+            val tp = if (quantity > 0.0 && capital > 0.0) (tpPrice - entry) * quantity / capital * 100.0 else 0.0
+            val sl = if (slPrice == 0.0) 0.0 else if (quantity > 0.0 && capital > 0.0) (entry - slPrice) * quantity / capital * 100.0 else 0.0
             val slText = if (sl == 0.0) "0% — UNLIMITED HOLD sampai TP atau tutup manual" else "${percent(sl)} dari modal acuan"
             content.addView(card(activity,
                 "${row["symbol"].orEmpty()}\n" +
-                    "Modal posisi: Rp ${moneyNumber(row["stake"].orEmpty().toDoubleOrNull() ?: 0.0)}\n" +
+                    "Modal posisi: Rp ${moneyNumber(stake)}\n" +
                     "Dasar TP/SL: ${if (row["risk_basis"] == "INITIAL_CAPITAL") "MODAL BELI PERTAMA" else "HARGA ENTRY"}\n" +
                     "Modal acuan: Rp ${moneyNumber(capital)}\n" +
                     "TP: +${percent(tp)} dari modal acuan\n" +
                     "SL: $slText\n\n" +
-                    "Harga entry: Rp ${moneyNumber(row["entry"].orEmpty().toDoubleOrNull() ?: 0.0)}\n" +
-                    "Harga target TP: Rp ${moneyNumber(row["tp"].orEmpty().toDoubleOrNull() ?: 0.0)}\n" +
-                    "Harga target SL: Rp ${moneyNumber(row["sl"].orEmpty().toDoubleOrNull() ?: 0.0)}\n" +
+                    "Harga entry: Rp ${moneyNumber(entry)}\n" +
+                    "Harga target TP: Rp ${moneyNumber(tpPrice)}\n" +
+                    "Harga target SL: Rp ${moneyNumber(slPrice)}\n" +
                     "Harga target adalah translasi target modal berdasarkan quantity posisi.\n" +
                     "PnL berjalan: Rp ${row["unrealized"].orEmpty().toDoubleOrNull()?.let(::signedMoney) ?: "0"}", 13.5f))
         }
