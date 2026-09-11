@@ -5,52 +5,53 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.Network
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
 import com.mirei.app.core.DecisionMode
-import com.mirei.app.core.ManualRiskMode
+import com.mirei.app.core.MireiState
 import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.core.ScalpingMode
 import com.mirei.app.core.TradingConfig
+import com.mirei.app.execution.PaperEngineState
 import com.mirei.app.storage.MireiDatabase
 import com.mirei.app.storage.PaperSessionSnapshot
 import com.mirei.app.storage.PaperSessionStore
+import com.mirei.app.storage.TradeLedgerFactory
 import java.util.Locale
 
 class MireiForegroundService : Service() {
-    private lateinit var workerThread: HandlerThread
-    private lateinit var worker: Handler
-    private lateinit var sessionStore: PaperSessionStore
-    private lateinit var prefs: android.content.SharedPreferences
-    private lateinit var connectivityManager: ConnectivityManager
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private lateinit var runtime: MireiPaperTradingRuntime
-    private var marketData: IndodaxMarketDataSource = IndodaxMarketDataSource()
-    private var controller = MireiRuntimeController()
+    private val controller = MireiRuntimeController()
     private var config = TradingConfig()
-    private var internetAvailable = false
+    private var symbol = DEFAULT_SYMBOL
+    private var exchangeId = DEFAULT_EXCHANGE
+    private var managedSymbols = listOf(DEFAULT_SYMBOL)
     private var sessionStarted = false
     private var sessionCreatedAtEpochMs = 0L
     private var runStartedAtEpochMs = 0L
     private var runStoppedAtEpochMs = 0L
     private var timestampResetAtEpochMs = 0L
-    private var symbol = DEFAULT_SYMBOL
-    private var exchangeId = DEFAULT_EXCHANGE
-    private var managedSymbols = listOf(DEFAULT_SYMBOL)
+    private lateinit var workerThread: HandlerThread
+    private lateinit var worker: Handler
+    private lateinit var runtime: MireiPaperTradingRuntime
+    private lateinit var marketData: IndodaxMarketDataSource
+    private lateinit var prefs: SharedPreferences
+    private lateinit var sessionStore: PaperSessionStore
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var internetAvailable = false
+    @Volatile private var lastScannerSummary = ""
     private var lastScanEpochMs = 0L
     private var lastNotificationKey = ""
-    private var lastScannerSummary = ""
 
     override fun onCreate() {
         super.onCreate()
         try {
-            sessionStore = PaperSessionStore(this)
             prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            sessionStore = PaperSessionStore(this)
             config = loadConfig()
             getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_LOW))
             workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
@@ -357,9 +358,6 @@ class MireiForegroundService : Service() {
                 persistSession()
                 runCatching { MireiDatabase(this).recordAudit("SESSION_CLOSED", "all_positions_closed", runStoppedAtEpochMs) }
             } else {
-                // Do not stop a session while positions remain open. A blocked
-                // close-all must preserve the running session so the user can
-                // retry when market/exchange data becomes available.
                 runCatching { MireiDatabase(this).recordAudit("CLOSE_ALL_BLOCKED", "positions_remaining=${status.activePositions.size}") }
                 persistSession()
             }
@@ -434,9 +432,18 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_MARKET_FRESH, status.marketDataFresh)
             putExtra(EXTRA_INTERNET, status.internetAvailable)
             putExtra(EXTRA_EXCHANGE_HEALTHY, status.exchangeHealthy)
-            putExtra(EXTRA_ERROR, status.lastError.orEmpty())
-            putExtra(EXTRA_RECENT_EXECUTIONS, status.recentExecutions.joinToString("\n") { "${it.reason} ${it.symbol} qty=${it.quantity} pnl=${"%.2f".format(Locale.US, it.pnlIdr)}" })
-            putExtra(EXTRA_POSITIONS_DETAIL, status.activePositions.joinToString("\n") { "${it.symbol} entry=${it.entryPrice} sl=${it.stopLossPrice} tp=${it.takeProfitPrice}" })
+            putExtra(EXTRA_ERROR, status.lastError)
+            putExtra(EXTRA_RECENT_EXECUTIONS, status.recentExecutions.joinToString("\n") { execution -> "${execution.reason ?: "execution"} | PnL Rp ${"%.2f".format(Locale.US, execution.pnlIdr)} | Kas Rp ${"%.2f".format(Locale.US, execution.remainingBalanceIdr)} | ${execution.orderId ?: "-"}" })
+            putExtra(EXTRA_POSITIONS_DETAIL, status.activePositions.joinToString("\n") { p ->
+                val snapshot = status.snapshotsBySymbol[p.symbol]
+                val current = snapshot?.price ?: p.entryPrice
+                val amount = p.stakeIdr / p.entryPrice
+                val value = current * amount
+                val unrealized = value - p.stakeIdr
+                val tpDistance = (p.takeProfitPrice / p.entryPrice - 1.0) * 100.0
+                val slDistance = if (p.stopLossPrice == 0.0) 0.0 else (1.0 - p.stopLossPrice / p.entryPrice) * 100.0
+                "${p.symbol}|stake=${"%.2f".format(Locale.US, p.stakeIdr)}|entry=${"%.2f".format(Locale.US, p.entryPrice)}|current=${"%.2f".format(Locale.US, current)}|value=${"%.2f".format(Locale.US, value)}|unrealized=${"%.2f".format(Locale.US, unrealized)}|tp=${"%.2f".format(Locale.US, p.takeProfitPrice)}|sl=${"%.2f".format(Locale.US, p.stopLossPrice)}|tp_pct=${"%.3f".format(Locale.US, tpDistance)}|sl_pct=${"%.3f".format(Locale.US, slDistance)}|entry_reason=${p.entryReason}|risk_basis=${p.riskReferenceMode.name}|risk_capital=${"%.2f".format(Locale.US, p.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: p.stakeIdr)}|opened=${p.openedAtEpochMs}"
+            })
             putExtra(EXTRA_SCANNER, status.scannerSummary)
             putExtra(EXTRA_TICK, status.lastTickEpochMs)
             putExtra(EXTRA_BUY_COUNT, status.buyDecisionCount)
@@ -453,25 +460,50 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_TOTAL_CAPITAL, config.totalCapitalIdr)
         }
         sendBroadcast(intent)
-        publish("${stateLabel()} · ${status.marketSymbol.ifBlank { symbol }} · ${status.activePositions.size} posisi", force = false)
+        val meaningfulEvent = when {
+            !status.lastError.isNullOrBlank() && !status.internetAvailable -> "SEARCHING:Koneksi internet / market belum tersedia"
+            !status.lastError.isNullOrBlank() -> "ERROR:${status.lastError}"
+            status.recentExecutions.isNotEmpty() -> notificationForExecution(status)
+            controller.state == MireiState.CLOSE_ALL -> "CLOSE ALL:Semua posisi ditutup"
+            controller.state == MireiState.HOLD && !status.internetAvailable -> "SEARCHING:Menunggu koneksi kembali"
+            else -> "STATE:${controller.state.name}"
+        }
+        publish(meaningfulEvent, force = false)
     }
 
-    private fun publishHealth() {
-        val status = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE))
-        publishStatus(status)
+    private fun notificationForExecution(status: PaperRuntimeStatus): String {
+        val execution = status.recentExecutions.lastOrNull() ?: return "STATE:${controller.state.name}"
+        if (execution.reason == "top_up") return "TOP UP:Rp ${"%.2f".format(Locale.US, execution.remainingBalanceIdr - execution.balanceBeforeIdr)} · Kas sekarang Rp ${"%.2f".format(Locale.US, execution.remainingBalanceIdr)}"
+        val trade = runCatching { MireiDatabase(this).recentTrades(10).firstOrNull() }.getOrNull()
+        val symbolText = trade?.symbol ?: status.activePositions.lastOrNull()?.symbol ?: status.marketSymbol.ifBlank { "MARKET" }
+        val isSell = execution.reason in setOf("stop_loss", "take_profit", "ai_close", "manual_close_all")
+        val action = if (isSell) "SELL" else "BUY"
+        val pnl = if (isSell) "PnL ${if (execution.pnlIdr >= 0.0) "+" else "-"}Rp ${"%.2f".format(Locale.US, kotlin.math.abs(execution.pnlIdr))}" else "Harga Rp ${"%.2f".format(Locale.US, execution.averagePrice)}"
+        return "$action $symbolText · $pnl · ${execution.reason ?: "execution"}"
     }
+
+    private fun publishHealth() = publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId == DEFAULT_EXCHANGE)))
 
     private fun publish(text: String, force: Boolean) {
-        if (!force && text == lastNotificationKey) return
-        lastNotificationKey = text
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification(text))
+        val key = if (force) "force:${System.currentTimeMillis()}" else text
+        if (!force && key == lastNotificationKey) return
+        lastNotificationKey = key
+        val visible = when {
+            text.startsWith("EXEC:") -> text.removePrefix("EXEC:").replace(':', '·')
+            text.startsWith("ERROR:") -> text.removePrefix("ERROR:").replace('_', ' ')
+            text.startsWith("STATE:") -> text.removePrefix("STATE:")
+            text.startsWith("SEARCHING:") -> "🔵 ${text.removePrefix("SEARCHING:")}"
+            text.startsWith("CLOSE ALL:") -> "⚪ ${text.removePrefix("CLOSE ALL:")}"
+            text.startsWith("TOP UP:") -> "${text.removePrefix("TOP UP:")}"
+            else -> text
+        }
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(visible))
     }
 
-    private fun notification(text: String): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("Mirei ミレイ")
+    private fun notification(text: String): Notification = Notification.Builder(this, CHANNEL_ID)
+        .setContentTitle("Mirei · Paper Trading")
         .setContentText(text)
-        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+        .setStyle(Notification.BigTextStyle().bigText(text))
         .setSmallIcon(android.R.drawable.ic_dialog_info)
         .setOngoing(true)
         .build()
@@ -491,7 +523,7 @@ class MireiForegroundService : Service() {
         val tp = prefs.getString(KEY_MANUAL_TP, null)?.toDoubleOrNull()
         val referenceMode = runCatching { RiskReferenceMode.valueOf(prefs.getString(KEY_RISK_BASIS, RiskReferenceMode.ENTRY_PRICE.name)!!) }.getOrDefault(RiskReferenceMode.ENTRY_PRICE)
         return if (manual && sl != null && tp != null && tp > sl) {
-            TradingConfig(totalCapitalIdr = totalCapital, mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp, riskReferenceMode = referenceMode)
+            TradingConfig(totalCapitalIdr = totalCapital, mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = com.mirei.app.core.ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp, riskReferenceMode = referenceMode)
         } else {
             TradingConfig(totalCapitalIdr = totalCapital, mode = mode, decisionMode = DecisionMode.SUGGESTION, riskReferenceMode = referenceMode)
         }
