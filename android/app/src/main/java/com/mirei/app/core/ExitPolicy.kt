@@ -36,7 +36,10 @@ class ExitPolicy(private val config: TradingConfig) {
 
         val baseRiskPercent = ((entryPrice - initialStopLossPrice) / entryPrice * 100.0).coerceAtLeast(0.01)
         val profitPercent = (currentPrice / entryPrice - 1.0) * 100.0
-        val activated = profitPercent >= baseRiskPercent * config.trailingActivationR
+        // Use a small numeric tolerance so an exact 1R boundary such as
+        // 100000 -> 100500 is not lost to floating-point representation.
+        val activationR = baseRiskPercent * config.trailingActivationR
+        val activated = profitPercent + 1e-9 >= activationR
 
         if (!activated) {
             return ExitPlan(
