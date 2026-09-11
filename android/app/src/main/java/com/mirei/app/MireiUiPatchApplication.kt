@@ -33,9 +33,8 @@ import java.util.WeakHashMap
 /**
  * UI compatibility layer for the programmatic MainActivity.
  *
- * Preservation-first: the existing MainActivity remains the source of truth for
- * runtime controls and normal pages. This layer only reapplies requested UI
- * affordances after MainActivity redraws its content.
+ * Preservation-first: MainActivity remains the source of truth for runtime
+ * controls. This layer only reapplies requested UI affordances after redraws.
  */
 class MireiUiPatchApplication : Application() {
     private val diagnosticsInstalled = WeakHashMap<Activity, Boolean>()
@@ -55,7 +54,7 @@ class MireiUiPatchApplication : Application() {
             override fun onActivityStarted(activity: Activity) = Unit
             override fun onActivityPaused(activity: Activity) = Unit
             override fun onActivityStopped(activity: Activity) = Unit
-            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle?) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
             override fun onActivityDestroyed(activity: Activity) = Unit
         })
     }
@@ -75,12 +74,12 @@ class MireiUiPatchApplication : Application() {
             root.setTag(TAG_OBSERVER)
             observer.addOnGlobalLayoutListener {
                 patch()
-                installResumeButtonPatch(activity)
+                (activity as? MainActivity)?.let(::installResumeButtonPatch)
             }
         }
     }
 
-    private fun installResumeButtonPatch(activity: Activity) {
+    private fun installResumeButtonPatch(activity: MainActivity) {
         val root = activity.window.decorView
         val start = findButtons(root).firstOrNull { it.text?.toString() == "MULAI" } ?: return
         val intent = currentIntentOf(activity) ?: return
@@ -88,7 +87,7 @@ class MireiUiPatchApplication : Application() {
         val parent = start.parent as? ViewGroup ?: return
         val existing = (0 until parent.childCount)
             .map { parent.getChildAt(it) }
-            .firstOrNull { it.getTag(TAG_RESUME) == true } as? Button
+            .firstOrNull { it.getTag() == TAG_RESUME } as? Button
         if (!resumable) {
             existing?.visibility = View.GONE
             return
@@ -96,7 +95,7 @@ class MireiUiPatchApplication : Application() {
         val resume = existing ?: Button(activity).apply {
             text = "LANJUTKAN"
             isAllCaps = false
-            setTag(TAG_RESUME, true)
+            setTag(TAG_RESUME)
             setOnClickListener { confirmResume(activity) }
         }.also {
             parent.addView(it, 0, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -104,7 +103,7 @@ class MireiUiPatchApplication : Application() {
         resume.visibility = View.VISIBLE
     }
 
-    private fun confirmResume(activity: Activity) {
+    private fun confirmResume(activity: MainActivity) {
         val i = currentIntentOf(activity) ?: return
         val cash = money(i.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0))
         val equity = money(i.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0))
@@ -133,32 +132,24 @@ class MireiUiPatchApplication : Application() {
             val menu = findMenuSpinner(root) ?: return@addOnGlobalLayoutListener
             val selected = menu.selectedItem?.toString().orEmpty()
             if (selected.isBlank()) return@addOnGlobalLayoutListener
-
             when (selected) {
                 "PASAR" -> {
-                    val content = contentOf(activity)
-                    if (content != null && !hasMarker(content, TAG_MARKET_MARKER)) {
+                    if (!hasMarker(contentOf(activity) ?: return@addOnGlobalLayoutListener, TAG_MARKET_MARKER)) {
                         activity.window.decorView.post { renderMarketPulse(activity) }
                     }
                 }
                 "POSISI" -> {
-                    val content = contentOf(activity)
-                    if (content != null && !hasMarker(content, TAG_POSITION_MARKER)) {
+                    if (!hasMarker(contentOf(activity) ?: return@addOnGlobalLayoutListener, TAG_POSITION_MARKER)) {
                         activity.window.decorView.post { renderReadablePositions(activity) }
                     }
                 }
-                "RINGKASAN" -> {
+                "RINGKASAN", "LOG / AUDIT" -> {
                     val state = lastMenu[root]
                     if (state != selected) {
                         lastMenu[root] = selected
-                        activity.window.decorView.post { renderSynchronizedSummary(activity) }
-                    }
-                }
-                "LOG / AUDIT" -> {
-                    val state = lastMenu[root]
-                    if (state != selected) {
-                        lastMenu[root] = selected
-                        activity.window.decorView.post { renderReadableAudit(activity) }
+                        activity.window.decorView.post {
+                            if (selected == "RINGKASAN") renderSynchronizedSummary(activity) else renderReadableAudit(activity)
+                        }
                     }
                 }
                 else -> lastMenu[root] = selected
@@ -182,13 +173,11 @@ class MireiUiPatchApplication : Application() {
         addMarker(content, TAG_MARKET_MARKER)
         addTitle(content, "PASAR · MARKET PULSE")
         content.addView(card(activity, "Selector coin tetap tersedia di halaman PASAR. Pilihan terakhir disimpan untuk kunjungan berikutnya.", 12.5f))
-
         val selector = Spinner(activity)
         selector.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, symbols)
         selector.setSelection(symbols.indexOf(initial).coerceAtLeast(0))
         content.addView(label(activity, "COIN TERPILIH", true))
         content.addView(selector)
-
         val detail = card(activity, "Memuat $initial…", 14f)
         content.addView(detail)
         addTitle(content, "SCANNER MULTI-COIN")
@@ -215,12 +204,9 @@ class MireiUiPatchApplication : Application() {
                 } else {
                     "$symbol\nData market belum tersedia.\nCoba SEGARKAN DATA atau tunggu runtime selesai setup."
                 }
-                activity.runOnUiThread {
-                    if (!activity.isFinishing) detail.text = text
-                }
+                activity.runOnUiThread { if (!activity.isFinishing) detail.text = text }
             }.start()
         }
-
         selector.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -235,12 +221,10 @@ class MireiUiPatchApplication : Application() {
         val intent = currentIntentOf(activity) ?: return
         val rows = parsePositions(intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty())
         if (rows.isEmpty()) return
-
         content.removeAllViews()
         addMarker(content, TAG_POSITION_MARKER)
         addTitle(content, "POSISI AKTIF")
-        content.addView(card(activity, "Setiap kartu menunjukkan modal, dasar risiko, persentase TP/SL, harga target, dan PnL berjalan. Harga target adalah hasil translasi target modal berdasarkan quantity posisi.", 12.5f))
-
+        content.addView(card(activity, "Setiap kartu menunjukkan modal, dasar risiko, persentase TP/SL, harga target, trailing, dan PnL berjalan.", 12.5f))
         rows.forEach { row ->
             val stake = row["stake"].orEmpty().toDoubleOrNull() ?: 0.0
             val entry = row["entry"].orEmpty().toDoubleOrNull() ?: 0.0
@@ -261,22 +245,14 @@ class MireiUiPatchApplication : Application() {
             val trailing = row["trailing"].orEmpty().toDoubleOrNull()?.let { "Rp ${moneyNumber(it)}" } ?: "dikelola otomatis sekitar 1R"
             val basis = if (row["risk_basis"] == RiskReferenceMode.INITIAL_CAPITAL.name) "MODAL BELI PERTAMA" else "HARGA ENTRY"
             val slText = if (slPercent == 0.0) "0% — UNLIMITED HOLD sampai TP atau tutup manual" else "${percent(slPercent)} dari modal acuan"
-
-            val box = LinearLayout(activity).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(0, 4, 0, 10)
-            }
+            val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 4, 0, 10) }
             box.addView(label(activity, row["symbol"].orEmpty().ifBlank { "POSISI" }, true))
             box.addView(card(activity,
-                "MODAL POSISI\nRp ${moneyNumber(stake)}\n\n" +
-                    "NILAI SEKARANG\nRp ${moneyNumber(value)}\nHarga Rp ${moneyNumber(current)}\n" +
-                    "PnL BERJALAN\nRp ${signedMoney(unrealized)}",
+                "MODAL POSISI\nRp ${moneyNumber(stake)}\n\nNILAI SEKARANG\nRp ${moneyNumber(value)}\nHarga Rp ${moneyNumber(current)}\n\nPnL BERJALAN\nRp ${signedMoney(unrealized)}",
                 13.5f,
             ))
             box.addView(card(activity,
-                "DASAR TP/SL\n$basis\nModal acuan: Rp ${moneyNumber(capital)}\n\n" +
-                    "TAKE PROFIT\n+${percent(tpPercent)} dari modal acuan\nHarga target TP: Rp ${moneyNumber(tpPrice)}\n\n" +
-                    "STOP LOSS\n$slText\nHarga target SL: Rp ${moneyNumber(slPrice)}",
+                "DASAR TP/SL\n$basis\nModal acuan: Rp ${moneyNumber(capital)}\n\nTAKE PROFIT\n+${percent(tpPercent)} dari modal acuan\nHarga target TP: Rp ${moneyNumber(tpPrice)}\n\nSTOP LOSS\n$slText\nHarga target SL: Rp ${moneyNumber(slPrice)}",
                 13.5f,
             ))
             box.addView(card(activity,
@@ -304,33 +280,17 @@ class MireiUiPatchApplication : Application() {
         val holdDecisions = intent.getIntExtra(MireiForegroundService.EXTRA_HOLD_COUNT, 0)
         val buyDecisions = intent.getIntExtra(MireiForegroundService.EXTRA_BUY_COUNT, 0)
         content.addView(card(activity,
-            "STATUS\n${intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP"}\n\n" +
-                "KEPUTUSAN ENGINE\nBUY $buyDecisions · HOLD $holdDecisions · SELL $sellDecisions\n" +
-                "Catatan: SELL di atas adalah keputusan engine, BUKAN jumlah posisi yang terjual.\n\n" +
-                "EKSEKUSI NYATA\nOPEN ${opens.size} · CLOSE ${closes.size} · RE-ENTRY $reEntries", 14f))
+            "STATUS\n${intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP"}\n\nKEPUTUSAN ENGINE\nBUY $buyDecisions · HOLD $holdDecisions · SELL $sellDecisions\nCatatan: SELL di atas adalah keputusan engine, BUKAN jumlah posisi yang terjual.\n\nEKSEKUSI NYATA\nOPEN ${opens.size} · CLOSE ${closes.size} · RE-ENTRY $reEntries", 14f))
         addTitle(content, "EVENT TERAKHIR · SUMBER DATABASE")
-        if (lastClose != null) content.addView(card(activity,
-            "CLOSE TERAKHIR\n${formatEpoch(lastClose.closedAtEpochMs ?: 0L)} · ${lastClose.symbol}\n" +
-                "Masuk Rp ${fmtNumber(lastClose.entryPrice ?: 0.0)}\nKeluar Rp ${fmtNumber(lastClose.exitPrice ?: 0.0)}\n" +
-                "PnL Rp ${signedMoney(lastClose.pnlIdr)}\nAlasan: ${humanExitReason(lastClose.exitReason)}", 13.5f))
+        if (lastClose != null) content.addView(card(activity, "CLOSE TERAKHIR\n${formatEpoch(lastClose.closedAtEpochMs ?: 0L)} · ${lastClose.symbol}\nMasuk Rp ${fmtNumber(lastClose.entryPrice ?: 0.0)}\nKeluar Rp ${fmtNumber(lastClose.exitPrice ?: 0.0)}\nPnL Rp ${signedMoney(lastClose.pnlIdr)}\nAlasan: ${humanExitReason(lastClose.exitReason)}", 13.5f))
         else content.addView(card(activity, "Belum ada CLOSE nyata pada sesi ini.", 13.5f))
-        if (lastOpen != null) content.addView(card(activity,
-            "OPEN TERAKHIR\n${formatEpoch(lastOpen.openedAtEpochMs)} · ${lastOpen.symbol}\n" +
-                "Entry Rp ${fmtNumber(lastOpen.entryPrice ?: 0.0)}\nModal Rp ${fmtNumber(lastOpen.stakeIdr)}\nAsal: ${lastOpen.entryReason}", 13.5f))
+        if (lastOpen != null) content.addView(card(activity, "OPEN TERAKHIR\n${formatEpoch(lastOpen.openedAtEpochMs)} · ${lastOpen.symbol}\nEntry Rp ${fmtNumber(lastOpen.entryPrice ?: 0.0)}\nModal Rp ${fmtNumber(lastOpen.stakeIdr)}\nAsal: ${lastOpen.entryReason}", 13.5f))
         addTitle(content, "RE-ENTRY / BUY OTOMATIS")
         val gate = intent.getStringExtra(MireiForegroundService.EXTRA_ENTRY_REASONS).orEmpty().ifBlank { "Belum ada gate terakhir." }
-        val reentryText = if (lastClose == null) {
-            "Belum ada posisi yang ditutup. Belum ada recovery yang dapat diuji."
-        } else if (reEntries > 0) {
-            "RE-ENTRY terdeteksi ${reEntries}x. Ini membuktikan modal hasil CLOSE dapat kembali masuk saat gate BUY valid atau setelah TP."
-        } else {
-            "Belum ada RE-ENTRY pada sesi ini.\nGate terakhir: ${gate.replace("|", "\n")}"
-        }
+        val reentryText = if (lastClose == null) "Belum ada posisi yang ditutup. Belum ada recovery yang dapat diuji." else if (reEntries > 0) "RE-ENTRY terdeteksi ${reEntries}x. Ini membuktikan modal hasil CLOSE dapat kembali masuk saat gate BUY valid atau setelah TP." else "Belum ada RE-ENTRY pada sesi ini.\nGate terakhir: ${gate.replace("|", "\n")}"
         content.addView(card(activity, reentryText, 13.5f))
         addTitle(content, "HITUNGAN KEPUTUSAN")
-        content.addView(card(activity,
-            "BUY / MASUK (KEPUTUSAN): $buyDecisions\nHOLD / TAHAN (KEPUTUSAN): $holdDecisions\nSELL / KELUAR (KEPUTUSAN): $sellDecisions\n\n" +
-                "CLOSE NYATA: ${closes.size}\nOPEN NYATA: ${opens.size}\n\nSELL $sellDecisions tidak berarti $sellDecisions coin dijual. Hanya event CLOSE nyata yang mengubah posisi dan tercatat sebagai transaksi.", 14f))
+        content.addView(card(activity, "BUY / MASUK (KEPUTUSAN): $buyDecisions\nHOLD / TAHAN (KEPUTUSAN): $holdDecisions\nSELL / KELUAR (KEPUTUSAN): $sellDecisions\n\nCLOSE NYATA: ${closes.size}\nOPEN NYATA: ${opens.size}\n\nSELL $sellDecisions tidak berarti $sellDecisions coin dijual. Hanya event CLOSE nyata yang mengubah posisi dan tercatat sebagai transaksi.", 14f))
     }
 
     private fun renderReadableAudit(activity: MainActivity) {
@@ -343,25 +303,16 @@ class MireiUiPatchApplication : Application() {
         val trades = runCatching { db.recentTrades(200).filter { start == 0L || it.openedAtEpochMs >= start } }.getOrDefault(emptyList())
         val closes = trades.filter { it.closedAtEpochMs != null }.sortedByDescending { it.closedAtEpochMs ?: 0L }
         val opens = trades.sortedByDescending { it.openedAtEpochMs }
-        content.addView(card(activity,
-            "AUDIT DIBACA DARI DATABASE SESI AKTIF.\nOPEN nyata: ${opens.size}\nCLOSE nyata: ${closes.size}\nSELL decision count tidak dihitung sebagai penjualan di halaman ini.", 13.5f))
+        content.addView(card(activity, "AUDIT DIBACA DARI DATABASE SESI AKTIF.\nOPEN nyata: ${opens.size}\nCLOSE nyata: ${closes.size}\nSELL decision count tidak dihitung sebagai penjualan di halaman ini.", 13.5f))
         addTitle(content, "EKSEKUSI NYATA")
         val executionTrades = (opens + closes).distinctBy { "${it.symbol}|${it.openedAtEpochMs}|${it.closedAtEpochMs}|${it.exitPrice}" }
         if (executionTrades.isEmpty()) content.addView(card(activity, "Belum ada transaksi nyata pada sesi ini.", 13f))
         else executionTrades.sortedByDescending { maxOf(it.openedAtEpochMs, it.closedAtEpochMs ?: 0L) }.take(100).forEach { trade ->
             val status = if (trade.closedAtEpochMs == null) "OPEN AKTIF" else "CLOSE NYATA"
-            content.addView(card(activity,
-                "${formatEpoch(trade.closedAtEpochMs ?: trade.openedAtEpochMs)} · $status · ${trade.symbol}\n" +
-                    "Modal Rp ${fmtNumber(trade.stakeIdr)}\nEntry Rp ${fmtNumber(trade.entryPrice ?: 0.0)}\n" +
-                    "Keluar ${trade.exitPrice?.let { "Rp ${fmtNumber(it)}" } ?: "—"}\nPnL Rp ${signedMoney(trade.pnlIdr)}\n" +
-                    "Alasan masuk: ${trade.entryReason}\nAlasan keluar: ${humanExitReason(trade.exitReason)}", 12.5f))
+            content.addView(card(activity, "${formatEpoch(trade.closedAtEpochMs ?: trade.openedAtEpochMs)} · $status · ${trade.symbol}\nModal Rp ${fmtNumber(trade.stakeIdr)}\nEntry Rp ${fmtNumber(trade.entryPrice ?: 0.0)}\nKeluar ${trade.exitPrice?.let { "Rp ${fmtNumber(it)}" } ?: "—"}\nPnL Rp ${signedMoney(trade.pnlIdr)}\nAlasan masuk: ${trade.entryReason}\nAlasan keluar: ${humanExitReason(trade.exitReason)}", 12.5f))
         }
         addTitle(content, "EVENT ENGINE")
-        val events = runCatching {
-            db.recentAudit(200).filter { start == 0L || it.createdAtEpochMs >= start }
-                .filter { it.eventType in setOf("OPEN", "RE_ENTRY", "SL_CLOSE", "TP_CLOSE", "MANUAL_CLOSE", "SESSION_STOPPED", "SESSION_PAUSED", "SESSION_CLOSED", "RUNTIME_ERROR") }
-                .sortedByDescending { it.createdAtEpochMs }
-        }.getOrDefault(emptyList())
+        val events = runCatching { db.recentAudit(200).filter { start == 0L || it.createdAtEpochMs >= start }.filter { it.eventType in setOf("OPEN", "RE_ENTRY", "SL_CLOSE", "TP_CLOSE", "MANUAL_CLOSE", "SESSION_STOPPED", "SESSION_PAUSED", "SESSION_CLOSED", "RUNTIME_ERROR") }.sortedByDescending { it.createdAtEpochMs } }.getOrDefault(emptyList())
         events.take(100).forEach { event -> content.addView(card(activity, "${formatEpoch(event.createdAtEpochMs)} · ${humanEventType(event.eventType)}\n${humanAuditDetails(event.details)}", 12.5f)) }
         if (events.isEmpty()) content.addView(card(activity, "Belum ada event engine pada sesi ini.", 12.5f))
     }
@@ -379,21 +330,9 @@ class MireiUiPatchApplication : Application() {
         return null
     }
 
-    private fun parsePositions(raw: String): List<Map<String, String>> = raw.lines()
-        .filter { it.isNotBlank() }
-        .map { line ->
-            line.split('|')
-                .mapNotNull { token ->
-                    token.split('=', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] }
-                }
-                .toMap()
-        }
-
+    private fun parsePositions(raw: String): List<Map<String, String>> = raw.lines().filter { it.isNotBlank() }.map { line -> line.split('|').mapNotNull { token -> token.split('=', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }.toMap() }
     private data class ScannerRow(val symbol: String, val price: String, val change1m: String, val momentum: String, val trend: String, val volumeShare: String)
-    private fun parseScanner(raw: String): List<ScannerRow> = raw.lines().mapNotNull { line ->
-        val p = line.split('|')
-        if (p.size >= 6) ScannerRow(p[0], p[1], p[2], p[3], p[4], p[5]) else null
-    }
+    private fun parseScanner(raw: String): List<ScannerRow> = raw.lines().mapNotNull { line -> val p = line.split('|'); if (p.size >= 6) ScannerRow(p[0], p[1], p[2], p[3], p[4], p[5]) else null }
 
     private fun selectedFromCurrentIntent(intent: Intent) = com.mirei.app.core.MarketSnapshot(
         symbol = intent.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: "", price = intent.getDoubleExtra(MireiForegroundService.EXTRA_PRICE, 0.0),
@@ -415,39 +354,17 @@ class MireiUiPatchApplication : Application() {
         val pnl = parts.firstOrNull { it.startsWith("pnl=") }?.removePrefix("pnl=")
         val before = parts.firstOrNull { it.startsWith("balance_before=") }?.removePrefix("balance_before=")
         val after = parts.firstOrNull { it.startsWith("balance_after=") }?.removePrefix("balance_after=")
-        return buildString {
-            append("Aksi: ").append(reason.ifBlank { "event" }).append('\n')
-            if (order != null) append("Order: ").append(order).append('\n')
-            if (pnl != null) append("PnL: Rp ").append(pnl).append('\n')
-            if (before != null) append("Kas sebelum: Rp ").append(before).append('\n')
-            if (after != null) append("Kas sesudah: Rp ").append(after)
-        }.trim()
+        return buildString { append("Aksi: ").append(reason.ifBlank { "event" }).append('\n'); if (order != null) append("Order: ").append(order).append('\n'); if (pnl != null) append("PnL: Rp ").append(pnl).append('\n'); if (before != null) append("Kas sebelum: Rp ").append(before).append('\n'); if (after != null) append("Kas sesudah: Rp ").append(after) }.trim()
     }
-
     private fun humanEventType(type: String): String = when (type) {
-        "OPEN" -> "OPEN · POSISI MASUK"
-        "RE_ENTRY" -> "RE-ENTRY · BUY KEMBALI"
-        "SL_CLOSE" -> "CLOSE · STOP LOSS"
-        "TP_CLOSE" -> "CLOSE · TAKE PROFIT"
-        "MANUAL_CLOSE" -> "CLOSE · MANUAL"
-        "SESSION_STOPPED" -> "SESI · BERHENTI"
-        "SESSION_PAUSED" -> "SESI · HOLD"
-        "SESSION_CLOSED" -> "SESI · SEMUA POSISI DITUTUP"
-        "RUNTIME_ERROR" -> "ERROR RUNTIME"
-        else -> type.replace('_', ' ')
+        "OPEN" -> "OPEN · POSISI MASUK"; "RE_ENTRY" -> "RE-ENTRY · BUY KEMBALI"; "SL_CLOSE" -> "CLOSE · STOP LOSS"; "TP_CLOSE" -> "CLOSE · TAKE PROFIT"; "MANUAL_CLOSE" -> "CLOSE · MANUAL"; "SESSION_STOPPED" -> "SESI · BERHENTI"; "SESSION_PAUSED" -> "SESI · HOLD"; "SESSION_CLOSED" -> "SESI · SEMUA POSISI DITUTUP"; "RUNTIME_ERROR" -> "ERROR RUNTIME"; else -> type.replace('_', ' ')
     }
-
-    private fun humanExitReason(reason: String?): String = when (reason) {
-        "stop_loss" -> "STOP LOSS"
-        "take_profit" -> "TAKE PROFIT"
-        "ai_close" -> "KEPUTUSAN AI CLOSE"
-        "manual_close_all" -> "TUTUP SEMUA POSISI"
-        else -> reason?.replace('_', ' ') ?: "—"
-    }
-
+    private fun humanExitReason(reason: String?): String = when (reason) { "stop_loss" -> "STOP LOSS"; "take_profit" -> "TAKE PROFIT"; "ai_close" -> "KEPUTUSAN AI CLOSE"; "manual_close_all" -> "TUTUP SEMUA POSISI"; else -> reason?.replace('_', ' ') ?: "—" }
+    private fun humanEntryReason(reason: String): String = when (reason) { "initial_holding_seeded" -> "HOLDING AWAL"; "entry_filled" -> "ENTRY OTOMATIS"; "re_entry" -> "RE-ENTRY"; "human_verified_entry" -> "ENTRY TERVERIFIKASI"; "human_verified_re_entry" -> "RE-ENTRY TERVERIFIKASI"; else -> reason.replace('_', ' ').ifBlank { "—" } }
+    private fun formatAge(openedAt: Long): String { if (openedAt <= 0L) return "—"; val ageMs = (System.currentTimeMillis() - openedAt).coerceAtLeast(0L); val totalSeconds = ageMs / 1000L; val minutes = totalSeconds / 60L; val seconds = totalSeconds % 60L; return if (minutes > 0) "${minutes}m ${seconds}s" else "${seconds}s" }
     private fun addTitle(content: LinearLayout, value: String) { content.addView(label(content.context, value, true)) }
-    private fun addMarker(content: ViewGroup, tag: Any) { content.addView(TextView(content.context).apply { setTag(tag, true); visibility = View.GONE }) }
-    private fun hasMarker(content: ViewGroup, tag: Any): Boolean = (0 until content.childCount).any { content.getChildAt(it).getTag(tag) == true }
+    private fun addMarker(content: ViewGroup, tag: Any) { content.addView(TextView(content.context).apply { setTag(tag); visibility = View.GONE }) }
+    private fun hasMarker(content: ViewGroup, tag: Any): Boolean = (0 until content.childCount).any { content.getChildAt(it).getTag() == tag }
     private fun card(context: Context, value: String, size: Float): TextView = TextView(context).apply { text = value; textSize = size; setTextColor(Color.WHITE); setPadding(8, 10, 8, 10); setBackgroundColor(Color.rgb(24, 34, 43)) }
     private fun label(context: Context, value: String, bold: Boolean): TextView = TextView(context).apply { text = value; textSize = if (bold) 17f else 14f; setTextColor(Color.WHITE); if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(4, 10, 4, 5) }
     private fun fmtNumber(value: Double): String = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }.format(value)
@@ -500,7 +417,7 @@ class MireiUiPatchApplication : Application() {
         }; dialog.show()
     }
 
-    private fun sendStart(activity: Activity) {
+    private fun sendStart(activity: MainActivity) {
         val intent = Intent(activity, MireiForegroundService::class.java).setAction(MireiForegroundService.ACTION_START)
         runCatching { if (android.os.Build.VERSION.SDK_INT >= 26) activity.startForegroundService(intent) else activity.startService(intent) }
     }
@@ -516,5 +433,6 @@ class MireiUiPatchApplication : Application() {
         private val TAG_POSITION_MARKER = Any()
         private const val PREFS = "mirei_ui"
         private const val KEY_MARKET = "persistent_market_symbol"
+        private val MENUS = setOf("RINGKASAN", "PASAR", "POSISI", "AKTIVITAS", "KEPUTUSAN", "RISIKO", "EXCHANGE / API", "PENGATURAN", "LOG / AUDIT")
     }
 }
