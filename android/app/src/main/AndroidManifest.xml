@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:name=".MireiMergedDashboardApplication"
+        android:name=".MireiStableDashboardApplication"
         android:allowBackup="false"
         android:label="Mirei ミレイ"
         android:supportsRtl="true"
@@ -25,4 +25,4 @@
             android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
-<!-- merged-dashboard validation -->
+<!-- CI217: stable dashboard lifecycle -->
