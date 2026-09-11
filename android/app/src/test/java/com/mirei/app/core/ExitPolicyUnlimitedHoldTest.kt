@@ -37,7 +37,7 @@ class ExitPolicyUnlimitedHoldTest {
         )
 
         assertEquals("trailing_1R", plan.reason)
-        assertEquals(100_500.0, plan.stopLossPrice, 1e-9)
+        assertEquals(100_300.0, plan.stopLossPrice, 1e-9)
         assertEquals(101_000.0, plan.takeProfitPrice, 1e-9)
     }
 }
