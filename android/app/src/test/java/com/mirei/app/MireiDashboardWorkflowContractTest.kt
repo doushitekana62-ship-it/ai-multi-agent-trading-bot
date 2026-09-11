@@ -23,7 +23,7 @@ class MireiDashboardWorkflowContractTest {
         assertEquals("com.mirei.app.action.STOP", actions["BERHENTI"])
         assertEquals("com.mirei.app.action.CLOSE_ALL", actions["TUTUP SEMUA POSISI"])
         assertEquals("com.mirei.app.action.TOP_UP", actions["TOP UP"])
-        assertTrue(actions.values().all { it.startsWith("com.mirei.app.action.") })
+        assertTrue(actions.values.all { it.startsWith("com.mirei.app.action.") })
     }
 
     @Test
