@@ -52,7 +52,7 @@ class MireiDashboardApplicationV2 : Application() {
                 if (activity is MainActivity) refreshers.remove(activity)?.let(handler::removeCallbacks)
             }
             override fun onActivityStopped(activity: Activity) = Unit
-            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle?) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
             override fun onActivityDestroyed(activity: Activity) {
                 if (activity is MainActivity) {
                     refreshers.remove(activity)?.let(handler::removeCallbacks)
