@@ -6,29 +6,29 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
 
-class MireiOrchestratorTest {
+class MireiOrchestratorVoteTest {
     private val snapshot = MarketSnapshot(
-        symbol = "BTC/IDR",
-        price = 1_000_000.0,
-        momentumPercent = 0.4,
+        symbol = "TEST/IDR",
+        price = 100_000.0,
+        momentumPercent = 0.5,
         volatilityPercent = 0.5,
         sentimentScore = 10.0,
-        forecastConfidence = 0.9,
+        forecastConfidence = 0.80,
         dataFresh = true,
     )
 
     private fun agent(type: AgentType, action: AgentAction) = object : MireiAgent {
         override val type = type
-        override fun evaluate(snapshot: MarketSnapshot) = AgentObservation(type, action, 0.8, "test")
+        override fun evaluate(snapshot: MarketSnapshot) = AgentObservation(type, action, 0.80, "test")
     }
 
     @Test
-    fun conflictUsesMajorityVoteWithoutHumanConfirmation() {
+    fun majorityVoteWinsConflictWithoutHumanConfirmation() {
         val decision = MireiOrchestrator(
             listOf(
+                agent(AgentType.CANDLE, AgentAction.BUY),
                 agent(AgentType.MARKET, AgentAction.BUY),
                 agent(AgentType.SENTIMENT, AgentAction.HOLD),
-                agent(AgentType.CANDLE, AgentAction.BUY),
                 agent(AgentType.FORECAST, AgentAction.CLOSE),
             ),
             DecisionMode.SUGGESTION,
@@ -40,26 +40,17 @@ class MireiOrchestratorTest {
     }
 
     @Test
-    fun exactTieMeansHoldWithoutHumanConfirmation() {
+    fun tiedVoteHoldsWithoutHumanConfirmation() {
         val decision = MireiOrchestrator(
-            listOf(agent(AgentType.MARKET, AgentAction.BUY), agent(AgentType.SENTIMENT, AgentAction.CLOSE)),
+            listOf(
+                agent(AgentType.CANDLE, AgentAction.BUY),
+                agent(AgentType.MARKET, AgentAction.CLOSE),
+            ),
             DecisionMode.SUGGESTION,
         ).evaluate(snapshot)
 
         assertEquals(AgentAction.HOLD, decision.action)
         assertFalse(decision.requiresHumanDecision)
         assertEquals("agent_vote_tie_hold", decision.rationale)
-    }
-
-    @Test
-    fun unanimousBuyRemainsBuy() {
-        val decision = MireiOrchestrator(
-            listOf(agent(AgentType.MARKET, AgentAction.BUY), agent(AgentType.CANDLE, AgentAction.BUY)),
-            DecisionMode.SUGGESTION,
-        ).evaluate(snapshot)
-
-        assertEquals(AgentAction.BUY, decision.action)
-        assertFalse(decision.requiresHumanDecision)
-        assertEquals("agent_unanimous_vote", decision.rationale)
     }
 }

@@ -14,39 +14,36 @@ class MireiOrchestrator(
                 action = AgentAction.HOLD,
                 confidence = 0.0,
                 observations = emptyList(),
-                requiresHumanDecision = true,
-                rationale = "no_agent_observation",
+                requiresHumanDecision = false,
+                rationale = "no_agent_observation_hold",
             )
         }
 
-        val actions = observations.map { it.action }.toSet()
-        val conflicting = actions.size > 1
-        if (conflicting && decisionMode == DecisionMode.SUGGESTION) {
-            return MireiDecision(
-                action = AgentAction.HOLD,
-                confidence = observations.minOf { it.confidence.coerceIn(0.0, 1.0) },
-                observations = observations,
-                requiresHumanDecision = true,
-                rationale = "agent_conflict_requires_human_decision",
-            )
+        val voteCounts = observations.groupingBy { it.action }.eachCount()
+        val highestVotes = voteCounts.values.maxOrNull() ?: 0
+        val winners = voteCounts.filterValues { it == highestVotes }.keys
+        val action = if (winners.size == 1) winners.first() else AgentAction.HOLD
+        val winnerObservations = observations.filter { it.action == action }
+        val confidence = if (action == AgentAction.HOLD && winners.size > 1) {
+            observations.map { it.confidence.coerceIn(0.0, 1.0) }.average()
+        } else {
+            winnerObservations.map { it.confidence.coerceIn(0.0, 1.0) }.average()
+        }
+        val rationale = when {
+            winners.size > 1 -> "agent_vote_tie_hold"
+            highestVotes == observations.size -> "agent_unanimous_vote"
+            else -> "agent_majority_vote"
         }
 
-        val action = when {
-            actions == setOf(AgentAction.CLOSE) -> AgentAction.CLOSE
-            actions == setOf(AgentAction.BUY) -> AgentAction.BUY
-            actions == setOf(AgentAction.HOLD) -> AgentAction.HOLD
-            AgentAction.CLOSE in actions -> AgentAction.CLOSE
-            AgentAction.BUY in actions -> AgentAction.BUY
-            else -> AgentAction.HOLD
-        }
-
-        val confidence = observations.map { it.confidence.coerceIn(0.0, 1.0) }.average()
+        // Keep DecisionMode in the API for compatibility. In autonomous Suggestion,
+        // disagreement is resolved by deterministic voting rather than waiting for a
+        // human who may not be watching the application continuously.
         return MireiDecision(
             action = action,
             confidence = confidence,
             observations = observations,
             requiresHumanDecision = false,
-            rationale = "agent_consensus_or_take_over",
+            rationale = rationale,
         )
     }
 }
