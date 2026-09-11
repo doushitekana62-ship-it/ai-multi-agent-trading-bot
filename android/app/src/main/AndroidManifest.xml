@@ -23,10 +23,5 @@
             android:name=".runtime.MireiForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-        <provider
-            android:name=".MireiFinalUiEnhancementsProvider"
-            android:authorities="com.mirei.app.ui-final-enhancements"
-            android:exported="false"
-            android:initOrder="100" />
     </application>
 </manifest>
