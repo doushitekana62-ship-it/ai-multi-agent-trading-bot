@@ -193,6 +193,14 @@ class PaperExecutionEngine(
 
     fun cancelLimit(orderId: String): Boolean { val order = limitOrders.remove(orderId) ?: return false; availableBalanceIdr += order.reservedIdr; return true }
 
+    /** Adds paper cash without touching active positions. */
+    fun topUp(amountIdr: Double): ExecutionResult {
+        if (amountIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_top_up")
+        val before = availableBalanceIdr
+        availableBalanceIdr += amountIdr
+        return ExecutionResult(true, orderId = "topup-${System.currentTimeMillis()}", remainingBalanceIdr = availableBalanceIdr, reason = "top_up", balanceBeforeIdr = before)
+    }
+
     fun updateRiskTargets(newConfig: TradingConfig) {
         positions.entries.forEach { (id, position) ->
             val referenceCapital = when (newConfig.riskReferenceMode) {
