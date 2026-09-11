@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:name=".MireiStableDashboardApplication"
+        android:name=".MireiDashboardApplicationV2"
         android:allowBackup="false"
         android:label="Mirei ミレイ"
         android:supportsRtl="true"
@@ -25,4 +25,3 @@
             android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
-<!-- CI217: stable dashboard lifecycle -->
