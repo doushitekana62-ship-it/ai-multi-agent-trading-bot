@@ -3,8 +3,10 @@ package com.mirei.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
@@ -40,8 +42,8 @@ import java.util.WeakHashMap
 /** Presentation-only compatibility layer over Build 194's programmatic MainActivity. */
 class MireiUiPatchApplication : Application() {
     private val installed = WeakHashMap<MainActivity, Boolean>()
+    private val statusReceivers = WeakHashMap<MainActivity, BroadcastReceiver>()
     private val lastMenu = WeakHashMap<MainActivity, String>()
-    private val lastTick = WeakHashMap<MainActivity, Long>()
 
     override fun onCreate() {
         super.onCreate()
@@ -52,24 +54,32 @@ class MireiUiPatchApplication : Application() {
             override fun onActivityPaused(activity: Activity) = Unit
             override fun onActivityStopped(activity: Activity) = Unit
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-            override fun onActivityDestroyed(activity: Activity) = Unit
+            override fun onActivityDestroyed(activity: Activity) {
+                if (activity is MainActivity) statusReceivers.remove(activity)?.let { runCatching { activity.unregisterReceiver(it) } }
+            }
         })
     }
 
+    /**
+     * Build 194 already owns navigation. The patch must never compete with it by
+     * rebuilding the same content on every runtime tick. We therefore detach the
+     * activity's automatic broadcast/clock renderer and become the only status
+     * publisher for the enhanced dashboard pages.
+     */
     private fun install(activity: MainActivity) {
         if (installed[activity] == true) return
         installed[activity] = true
         patchStartButton(activity)
+        detachMainActivityAutoRenderer(activity)
+        registerStatusRelay(activity)
+
         val root = activity.window.decorView
         if (!root.viewTreeObserver.isAlive) return
         root.viewTreeObserver.addOnGlobalLayoutListener {
             val menu = findMenu(root) ?: return@addOnGlobalLayoutListener
             val selected = menu.selectedItem?.toString().orEmpty()
-            val current = currentIntent(activity)
-            val tick = current?.getLongExtra(MireiForegroundService.EXTRA_TICK, 0L) ?: 0L
-            if (lastMenu[activity] == selected && lastTick[activity] == tick) return@addOnGlobalLayoutListener
+            if (selected.isBlank() || lastMenu[activity] == selected) return@addOnGlobalLayoutListener
             lastMenu[activity] = selected
-            lastTick[activity] = tick
             root.post {
                 when (selected) {
                     "RINGKASAN" -> renderDashboard(activity)
@@ -79,6 +89,48 @@ class MireiUiPatchApplication : Application() {
                 }
             }
         }
+    }
+
+    private fun detachMainActivityAutoRenderer(activity: MainActivity) {
+        runCatching {
+            val receiverField = MainActivity::class.java.getDeclaredField("receiver").apply { isAccessible = true }
+            (receiverField.get(activity) as? BroadcastReceiver)?.let { activity.unregisterReceiver(it) }
+        }
+        runCatching {
+            val handlerField = MainActivity::class.java.getDeclaredField("handler").apply { isAccessible = true }
+            val runnableField = MainActivity::class.java.getDeclaredField("clockRunnable").apply { isAccessible = true }
+            val handler = handlerField.get(activity) as android.os.Handler
+            val runnable = runnableField.get(activity) as Runnable
+            handler.removeCallbacks(runnable)
+        }
+    }
+
+    private fun registerStatusRelay(activity: MainActivity) {
+        statusReceivers.remove(activity)?.let { runCatching { activity.unregisterReceiver(it) } }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != MireiForegroundService.ACTION_STATUS) return
+                setCurrentIntent(activity, intent)
+                invokePrivate(activity, "renderHeader")
+            }
+        }
+        statusReceivers[activity] = receiver
+        val filter = IntentFilter(MireiForegroundService.ACTION_STATUS)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            activity.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            activity.registerReceiver(receiver, filter)
+        }
+    }
+
+    private fun setCurrentIntent(activity: MainActivity, intent: Intent) {
+        runCatching {
+            MainActivity::class.java.getDeclaredField("currentIntent").apply { isAccessible = true }.set(activity, intent)
+        }
+    }
+
+    private fun invokePrivate(activity: MainActivity, name: String) {
+        runCatching { MainActivity::class.java.getDeclaredMethod(name).apply { isAccessible = true }.invoke(activity) }
     }
 
     private fun patchStartButton(activity: MainActivity) {
