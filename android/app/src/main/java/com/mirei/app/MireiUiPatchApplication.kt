@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -21,28 +22,31 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.Switch
+import android.widget.TableLayout
+import android.widget.TableRow
 import android.widget.TextView
+import android.widget.Toast
+import com.mirei.app.core.AssetClass
 import com.mirei.app.core.RiskReferenceMode
-import com.mirei.app.runtime.IndodaxMarketDataSource
+import com.mirei.app.core.TradingGlossary
+import com.mirei.app.core.TradingUniverse
 import com.mirei.app.runtime.MireiForegroundService
 import com.mirei.app.storage.MireiDatabase
+import com.mirei.app.storage.TradeRow
 import java.text.NumberFormat
 import java.util.Locale
 import java.util.WeakHashMap
 
 /**
  * UI compatibility layer for the programmatic MainActivity.
- *
- * Keeps the existing controls/runtime behavior, while providing:
- * - reachable Start dialog actions;
- * - a persistent multi-coin market selector;
- * - execution-vs-decision counters so SELL decisions are not confused with real closes;
- * - session-synchronized latest execution/event information;
- * - mutually exclusive automatic mode vs manual TP/SL input.
+ * Runtime ownership remains in MainActivity/ForegroundService. This class only
+ * changes presentation and exposes additional paper-only controls without
+ * replacing the whole Activity or touching the trading engine.
  */
 class MireiUiPatchApplication : Application() {
     private val diagnosticsInstalled = WeakHashMap<Activity, Boolean>()
     private val lastMenu = WeakHashMap<View, String>()
+    private val lastTick = WeakHashMap<View, Long>()
 
     override fun onCreate() {
         super.onCreate()
@@ -89,155 +93,387 @@ class MireiUiPatchApplication : Application() {
             val menu = findMenuSpinner(root) ?: return@addOnGlobalLayoutListener
             val selected = menu.selectedItem?.toString().orEmpty()
             if (selected.isBlank()) return@addOnGlobalLayoutListener
-            val state = lastMenu[root]
-            if (state == selected) return@addOnGlobalLayoutListener
+            val intent = currentIntentOf(activity)
+            val tick = intent?.getLongExtra(MireiForegroundService.EXTRA_TICK, 0L) ?: 0L
+            val menuChanged = lastMenu[root] != selected
+            val tickChanged = lastTick[root] != tick
+            if (!menuChanged && !tickChanged) return@addOnGlobalLayoutListener
             lastMenu[root] = selected
-            when (selected) {
-                "PASAR" -> activity.window.decorView.post { renderMarketPulse(activity) }
-                "RINGKASAN" -> activity.window.decorView.post { renderSynchronizedSummary(activity) }
-                "LOG / AUDIT" -> activity.window.decorView.post { renderReadableAudit(activity) }
+            lastTick[root] = tick
+            activity.window.decorView.post {
+                when (selected) {
+                    "PASAR" -> renderMarketPulse(activity)
+                    "RINGKASAN" -> renderDashboard(activity)
+                    "POSISI" -> renderPositionsTable(activity)
+                    "LOG / AUDIT" -> renderReadableAudit(activity)
+                    else -> renderStatusLegend(activity)
+                }
             }
         }
     }
 
-    private fun renderMarketPulse(activity: MainActivity) {
-        val content = contentOf(activity) ?: return
+    private fun renderStatusLegend(activity: Activity) {
         val intent = currentIntentOf(activity) ?: return
-        content.removeAllViews()
-        addTitle(content, "PASAR · MARKET PULSE")
-        val loading = card(activity, "MEMUAT DATA PASAR…\nMengambil snapshot coin dan menyiapkan market pulse.", 14f)
-        content.addView(loading)
-        val scanner = parseScanner(intent.getStringExtra(MireiForegroundService.EXTRA_SCANNER).orEmpty())
-        val symbols = scanner.map { it.symbol }.distinct().ifEmpty { MireiForegroundService.SUPPORTED_MARKETS }
-        val selectedSymbol = arrayOf(symbols.firstOrNull().orEmpty())
-        val selectorButton = Button(activity).apply {
-            text = "PILIH COIN: ${selectedSymbol[0]}"
-            isAllCaps = false
-        }
-        content.addView(label(activity, "COIN TERPILIH", true))
-        content.addView(selectorButton, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
-        val detail = card(activity, "Pilih coin untuk melihat pulse.", 14f)
-        content.addView(detail)
-        addTitle(content, "SEMUA COIN · SCANNER")
-        scanner.forEach { row -> content.addView(card(activity, "${row.symbol}\nHarga Rp ${row.price}\n1M ${row.change1m}% · Momentum ${row.momentum}% · Trend ${row.trend}% · Porsi volume ${row.volumeShare}%", 13f)) }
-        if (scanner.isEmpty()) content.addView(card(activity, "Scanner belum tersedia. Menunggu market data.", 13f))
-
-        fun renderSelected(symbol: String) {
-            selectedSymbol[0] = symbol
-            selectorButton.text = "PILIH COIN: $symbol"
-            detail.text = "MEMUAT $symbol…\nMarket pulse sedang disiapkan."
-            Thread {
-                val selected = if (symbol == intent.getStringExtra(MireiForegroundService.EXTRA_SYMBOL)) selectedFromCurrentIntent(intent) else null
-                val snapshot = selected ?: runCatching { IndodaxMarketDataSource().snapshot(symbol) }.getOrNull()
-                val text = if (snapshot != null) {
-                    "${snapshot.symbol}\nHarga Rp ${fmtNumber(snapshot.price)}\n" +
-                        "1M ${signed(snapshot.change1mPercent)}% · 5M ${signed(snapshot.change5mPercent)}% · 15M ${signed(snapshot.change15mPercent)}%\n" +
-                        "Momentum ${signed(snapshot.momentumPercent)}% · Trend ${signed(snapshot.trendScorePercent)}%\n" +
-                        "Flow ${signed(snapshot.tradeFlowPercent)}% · Forecast ${(snapshot.forecastConfidence * 100).toInt()}%\n" +
-                        "Spread ${fmt(snapshot.spreadPercent)}%\nData ${if (snapshot.dataFresh) "SEGAR" else "STALE"}\nSnapshot: ${formatEpoch(snapshot.snapshotEpochMs)}"
-                } else "${symbol}\nData market belum tersedia.\nCoba SEGARKAN DATA atau tunggu runtime selesai setup."
-                activity.runOnUiThread {
-                    if (!activity.isFinishing) {
-                        detail.text = text
-                        loading.text = "MARKET READY\nData pulse tersedia untuk ${symbols.size} coin.\nTombol pilihan coin tetap tersedia di atas."
-                    }
-                }
-            }.start()
-        }
-        selectorButton.setOnClickListener {
-            val checked = symbols.indexOf(selectedSymbol[0]).coerceAtLeast(0)
-            AlertDialog.Builder(activity)
-                .setTitle("PILIH COIN · MARKET PULSE")
-                .setSingleChoiceItems(symbols.toTypedArray(), checked) { dialog, which ->
-                    symbols.getOrNull(which)?.let(::renderSelected)
-                    dialog.dismiss()
-                }
-                .setNegativeButton("BATAL", null)
-                .show()
-        }
-        symbols.firstOrNull()?.let(::renderSelected)
+        val status = statusIndicator(intent)
+        val title = currentContent(activity)?.let { it.findViewWithTag<TextView>(STATUS_TAG) } ?: return
+        title.text = status
     }
 
-    private fun renderSynchronizedSummary(activity: MainActivity) {
+    private fun renderMarketPulse(activity: Activity) {
         val content = contentOf(activity) ?: return
         val intent = currentIntentOf(activity) ?: return
         content.removeAllViews()
-        addTitle(content, "RINGKASAN · SESI SINKRON")
+        addTitle(content, "PASAR · MARKET PULSE TABLE")
+        val fresh = intent.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)
+        val online = intent.getBooleanExtra(MireiForegroundService.EXTRA_INTERNET, false)
+        content.addView(card(activity,
+            if (fresh && online) "🟢 DATA MARKET SEGAR · SOURCE: INDODAX API\nTidak menggunakan grafik. Tabel diperbarui mengikuti scanner runtime." else "🔵 LOADING / SEARCHING CONNECTION…\nMenunggu snapshot market terbaru.", 13.5f))
+
+        val scanner = parseScanner(intent.getStringExtra(MireiForegroundService.EXTRA_SCANNER).orEmpty())
+        if (scanner.isEmpty()) {
+            content.addView(card(activity, "Market pulse belum tersedia. Tekan SEGARKAN DATA atau lanjutkan sesi.", 13f))
+            return
+        }
+        addTitle(content, "SCANNER · SEMUA COIN TERPANTAU")
+        val table = TableLayout(activity).apply { isStretchAllColumns = false; setPadding(2, 4, 2, 12) }
+        table.addView(tableRow(activity, listOf("COIN", "HARGA", "1M", "5M", "15M", "MOM", "TREND", "FLOW"), true))
+        scanner.forEach { row ->
+            val tr = TableRow(activity)
+            val values = listOf(row.symbol, row.price, signedText(row.change1m), "—", "—", signedText(row.momentum), signedText(row.trend), "—")
+            values.forEachIndexed { index, value ->
+                val tv = cell(activity, value)
+                when (index) {
+                    0 -> tv.setTextColor(directionColor(parse(row.trend)))
+                    1 -> tv.setTextColor(directionColor(parse(row.change1m)))
+                    2, 5, 6 -> tv.setTextColor(directionColor(parse(value)))
+                }
+                tr.addView(tv)
+            }
+            table.addView(tr)
+        }
+        content.addView(table)
+        addTitle(content, "SUGESTI MIREI · BERDASARKAN API EXCHANGE AKTIF")
+        val ranked = scanner.sortedByDescending { parse(it.trend) * 0.5 + parse(it.momentum) * 0.3 + parse(it.change1m) * 0.2 }.take(3)
+        ranked.forEachIndexed { index, row ->
+            content.addView(card(activity, "${index + 1}. ${row.symbol}\nTrend ${signedText(row.trend)}% · Momentum ${signedText(row.momentum)}% · 1M ${signedText(row.change1m)}%\nSumber: scanner Indodax dalam sesi paper. Ini sugesti, bukan jaminan profit.", 12.8f))
+        }
+        addTitle(content, "STATUS WARNA")
+        content.addView(card(activity, "🟢 naik / positif   🔴 turun / negatif   ⚪ flat / mendekati nol\nWarna diterapkan pada nama coin atau nilai, bukan seluruh tabel.", 12.5f))
+    }
+
+    private fun renderDashboard(activity: MainActivity) {
+        val content = contentOf(activity) ?: return
+        val intent = currentIntentOf(activity) ?: return
+        content.removeAllViews()
+        addTitle(content, "RINGKASAN · DASHBOARD")
+        content.addView(card(activity, statusIndicator(intent), 15f))
+        val state = intent.getStringExtra(MireiForegroundService.EXTRA_STATE).orEmpty()
         val start = intent.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L)
         val db = MireiDatabase(activity)
-        val trades = runCatching { db.recentTrades(200).filter { start == 0L || it.openedAtEpochMs >= start } }.getOrDefault(emptyList())
-        val closes = trades.filter { it.closedAtEpochMs != null }
-        val opens = trades.filter { start == 0L || it.openedAtEpochMs >= start }
-        val reEntries = runCatching { db.recentAudit(300).count { it.createdAtEpochMs >= start && it.eventType == "RE_ENTRY" } }.getOrDefault(0)
-        val lastClose = closes.maxByOrNull { it.closedAtEpochMs ?: 0L }
-        val lastOpen = trades.maxByOrNull { it.openedAtEpochMs }
-        val sellDecisions = intent.getIntExtra(MireiForegroundService.EXTRA_SELL_COUNT, 0)
-        val holdDecisions = intent.getIntExtra(MireiForegroundService.EXTRA_HOLD_COUNT, 0)
-        val buyDecisions = intent.getIntExtra(MireiForegroundService.EXTRA_BUY_COUNT, 0)
+        val trades = runCatching { db.recentTrades(300).filter { start == 0L || it.openedAtEpochMs >= start } }.getOrDefault(emptyList())
+        val closed = trades.filter { it.closedAtEpochMs != null }
+        val wins = closed.count { it.pnlIdr > 0.0 }
+        val winRate = if (closed.isEmpty()) 0.0 else wins * 100.0 / closed.size
+        val suggestions = runCatching { db.recentSuggestions(500).filter { start == 0L || it.createdAtEpochMs >= start } }.getOrDefault(emptyList())
+        val aiBuy = suggestions.count { it.action == "BUY" }
+        val aiHold = suggestions.count { it.action == "HOLD" }
+        val aiSell = suggestions.count { it.action == "CLOSE" || it.action == "SELL" }
+        val actualBuy = trades.count { it.status == "OPEN" }
+        val actualSell = closed.size
+
         content.addView(card(activity,
-            "STATUS\n${intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP"}\n\n" +
-                "KEPUTUSAN ENGINE\nBUY $buyDecisions · HOLD $holdDecisions · SELL $sellDecisions\n" +
-                "Catatan: SELL di atas adalah keputusan engine, BUKAN jumlah posisi yang terjual.\n\n" +
-                "EKSEKUSI NYATA\nOPEN ${opens.size} · CLOSE ${closes.size} · RE-ENTRY $reEntries", 14f))
-        addTitle(content, "EVENT TERAKHIR · SUMBER DATABASE")
-        if (lastClose != null) content.addView(card(activity,
-            "CLOSE TERAKHIR\n${formatEpoch(lastClose.closedAtEpochMs ?: 0L)} · ${lastClose.symbol}\n" +
-                "Masuk Rp ${fmtNumber(lastClose.entryPrice ?: 0.0)}\nKeluar Rp ${fmtNumber(lastClose.exitPrice ?: 0.0)}\n" +
-                "PnL Rp ${signedMoney(lastClose.pnlIdr)}\nAlasan: ${humanExitReason(lastClose.exitReason)}", 13.5f))
-        else content.addView(card(activity, "Belum ada CLOSE nyata pada sesi ini.", 13.5f))
-        if (lastOpen != null) content.addView(card(activity,
-            "OPEN TERAKHIR\n${formatEpoch(lastOpen.openedAtEpochMs)} · ${lastOpen.symbol}\n" +
-                "Entry Rp ${fmtNumber(lastOpen.entryPrice ?: 0.0)}\nModal Rp ${fmtNumber(lastOpen.stakeIdr)}\nAsal: ${lastOpen.entryReason}", 13.5f))
-        addTitle(content, "RE-ENTRY / BUY OTOMATIS")
-        val gate = intent.getStringExtra(MireiForegroundService.EXTRA_ENTRY_REASONS).orEmpty().ifBlank { "Belum ada gate terakhir." }
-        val reentryText = if (lastClose == null) {
-            "Belum ada posisi yang ditutup. Belum ada recovery yang dapat diuji."
-        } else if (reEntries > 0) {
-            "RE-ENTRY terdeteksi ${reEntries}x. Ini membuktikan modal hasil CLOSE dapat kembali masuk saat gate BUY valid atau setelah TP."
-        } else {
-            "Belum ada RE-ENTRY pada sesi ini.\nGate terakhir: ${gate.replace("|", "\n")}"
+            "EQUITY     Rp ${money(intent.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0))}\n" +
+                "KAS        Rp ${money(intent.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0))}\n" +
+                "POSISI     ${intent.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)}/3\n" +
+                "WIN RATE   ${"%.2f".format(Locale.US, winRate)}% (${wins}/${closed.size} close menang)\n" +
+                "SESSION    ${if (state == "RUNNING") "AKTIF" else state.ifBlank { "STOP" }}", 14f))
+
+        addTitle(content, "AI VS ACTUAL · SESI INI")
+        val compare = TableLayout(activity).apply { isStretchAllColumns = true }
+        compare.addView(tableRow(activity, listOf("SUMBER", "BUY", "HOLD", "SELL"), true))
+        compare.addView(tableRow(activity, listOf("AI DECISION", aiBuy.toString(), aiHold.toString(), aiSell.toString()), false))
+        compare.addView(tableRow(activity, listOf("ACTUAL PAPER", actualBuy.toString(), "0", actualSell.toString()), false))
+        content.addView(compare)
+        content.addView(card(activity, "ACTUAL PAPER memakai ledger OPEN/CLOSE. HOLD actual = 0 karena HOLD adalah keputusan, bukan order book execution. SELL AI tidak dihitung sebagai close nyata.", 12.2f))
+
+        addTitle(content, "KONTROL SESI")
+        val controls = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, 6, 0, 10) }
+        controls.addView(actionButton(activity, "LANJUTKAN", enabled = state != "RUNNING") { sendService(activity, MireiForegroundService.ACTION_START) })
+        controls.addView(actionButton(activity, "TOP UP", enabled = true) { showTopUpDialog(activity) })
+        content.addView(controls)
+
+        val tools = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, 2, 0, 8) }
+        tools.addView(actionButton(activity, "KALKULATOR", true) { showCalculator(activity) })
+        tools.addView(actionButton(activity, "KAMUS", true) { showGlossary(activity) })
+        tools.addView(actionButton(activity, "JENIS TRADING", true) { showTradingUniverse(activity) })
+        content.addView(tools)
+
+        addTitle(content, "3 POSISI")
+        renderPositionRowsInto(content, intent, showHeader = true)
+        addTitle(content, "SISTEM & LOADING")
+        content.addView(card(activity, "🟢 running · 🔴 damage · 🟡 stopped/hold · 🔵 searching connection · ⚪ close all\nMarket/API functions display loading when snapshot is not fresh. Resume does not recreate the session; it restores persisted cash, positions, counters and market selection.", 12.5f))
+
+        addTitle(content, "MULTI-ASSET CONNECTOR CATALOG")
+        content.addView(card(activity, "Crypto: Indodax/Bybit/OKX catalog. Saham: Alpaca API. Forex & metals/CFD: OANDA API. Non-crypto adapters are catalogued for connection work; the current live paper runtime remains Indodax-only until the adapter is enabled. This preserves the working Build 194 execution path.", 12.5f))
+    }
+
+    private fun renderPositionsTable(activity: MainActivity) {
+        val content = contentOf(activity) ?: return
+        val intent = currentIntentOf(activity) ?: return
+        content.removeAllViews()
+        addTitle(content, "POSISI · 3 SLOT REAL-TIME")
+        val fresh = intent.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)
+        content.addView(card(activity, if (fresh) "🟢 UPDATE MARKET TERBARU" else "🔵 LOADING / MENUNGGU MARKET TERBARU", 13f))
+        renderPositionRowsInto(content, intent, showHeader = true)
+    }
+
+    private fun renderPositionRowsInto(content: LinearLayout, intent: Intent, showHeader: Boolean) {
+        val rows = parsePositions(intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty())
+        val table = TableLayout(content.context).apply { isStretchAllColumns = false; setPadding(0, 4, 0, 8) }
+        if (showHeader) table.addView(tableRow(content.context, listOf("#", "COIN", "MODAL", "ENTRY", "NOW", "TP", "SL", "UNREALIZED", "UMUR"), true))
+        for (slot in 0 until 3) {
+            val p = rows.getOrNull(slot)
+            if (p == null) {
+                table.addView(tableRow(content.context, listOf("${slot + 1}", "EMPTY", "—", "—", "—", "—", "—", "—", "—"), false))
+            } else {
+                val now = p["current"]?.toDoubleOrNull() ?: 0.0
+                val entry = p["entry"]?.toDoubleOrNull() ?: 0.0
+                val stake = p["stake"]?.toDoubleOrNull() ?: 0.0
+                val tp = p["tp"]?.toDoubleOrNull() ?: 0.0
+                val sl = p["sl"]?.toDoubleOrNull() ?: 0.0
+                val cap = p["risk_capital"]?.toDoubleOrNull()?.takeIf { it > 0 } ?: stake
+                val qty = if (entry > 0) stake / entry else 0.0
+                val tpEntryPct = p["tp_pct"]?.toDoubleOrNull() ?: 0.0
+                val slEntryPct = p["sl_pct"]?.toDoubleOrNull() ?: 0.0
+                val tpCapPct = if (qty > 0 && cap > 0) ((tp - entry) * qty / cap) * 100.0 else 0.0
+                val slCapPct = if (sl == 0.0 || qty <= 0.0 || cap <= 0.0) 0.0 else ((sl - entry) * qty / cap) * 100.0
+                val age = ageText(p["opened"]?.toLongOrNull() ?: 0L)
+                val base = listOf(
+                    "${slot + 1}", p["symbol"].orEmpty(), money(stake), money(entry), money(now),
+                    "${money(tp)} (${signedText(tpEntryPct)}% entry / +${"%.3f".format(Locale.US, tpCapPct)}% modal)",
+                    if (sl == 0.0) "UNLIMITED" else "${money(sl)} (${signedText(slEntryPct)}% entry / ${"%.3f".format(Locale.US, slCapPct)}% modal)",
+                    signedMoney(p["unrealized"]?.toDoubleOrNull() ?: 0.0), age,
+                )
+                val row = TableRow(content.context)
+                base.forEachIndexed { index, value ->
+                    val tv = cell(content.context, value)
+                    if (index == 1) tv.setTextColor(directionColor(if (now >= entry) 1.0 else -1.0))
+                    if (index == 7) tv.setTextColor(directionColor(p["unrealized"]?.toDoubleOrNull() ?: 0.0))
+                    row.addView(tv)
+                }
+                table.addView(row)
+            }
         }
-        content.addView(card(activity, reentryText, 13.5f))
-        addTitle(content, "HITUNGAN KEPUTUSAN")
-        content.addView(card(activity,
-            "BUY / MASUK (KEPUTUSAN): $buyDecisions\nHOLD / TAHAN (KEPUTUSAN): $holdDecisions\nSELL / KELUAR (KEPUTUSAN): $sellDecisions\n\n" +
-                "CLOSE NYATA: ${closes.size}\nOPEN NYATA: ${opens.size}\n\nSELL $sellDecisions tidak berarti $sellDecisions coin dijual. Hanya event CLOSE nyata yang mengubah posisi dan tercatat sebagai transaksi.", 14f))
+        content.addView(table)
+        content.addView(card(content.context, "TP/SL entry = pergerakan harga dari entry. TP/SL modal = perhitungan real terhadap modal acuan yang tersimpan pada posisi, bukan hardcode.", 12.2f))
     }
 
     private fun renderReadableAudit(activity: MainActivity) {
         val content = contentOf(activity) ?: return
         val intent = currentIntentOf(activity) ?: return
         content.removeAllViews()
-        addTitle(content, "LOG / AUDIT · SESI INI")
+        addTitle(content, "LOG / AUDIT · TABLE SESI INI")
         val start = intent.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L)
         val db = MireiDatabase(activity)
-        val trades = runCatching { db.recentTrades(200).filter { start == 0L || it.openedAtEpochMs >= start } }.getOrDefault(emptyList())
-        val closes = trades.filter { it.closedAtEpochMs != null }.sortedByDescending { it.closedAtEpochMs ?: 0L }
-        val opens = trades.sortedByDescending { it.openedAtEpochMs }
-        content.addView(card(activity,
-            "AUDIT DIBACA DARI DATABASE SESI AKTIF.\nOPEN nyata: ${opens.size}\nCLOSE nyata: ${closes.size}\nSELL decision count tidak dihitung sebagai penjualan di halaman ini.", 13.5f))
-        addTitle(content, "EKSEKUSI NYATA")
-        val executionTrades = (opens + closes).distinctBy { "${it.symbol}|${it.openedAtEpochMs}|${it.closedAtEpochMs}|${it.exitPrice}" }
-        if (executionTrades.isEmpty()) content.addView(card(activity, "Belum ada transaksi nyata pada sesi ini.", 13f))
-        else executionTrades.sortedByDescending { maxOf(it.openedAtEpochMs, it.closedAtEpochMs ?: 0L) }.take(100).forEach { trade ->
-            val status = if (trade.closedAtEpochMs == null) "OPEN AKTIF" else "CLOSE NYATA"
-            content.addView(card(activity,
-                "${formatEpoch(trade.closedAtEpochMs ?: trade.openedAtEpochMs)} · $status · ${trade.symbol}\n" +
-                    "Modal Rp ${fmtNumber(trade.stakeIdr)}\nEntry Rp ${fmtNumber(trade.entryPrice ?: 0.0)}\n" +
-                    "Keluar ${trade.exitPrice?.let { "Rp ${fmtNumber(it)}" } ?: "—"}\nPnL Rp ${signedMoney(trade.pnlIdr)}\n" +
-                    "Alasan masuk: ${trade.entryReason}\nAlasan keluar: ${humanExitReason(trade.exitReason)}", 12.5f))
+        val trades = runCatching { db.recentTrades(300).filter { start == 0L || it.openedAtEpochMs >= start } }.getOrDefault(emptyList())
+        val closes = trades.count { it.closedAtEpochMs != null }
+        val wins = trades.count { it.closedAtEpochMs != null && it.pnlIdr > 0.0 }
+        val buy = intent.getIntExtra(MireiForegroundService.EXTRA_BUY_COUNT, 0)
+        val hold = intent.getIntExtra(MireiForegroundService.EXTRA_HOLD_COUNT, 0)
+        val sell = intent.getIntExtra(MireiForegroundService.EXTRA_SELL_COUNT, 0)
+        content.addView(card(activity, "OPEN nyata ${trades.size} · CLOSE nyata $closes · WIN RATE ${if (closes == 0) "0.00" else "%.2f".format(Locale.US, wins * 100.0 / closes)}%\nAI BUY $buy · HOLD $hold · SELL $sell", 13f))
+
+        val table = TableLayout(activity).apply { isStretchAllColumns = false; setPadding(0, 6, 0, 8) }
+        table.addView(tableRow(activity, listOf("WAKTU", "EVENT", "COIN", "STATUS", "PNL", "DETAIL"), true))
+        trades.sortedByDescending { maxOf(it.openedAtEpochMs, it.closedAtEpochMs ?: 0L) }.take(120).forEach { trade ->
+            val status = if (trade.closedAtEpochMs == null) "OPEN" else "CLOSE"
+            val event = if (trade.closedAtEpochMs == null) trade.entryReason else humanExitReason(trade.exitReason)
+            table.addView(tableRow(activity, listOf(formatEpoch(trade.closedAtEpochMs ?: trade.openedAtEpochMs), event, trade.symbol, status, signedMoney(trade.pnlIdr), "Entry ${money(trade.entryPrice ?: 0.0)} → ${trade.exitPrice?.let { money(it) } ?: "—"}"), false))
         }
-        addTitle(content, "EVENT ENGINE")
-        val events = runCatching {
-            db.recentAudit(200).filter { start == 0L || it.createdAtEpochMs >= start }
-                .filter { it.eventType in setOf("OPEN", "RE_ENTRY", "SL_CLOSE", "TP_CLOSE", "MANUAL_CLOSE", "SESSION_STOPPED", "SESSION_PAUSED", "SESSION_CLOSED", "RUNTIME_ERROR") }
-                .sortedByDescending { it.createdAtEpochMs }
-        }.getOrDefault(emptyList())
-        events.take(100).forEach { event -> content.addView(card(activity, "${formatEpoch(event.createdAtEpochMs)} · ${humanEventType(event.eventType)}\n${humanAuditDetails(event.details)}", 12.5f)) }
-        if (events.isEmpty()) content.addView(card(activity, "Belum ada event engine pada sesi ini.", 12.5f))
+        runCatching { db.recentAudit(150).filter { start == 0L || it.createdAtEpochMs >= start } }.getOrDefault(emptyList()).forEach { event ->
+            table.addView(tableRow(activity, listOf(formatEpoch(event.createdAtEpochMs), humanEventType(event.eventType), "—", "ENGINE", "—", humanAuditDetails(event.details)), false))
+        }
+        content.addView(table)
+        content.addView(card(activity, "Audit memakai satu tabel kronologis. SELL decision tidak dihitung sebagai CLOSE kecuali ada trade ledger record nyata.", 12.2f))
+    }
+
+    private fun showStartDialog(activity: Activity) {
+        val prefs = activity.getSharedPreferences("mirei_settings", Context.MODE_PRIVATE)
+        val format = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }
+        val savedCapital = prefs.getString("total_capital", null)?.toDoubleOrNull()?.takeIf { it > 0 } ?: 150_000.0
+        val scroll = ScrollView(activity).apply { isFillViewport = true; setPadding(10, 8, 10, 18) }
+        val outer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(18, 14, 18, 24) }
+        scroll.addView(outer, ViewGroup.LayoutParams(-1, -2))
+        outer.addView(label(activity, "Konfigurasi sesi. Build 194 runtime tetap dipertahankan; angka modal sekarang editable.", false))
+        outer.addView(label(activity, "1. TOTAL MODAL / DANA PAPER", true))
+        val capitalField = moneyField(activity, savedCapital)
+        outer.addView(capitalField, spacedParams())
+        outer.addView(card(activity, "Masukan total dana yang boleh dipakai sesi. Tidak ada lagi batas hardcode Rp150.000.", 12.5f), spacedParams())
+
+        outer.addView(label(activity, "2. COIN & MODAL PER POSISI", true), spacedParams())
+        outer.addView(label(activity, "Pilih 1–3 coin. Total modal per coin harus ≤ total modal sesi.", false), spacedParams())
+        val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(2, 4, 2, 10) }
+        val defaultEach = savedCapital / 3.0
+        val rows = MireiForegroundService.SUPPORTED_MARKETS.mapIndexed { index, market ->
+            val check = CheckBox(activity).apply { text = market; textSize = 15f; isChecked = index < 3 }
+            val amount = EditText(activity).apply { hint = "Modal IDR"; textSize = 15f; setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(if (index < 3) format.format(defaultEach) else ""); isEnabled = check.isChecked; setPadding(12, 8, 12, 8); minimumHeight = 48 }
+            check.setOnCheckedChangeListener { _, checked -> amount.isEnabled = checked }
+            val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(8, 7, 8, 7) }
+            row.addView(check, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(amount, LinearLayout.LayoutParams(150, ViewGroup.LayoutParams.WRAP_CONTENT))
+            list.addView(row, spacedParams(8))
+            market to Pair(check, amount)
+        }
+        outer.addView(list)
+
+        outer.addView(label(activity, "3. MODE TRADING", true), spacedParams())
+        val modeSpinner = Spinner(activity)
+        val modes = arrayOf("AGGRESSIVE", "BALANCED", "SAFETY")
+        modeSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, modes)
+        modeSpinner.setSelection(modes.indexOf(prefs.getString("mode", "BALANCED")).coerceAtLeast(0))
+        outer.addView(modeSpinner, spacedParams())
+
+        outer.addView(label(activity, "4. DASAR TP / SL", true), spacedParams())
+        val basisGroup = RadioGroup(activity).apply { orientation = RadioGroup.VERTICAL; setPadding(8, 4, 8, 4) }
+        val entryRadio = RadioButton(activity).apply { id = View.generateViewId(); text = "ENTRY PRICE — target berbasis harga entry"; textSize = 15f; setPadding(0, 6, 0, 6) }
+        val capitalRadio = RadioButton(activity).apply { id = View.generateViewId(); text = "INITIAL CAPITAL — target IDR berbasis modal acuan"; textSize = 15f; setPadding(0, 6, 0, 6) }
+        basisGroup.addView(entryRadio); basisGroup.addView(capitalRadio)
+        basisGroup.check(if (prefs.getString("risk_basis", RiskReferenceMode.ENTRY_PRICE.name) == RiskReferenceMode.INITIAL_CAPITAL.name) capitalRadio.id else entryRadio.id)
+        outer.addView(basisGroup, spacedParams())
+
+        outer.addView(label(activity, "5. TP / SL MANUAL", true), spacedParams())
+        val manualSwitch = Switch(activity).apply { text = "TP / SL MANUAL"; textSize = 15f; isChecked = prefs.getBoolean("manual_risk", false); setPadding(8, 6, 8, 6) }
+        outer.addView(manualSwitch, spacedParams())
+        val fields = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(4, 4, 4, 4) }
+        val slField = percentField(activity, prefs.getString("manual_sl", "0.00")?.toDoubleOrNull() ?: 0.0, "SL %")
+        val tpField = percentField(activity, prefs.getString("manual_tp", "1.00")?.toDoubleOrNull() ?: 1.0, "TP %")
+        fields.addView(slField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = 12 })
+        fields.addView(tpField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        fields.visibility = if (manualSwitch.isChecked) View.VISIBLE else View.GONE
+        manualSwitch.setOnCheckedChangeListener { _, checked -> fields.visibility = if (checked) View.VISIBLE else View.GONE; modeSpinner.isEnabled = !checked }
+        modeSpinner.isEnabled = !manualSwitch.isChecked
+        outer.addView(fields, spacedParams())
+        outer.addView(card(activity, "SL 0% = unlimited hold sampai TP atau tutup manual. Angka pada mode INITIAL CAPITAL dihitung dari modal input tersimpan, bukan tulisan tetap.", 12.5f), spacedParams())
+
+        val dialog = AlertDialog.Builder(activity).setTitle("MULAI SESI PAPER").setView(scroll).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create()
+        dialog.setOnShowListener {
+            dialog.window?.apply {
+                setLayout((activity.resources.displayMetrics.widthPixels * 0.94f).toInt(), (activity.resources.displayMetrics.heightPixels * 0.92f).toInt())
+                setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).minHeight = 54
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).minHeight = 54
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val totalCapital = capitalField.text.toString().replace(".", "").replace(",", ".").toDoubleOrNull() ?: 0.0
+                val selected = rows.mapNotNull { (market, pair) ->
+                    val (check, amount) = pair
+                    if (!check.isChecked) null else parseMoney(amount.text.toString())?.takeIf { it > 0.0 }?.let { market to it }
+                }
+                val sumAlloc = selected.sumOf { it.second }
+                if (totalCapital <= 0.0 || selected.isEmpty() || selected.size > 3 || sumAlloc > totalCapital + 1e-6) {
+                    Toast.makeText(activity, "Periksa total modal dan 1–3 alokasi coin. Total alokasi harus ≤ total modal.", Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+                val manual = manualSwitch.isChecked
+                val sl = parsePercent(slField.text.toString()) ?: 0.0
+                val tp = parsePercent(tpField.text.toString()) ?: 0.0
+                if (manual && (sl < 0.0 || tp <= sl)) {
+                    Toast.makeText(activity, "TP manual harus > SL manual. SL 0% diperbolehkan.", Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+                val basisMode = if (basisGroup.checkedRadioButtonId == capitalRadio.id) RiskReferenceMode.INITIAL_CAPITAL else RiskReferenceMode.ENTRY_PRICE
+                prefs.edit()
+                    .putString("total_capital", totalCapital.toString())
+                    .putString("mode", modeSpinner.selectedItem.toString())
+                    .putBoolean("manual_risk", manual)
+                    .putString("manual_sl", sl.toString())
+                    .putString("manual_tp", tp.toString())
+                    .putString("risk_basis", basisMode.name)
+                    .apply()
+                val allocations = selected.joinToString(";") { "${it.first}=${it.second}" }
+                sendService(activity, MireiForegroundService.ACTION_START) {
+                    putExtra(MireiForegroundService.EXTRA_INITIAL_ALLOCATIONS, allocations)
+                    putExtra(MireiForegroundService.EXTRA_SYMBOL, selected.first().first)
+                    putExtra(MireiForegroundService.EXTRA_EXCHANGE, "indodax")
+                    putExtra(MireiForegroundService.EXTRA_TOTAL_CAPITAL, totalCapital)
+                }
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showTopUpDialog(activity: Activity) {
+        val field = moneyField(activity, 0.0)
+        AlertDialog.Builder(activity)
+            .setTitle("TOP UP PAPER")
+            .setMessage("Tambahkan dana ke kas paper tanpa menghapus 3 posisi yang sedang aktif. Dana akan tersedia untuk siklus berikutnya.")
+            .setView(field)
+            .setNegativeButton("BATAL", null)
+            .setPositiveButton("TOP UP") { _, _ ->
+                val amount = parseMoney(field.text.toString()) ?: 0.0
+                if (amount <= 0.0) Toast.makeText(activity, "Nominal top up harus > 0.", Toast.LENGTH_SHORT).show()
+                else sendService(activity, MireiForegroundService.ACTION_TOP_UP) { putExtra(MireiForegroundService.EXTRA_TOP_UP_AMOUNT, amount) }
+            }
+            .show()
+    }
+
+    private fun showCalculator(activity: Activity) {
+        val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(22, 10, 22, 8) }
+        val entry = numberField(activity, "Entry price", 100.0)
+        val positionCapital = moneyField(activity, 50_000.0)
+        val referenceCapital = moneyField(activity, 50_000.0)
+        val tp = percentField(activity, 1.0, "TP %")
+        val sl = percentField(activity, 0.5, "SL %")
+        listOf(label(activity, "Entry price", true), entry, label(activity, "Modal posisi", true), positionCapital, label(activity, "Modal acuan awal", true), referenceCapital, label(activity, "TP %", true), tp, label(activity, "SL %", true), sl).forEach { box.addView(it, spacedParams(6)) }
+        val result = label(activity, "Masukan nilai untuk menghitung.", false)
+        box.addView(result, spacedParams(12))
+        AlertDialog.Builder(activity).setTitle("CALCULATOR TP / SL").setView(box).setNegativeButton("TUTUP", null).setPositiveButton("HITUNG") { _, _ ->
+            val entryPrice = parseNumber(entry.text.toString()) ?: 0.0
+            val stake = parseMoney(positionCapital.text.toString()) ?: 0.0
+            val capital = parseMoney(referenceCapital.text.toString()) ?: 0.0
+            val tpPct = parsePercent(tp.text.toString()) ?: 0.0
+            val slPct = parsePercent(sl.text.toString()) ?: 0.0
+            if (entryPrice > 0.0 && stake > 0.0 && capital > 0.0 && tpPct > 0.0 && slPct >= 0.0) {
+                val qty = stake / entryPrice
+                val tpEntry = entryPrice * (1.0 + tpPct / 100.0)
+                val slEntry = if (slPct == 0.0) 0.0 else entryPrice * (1.0 - slPct / 100.0)
+                val tpCapital = entryPrice + (capital * tpPct / 100.0) / qty
+                val slCapital = if (slPct == 0.0) 0.0 else entryPrice - (capital * slPct / 100.0) / qty
+                result.text = "ENTRY BASIS\nTP ${money(tpEntry)} · SL ${if (slEntry == 0.0) "UNLIMITED" else money(slEntry)}\n\nINITIAL CAPITAL BASIS\nTP ${money(tpCapital)} · SL ${if (slCapital == 0.0) "UNLIMITED" else money(slCapital)}\n\nQty ${"%.8f".format(Locale.US, qty)}"
+                result.setTextColor(Color.WHITE)
+            } else result.text = "Input belum valid."
+        }.show()
+    }
+
+    private fun showGlossary(activity: Activity) {
+        val scroll = ScrollView(activity)
+        val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(18, 14, 18, 16) }
+        TradingGlossary.terms.forEach { term -> box.addView(card(activity, "${term.term}\n${term.definition}", 12.5f), spacedParams(6)) }
+        scroll.addView(box)
+        AlertDialog.Builder(activity).setTitle("KAMUS TRADING · COMPOUNDING · SCALPING").setView(scroll).setPositiveButton("TUTUP", null).show()
+    }
+
+    private fun showTradingUniverse(activity: Activity) {
+        val rows = TradingUniverse.instruments
+        val table = TableLayout(activity).apply { isStretchAllColumns = false; setPadding(10, 8, 10, 10) }
+        table.addView(tableRow(activity, listOf("CLASS", "INSTRUMENT", "PROVIDER", "STATUS"), true))
+        rows.forEach { item ->
+            val providers = item.providers.joinToString(", ")
+            val status = if (item.liveAdapterReady) "READY · PAPER" else "CONNECTOR CATALOG"
+            table.addView(tableRow(activity, listOf(item.assetClass.label, item.symbol, providers, status), false))
+        }
+        val scroll = ScrollView(activity); scroll.addView(table)
+        AlertDialog.Builder(activity)
+            .setTitle("JENIS TRADING & CONNECTOR")
+            .setMessage("Alpaca menyediakan API trading saham dan crypto serta paper trading. OANDA menyediakan API untuk currency, metals, dan CFD. Mirei build ini menjaga runtime aktif tetap Indodax paper sampai adapter provider tambahan diaktifkan.")
+            .setView(scroll)
+            .setPositiveButton("TUTUP", null)
+            .show()
     }
 
     private fun contentOf(activity: MainActivity): LinearLayout? = runCatching { MainActivity::class.java.getDeclaredField("content").apply { isAccessible = true }.get(activity) as LinearLayout }.getOrNull()
+    private fun currentContent(activity: MainActivity): ViewGroup? = contentOf(activity)
     private fun currentIntentOf(activity: MainActivity): Intent? = runCatching { MainActivity::class.java.getDeclaredField("currentIntent").apply { isAccessible = true }.get(activity) as? Intent }.getOrNull()
 
     private fun findMenuSpinner(view: View): Spinner? {
@@ -253,80 +489,67 @@ class MireiUiPatchApplication : Application() {
     private data class ScannerRow(val symbol: String, val price: String, val change1m: String, val momentum: String, val trend: String, val volumeShare: String)
     private fun parseScanner(raw: String): List<ScannerRow> = raw.lines().mapNotNull { line -> val p = line.split('|'); if (p.size >= 6) ScannerRow(p[0], p[1], p[2], p[3], p[4], p[5]) else null }
 
-    private fun selectedFromCurrentIntent(intent: Intent) = com.mirei.app.core.MarketSnapshot(
-        symbol = intent.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: "", price = intent.getDoubleExtra(MireiForegroundService.EXTRA_PRICE, 0.0),
-        momentumPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_MOMENTUM, 0.0), volatilityPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_VOLATILITY, 0.0),
-        sentimentScore = intent.getDoubleExtra(MireiForegroundService.EXTRA_SENTIMENT, 0.0), forecastConfidence = intent.getDoubleExtra(MireiForegroundService.EXTRA_FORECAST_CONFIDENCE, 0.0),
-        dataFresh = intent.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false), bidPrice = intent.getDoubleExtra(MireiForegroundService.EXTRA_BID, 0.0), askPrice = intent.getDoubleExtra(MireiForegroundService.EXTRA_ASK, 0.0),
-        high24h = intent.getDoubleExtra(MireiForegroundService.EXTRA_HIGH_24H, 0.0), low24h = intent.getDoubleExtra(MireiForegroundService.EXTRA_LOW_24H, 0.0), volume24h = intent.getDoubleExtra(MireiForegroundService.EXTRA_VOLUME_24H, 0.0),
-        spreadPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_SPREAD, 0.0), changeSinceLastTickPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_TICK, 0.0),
-        change1mPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_1M, 0.0), change5mPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_5M, 0.0), change15mPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_CHANGE_15M, 0.0),
-        tradeFlowPercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_FLOW, 0.0), tradeCount = intent.getIntExtra(MireiForegroundService.EXTRA_TRADE_COUNT, 0), buyVolume = intent.getDoubleExtra(MireiForegroundService.EXTRA_BUY_VOLUME, 0.0),
-        sellVolume = intent.getDoubleExtra(MireiForegroundService.EXTRA_SELL_VOLUME, 0.0), lastTradeEpochMs = intent.getLongExtra(MireiForegroundService.EXTRA_LAST_TRADE, 0L), snapshotEpochMs = intent.getLongExtra(MireiForegroundService.EXTRA_SNAPSHOT_TIME, 0L),
-        sourceAgeMs = intent.getLongExtra(MireiForegroundService.EXTRA_SOURCE_AGE, 0L), trendScorePercent = intent.getDoubleExtra(MireiForegroundService.EXTRA_TREND, 0.0),
-    )
-
-    private fun humanAuditDetails(details: String): String {
-        val parts = details.split('|'); val reason = parts.firstOrNull().orEmpty().replace('_', ' '); val order = parts.getOrNull(1)?.takeIf { it != "-" }
-        val pnl = parts.firstOrNull { it.startsWith("pnl=") }?.removePrefix("pnl="); val before = parts.firstOrNull { it.startsWith("balance_before=") }?.removePrefix("balance_before="); val after = parts.firstOrNull { it.startsWith("balance_after=") }?.removePrefix("balance_after=")
-        return buildString { append("Aksi: ").append(reason.ifBlank { "event" }).append('\n'); if (order != null) append("Order: ").append(order).append('\n'); if (pnl != null) append("PnL: Rp ").append(pnl).append('\n'); if (before != null) append("Kas sebelum: Rp ").append(before).append('\n'); if (after != null) append("Kas sesudah: Rp ").append(after) }.trim()
+    private fun parsePositions(raw: String): List<Map<String, String>> = raw.lines().filter { it.isNotBlank() }.map { line ->
+        line.split('|').mapNotNull { part -> val idx = part.indexOf('='); if (idx > 0) part.substring(0, idx) to part.substring(idx + 1) else null }.toMap()
     }
-    private fun humanEventType(type: String): String = when (type) {
-        "OPEN" -> "OPEN · POSISI MASUK"; "RE_ENTRY" -> "RE-ENTRY · BUY KEMBALI"; "SL_CLOSE" -> "CLOSE · STOP LOSS"; "TP_CLOSE" -> "CLOSE · TAKE PROFIT"; "MANUAL_CLOSE" -> "CLOSE · MANUAL"; "SESSION_STOPPED" -> "SESI · BERHENTI"; "SESSION_PAUSED" -> "SESI · HOLD"; "SESSION_CLOSED" -> "SESI · SEMUA POSISI DITUTUP"; "RUNTIME_ERROR" -> "ERROR RUNTIME"; else -> type.replace('_', ' ')
-    }
-    private fun humanExitReason(reason: String?): String = when (reason) { "stop_loss" -> "STOP LOSS"; "take_profit" -> "TAKE PROFIT"; "ai_close" -> "KEPUTUSAN AI CLOSE"; "manual_close_all" -> "TUTUP SEMUA POSISI"; else -> reason?.replace('_', ' ') ?: "—" }
-    private fun addTitle(content: LinearLayout, value: String) { content.addView(label(content.context, value, true)) }
-    private fun card(context: Context, value: String, size: Float): TextView = TextView(context).apply { text = value; textSize = size; setTextColor(Color.WHITE); setPadding(8, 10, 8, 10); setBackgroundColor(Color.rgb(24, 34, 43)) }
-    private fun label(context: Context, value: String, bold: Boolean): TextView = TextView(context).apply { text = value; textSize = if (bold) 17f else 14f; setTextColor(Color.WHITE); if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(4, 10, 4, 5) }
-    private fun fmtNumber(value: Double): String = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }.format(value)
-    private fun fmt(value: Double): String = "%.3f".format(Locale.US, value)
-    private fun signed(value: Double): String = if (value >= 0) "+%.3f".format(Locale.US, value) else "%.3f".format(Locale.US, value)
-    private fun signedMoney(value: Double): String = if (value >= 0) "+${fmtNumber(value)}" else "-${fmtNumber(kotlin.math.abs(value))}"
-    private fun formatEpoch(epochMs: Long): String = if (epochMs <= 0L) "—" else java.text.SimpleDateFormat("MM/dd/HH/mm/ss", Locale.US).format(java.util.Date(epochMs))
 
-    private fun showStartDialog(activity: Activity) {
-        val prefs = activity.getSharedPreferences("mirei_settings", Context.MODE_PRIVATE)
-        val numberFormat = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }
-        val scroll = ScrollView(activity).apply { isFillViewport = false; clipToPadding = true; setPadding(0, 0, 0, 4) }
-        val outer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(16, 4, 16, 14) }; scroll.addView(outer, ViewGroup.LayoutParams(-1, -2))
-        outer.addView(label(activity, "Konfigurasi sesi sebelum runtime dimulai.", false)); outer.addView(label(activity, "1. COIN & MODAL", true)); outer.addView(label(activity, "Pilih 1–3 coin. Modal pada baris coin menjadi modal beli pertama dan dapat menjadi acuan TP/SL.", false))
-        val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        val rows = MireiForegroundService.SUPPORTED_MARKETS.mapIndexed { index, market ->
-            val check = CheckBox(activity).apply { text = market; textSize = 15f; isChecked = index < 3 }
-            val amount = EditText(activity).apply { hint = "Modal IDR"; textSize = 15f; setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(if (index < 3) "50000" else ""); isEnabled = check.isChecked; setPadding(8, 4, 8, 4) }
-            check.setOnCheckedChangeListener { _, checked -> amount.isEnabled = checked }
-            val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(4, 4, 4, 4) }
-            row.addView(check, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)); row.addView(amount, LinearLayout.LayoutParams(132, ViewGroup.LayoutParams.WRAP_CONTENT)); list.addView(row); market to Pair(check, amount)
+    private fun tableRow(context: Context, values: List<String>, header: Boolean): TableRow {
+        val row = TableRow(context).apply { setPadding(0, if (header) 8 else 4, 0, if (header) 8 else 4) }
+        values.forEach { value ->
+            val tv = cell(context, value)
+            if (header) { tv.setTypeface(tv.typeface, android.graphics.Typeface.BOLD); tv.setTextColor(Color.LTGRAY) }
+            row.addView(tv)
         }
-        outer.addView(list, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT)); outer.addView(label(activity, "2. MODE TRADING", true))
-        val modeSpinner = Spinner(activity); val modes = arrayOf("AGGRESSIVE", "BALANCED", "SAFETY"); modeSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, modes); modeSpinner.setSelection(modes.indexOf(prefs.getString("mode", "BALANCED")).coerceAtLeast(0)); outer.addView(modeSpinner, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
-        outer.addView(label(activity, "3. DASAR PEMANTAUAN TP / SL", true)); val basisGroup = RadioGroup(activity).apply { orientation = RadioGroup.VERTICAL }
-        val entryRadio = RadioButton(activity).apply { id = View.generateViewId(); text = "Harga ENTRY COIN — pendekatan harga entry tetap tersedia"; textSize = 15f }; val capitalRadio = RadioButton(activity).apply { id = View.generateViewId(); text = "MODAL SIKLUS — target/rugi IDR mengikuti modal beli pertama dan bertambah setelah TP"; textSize = 15f }
-        basisGroup.addView(entryRadio); basisGroup.addView(capitalRadio); val savedBasis = prefs.getString("risk_basis", RiskReferenceMode.ENTRY_PRICE.name); basisGroup.check(if (savedBasis == RiskReferenceMode.INITIAL_CAPITAL.name) capitalRadio.id else entryRadio.id); outer.addView(basisGroup)
-        outer.addView(card(activity, "Dengan dasar MODAL SIKLUS, modal Rp50.000 dan TP 1% menghasilkan target Rp500. Setelah TP tercapai, siklus berikutnya menggunakan sekitar Rp50.500 sebelum fee/slippage aktual simulator.", 13f)); outer.addView(label(activity, "4. TP / SL", true))
-        val manualSwitch = Switch(activity).apply { text = "TP / SL MANUAL"; textSize = 15f; isChecked = prefs.getBoolean("manual_risk", false) }; outer.addView(manualSwitch)
-        val fields = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }; val slField = EditText(activity).apply { hint = "SL %"; setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(prefs.getString("manual_sl", "0.00")); setPadding(8, 4, 8, 4) }; val tpField = EditText(activity).apply { hint = "TP %"; setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(prefs.getString("manual_tp", "1.00")); setPadding(8, 4, 8, 4) }
-        fields.addView(slField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = 10 }); fields.addView(tpField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)); fields.visibility = if (manualSwitch.isChecked) View.VISIBLE else View.GONE; manualSwitch.setOnCheckedChangeListener { _, checked -> fields.visibility = if (checked) View.VISIBLE else View.GONE; modeSpinner.isEnabled = !checked }; modeSpinner.isEnabled = !manualSwitch.isChecked; outer.addView(fields)
-        outer.addView(card(activity, "MODE OTOMATIS: AGGRESSIVE memakai SL 0% (unlimited hold) dan TP 1%; BALANCED/SAFETY memakai template masing-masing. MODE MANUAL: angka TP/SL di bawah menjadi satu-satunya sumber TP/SL dan pilihan mode otomatis dinonaktifkan.", 13f))
-        val dialog = AlertDialog.Builder(activity).setTitle("MULAI SESI PAPER").setView(scroll).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create()
-        dialog.setOnShowListener {
-            dialog.window?.apply { setLayout((activity.resources.displayMetrics.widthPixels * 0.94f).toInt(), (activity.resources.displayMetrics.heightPixels * 0.90f).toInt()); setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE) }
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).minHeight = 52; dialog.getButton(AlertDialog.BUTTON_POSITIVE).minHeight = 52
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val selected = rows.mapNotNull { (market, pair) -> val (check, amount) = pair; if (!check.isChecked) null else amount.text.toString().toDoubleOrNull()?.takeIf { it > 0.0 }?.let { market to it } }
-                if (selected.isEmpty() || selected.size > 3) { dialog.setTitle("MULAI SESI PAPER · PERIKSA INPUT"); dialog.setMessage("Pilih minimal 1 dan maksimal 3 coin, dengan modal > 0."); return@setOnClickListener }
-                val total = selected.sumOf { it.second }; if (total > 150_000.0 + 1e-6) { dialog.setTitle("MULAI SESI PAPER · PERIKSA INPUT"); dialog.setMessage("Total modal Rp ${numberFormat.format(total)} melebihi Rp150.000."); return@setOnClickListener }
-                val manual = manualSwitch.isChecked; val sl = slField.text.toString().toDoubleOrNull(); val tp = tpField.text.toString().toDoubleOrNull(); if (manual && (sl == null || tp == null || sl < 0.0 || tp <= sl)) { dialog.setTitle("MULAI SESI PAPER · PERIKSA INPUT"); dialog.setMessage("TP manual harus lebih besar dari SL manual. SL 0% berarti unlimited hold sampai TP."); return@setOnClickListener }
-                val basisMode = if (basisGroup.checkedRadioButtonId == capitalRadio.id) RiskReferenceMode.INITIAL_CAPITAL else RiskReferenceMode.ENTRY_PRICE
-                prefs.edit().putString("mode", modeSpinner.selectedItem.toString()).putBoolean("manual_risk", manual).putString("manual_sl", (sl ?: 0.00).toString()).putString("manual_tp", (tp ?: 1.00).toString()).putString("risk_basis", basisMode.name).apply()
-                val allocations = selected.joinToString(";") { "${it.first}=${it.second}" }; sendService(activity, MireiForegroundService.ACTION_APPLY_RISK)
-                activity.window.decorView.postDelayed({ sendService(activity, MireiForegroundService.ACTION_START) { putExtra(MireiForegroundService.EXTRA_INITIAL_ALLOCATIONS, allocations); putExtra(MireiForegroundService.EXTRA_SYMBOL, selected.first().first); putExtra(MireiForegroundService.EXTRA_EXCHANGE, "indodax") } }, 180L); dialog.dismiss()
-            }
-        }; dialog.show()
+        return row
     }
 
-    private fun sendService(activity: Activity, action: String, extras: Intent.() -> Unit = {}) { val intent = Intent(activity, MireiForegroundService::class.java).apply { this.action = action; extras() }; runCatching { if (android.os.Build.VERSION.SDK_INT >= 26) activity.startForegroundService(intent) else activity.startService(intent) } }
+    private fun cell(context: Context, value: String): TextView = TextView(context).apply { text = value; textSize = 11f; setTextColor(Color.WHITE); setPadding(6, 7, 6, 7); minWidth = 76 }
+    private fun actionButton(context: Context, text: String, enabled: Boolean, onClick: () -> Unit): Button = Button(context).apply { this.text = text; isEnabled = enabled; minHeight = 52; setOnClickListener { onClick() }; setPadding(12, 4, 12, 4) }
+    private fun addTitle(content: LinearLayout, value: String) { content.addView(label(content.context, value, true), spacedParams(4)) }
+    private fun card(context: Context, value: String, size: Float): TextView = TextView(context).apply { text = value; textSize = size; setTextColor(Color.WHITE); setPadding(12, 12, 12, 12); setBackgroundColor(Color.rgb(24, 34, 43)) }
+    private fun label(context: Context, value: String, bold: Boolean): TextView = TextView(context).apply { text = value; textSize = if (bold) 17f else 14f; setTextColor(Color.WHITE); if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(2, 8, 2, 4) }
+    private fun moneyField(context: Context, value: Double): EditText = EditText(context).apply { text = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }.format(value); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true); setPadding(12, 10, 12, 10); minimumHeight = 52 }
+    private fun percentField(context: Context, value: Double, hint: String): EditText = EditText(context).apply { this.hint = hint; setText("%.3f".format(Locale.US, value)); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true); setPadding(12, 10, 12, 10); minimumHeight = 52 }
+    private fun numberField(context: Context, hint: String, value: Double): EditText = EditText(context).apply { this.hint = hint; setText("%.8f".format(Locale.US, value)); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true); setPadding(12, 10, 12, 10); minimumHeight = 52 }
+    private fun spacedParams(top: Int = 10): LinearLayout.LayoutParams = LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = top; bottomMargin = 4 }
+    private fun parseMoney(raw: String): Double? = raw.trim().replace(".", "").replace(",", ".").toDoubleOrNull()
+    private fun parseNumber(raw: String): Double? = raw.trim().replace(",", ".").toDoubleOrNull()
+    private fun parsePercent(raw: String): Double? = raw.trim().replace(",", ".").toDoubleOrNull()
+    private fun signedText(value: Double): String = when { value > 0.000001 -> "+%.3f".format(Locale.US, value); value < -0.000001 -> "%.3f".format(Locale.US, value); else -> "0.000" }
+    private fun signedText(raw: String): String = signedText(parse(raw))
+    private fun parse(raw: String): Double = raw.replace("+", "").replace("%", "").trim().toDoubleOrNull() ?: 0.0
+    private fun directionColor(value: Double): Int = when { value > 0.000001 -> Color.rgb(60, 200, 100); value < -0.000001 -> Color.rgb(235, 85, 85); else -> Color.LTGRAY }
+    private fun money(value: Double): String = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }.format(value)
+    private fun signedMoney(value: Double): String = if (value >= 0) "+Rp ${money(value)}" else "-Rp ${money(kotlin.math.abs(value))}"
+    private fun formatEpoch(epochMs: Long): String = if (epochMs <= 0L) "—" else java.text.SimpleDateFormat("MM/dd HH:mm:ss", Locale.US).format(java.util.Date(epochMs))
+    private fun ageText(opened: Long): String { if (opened <= 0L) return "—"; val seconds = ((System.currentTimeMillis() - opened).coerceAtLeast(0L) / 1000L); return when { seconds < 60 -> "${seconds}s"; seconds < 3600 -> "${seconds / 60}m ${seconds % 60}s"; else -> "${seconds / 3600}h ${(seconds % 3600) / 60}m" } }
+    private fun humanExitReason(reason: String?): String = when (reason) { "stop_loss" -> "STOP LOSS"; "take_profit" -> "TAKE PROFIT"; "ai_close" -> "AI CLOSE"; "manual_close_all" -> "MANUAL CLOSE ALL"; else -> reason?.replace('_', ' ') ?: "—" }
+    private fun humanEventType(type: String): String = when (type) { "OPEN" -> "OPEN"; "RE_ENTRY" -> "RE-ENTRY"; "SL_CLOSE" -> "SL CLOSE"; "TP_CLOSE" -> "TP CLOSE"; "MANUAL_CLOSE" -> "MANUAL CLOSE"; "TOP_UP" -> "TOP UP"; "SESSION_STOPPED" -> "STOP"; "SESSION_PAUSED" -> "HOLD"; "SESSION_CLOSED" -> "CLOSE ALL"; "RUNTIME_ERROR" -> "DAMAGE"; else -> type.replace('_', ' ') }
+    private fun humanAuditDetails(details: String): String { return details.replace('|', '·').replace("balance_before=", "before=").replace("balance_after=", "after=") }
+
+    private fun statusIndicator(intent: Intent): String {
+        val state = intent.getStringExtra(MireiForegroundService.EXTRA_STATE).orEmpty()
+        val internet = intent.getBooleanExtra(MireiForegroundService.EXTRA_INTERNET, false)
+        return when {
+            state == "CLOSE_ALL" -> "⚪ CLOSE ALL"
+            state == "ERROR" -> "🔴 DAMAGE"
+            !internet -> "🔵 SEARCHING CONNECTION"
+            state == "HOLD" || state == "STOP" -> "🟡 STOPPED / HOLD"
+            state == "RUNNING" -> "🟢 RUNNING"
+            else -> "🟡 ${state.ifBlank { "STOPPED / HOLD" }}"
+        }
+    }
+
+    private fun sendService(activity: Activity, action: String, extras: Intent.() -> Unit = {}) {
+        val intent = Intent(activity, MireiForegroundService::class.java).apply { this.action = action; extras() }
+        runCatching { if (android.os.Build.VERSION.SDK_INT >= 26) activity.startForegroundService(intent) else activity.startService(intent) }
+    }
 
     private fun findButtons(view: View): List<Button> { if (view is Button) return listOf(view); if (view !is ViewGroup) return emptyList(); return buildList { for (index in 0 until view.childCount) addAll(findButtons(view.getChildAt(index))) } }
-    companion object { private val TAG_PATCHED = Any(); private val TAG_OBSERVER = Any() }
+
+    companion object {
+        private val TAG_PATCHED = Any()
+        private val TAG_OBSERVER = Any()
+        private const val STATUS_TAG = "mirei-status"
+    }
 }
