@@ -1,6 +1,11 @@
 name: Build Mirei Android
 
 on:
+  push:
+    branches: [fix/ci217-dashboard-flicker-v2]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
   pull_request:
     branches: [main]
     paths:
@@ -41,4 +46,4 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 3
 
-# CI217 validation: dashboard renderer must remain outside MainActivity.content.
+# CI217 validation trigger for the isolated dashboard-flicker branch.
