@@ -33,14 +33,13 @@ data class TradingConfig(
         require(totalCapitalIdr > 0)
         require(positionSizeIdr > 0)
         require(maxOpenPositions in 1..3)
-        require(baseStopLossPercent >= 0)
-        require(baseTakeProfitPercent > 0)
+        require(baseStopLossPercent > 0)
         require(baseTakeProfitPercent > baseStopLossPercent)
         require(trailingActivationR > 0)
         require(maxDailyLossPercent > 0)
         require(maxConsecutiveLosses > 0)
         if (manualRiskMode == ManualRiskMode.MANUAL) {
-            require(manualStopLossPercent != null && manualStopLossPercent >= 0)
+            require(manualStopLossPercent != null && manualStopLossPercent > 0)
             require(manualTakeProfitPercent != null && manualTakeProfitPercent > manualStopLossPercent)
         }
     }
@@ -48,8 +47,9 @@ data class TradingConfig(
     fun effectiveStopLossPercent(): Double = when (manualRiskMode) {
         ManualRiskMode.MANUAL -> manualStopLossPercent!!
         ManualRiskMode.AUTO -> when (mode) {
-            // Aggressive template intentionally uses unlimited hold: no price stop.
-            ScalpingMode.AGGRESSIVE -> 0.0
+            // Aggressive is tighter and more responsive, but every position still
+            // has explicit downside protection as required by the trading spec.
+            ScalpingMode.AGGRESSIVE -> 0.40
             ScalpingMode.BALANCED -> 0.50
             ScalpingMode.SAFETY -> 0.65
         }
@@ -68,11 +68,6 @@ data class TradingConfig(
      * Calculates exit thresholds only. This function is deliberately outside
      * Mirei's entry decision gates: changing riskReferenceMode must never turn
      * a BUY/SELL/HOLD decision into another decision.
-     *
-     * A zero stop-loss percentage is a deliberate unlimited-hold mode. In that
-     * mode stopLossPrice is 0 and the runtime must not close the position on SL
-     * or use trailing protection; the position remains open until take-profit
-     * or an explicit user close.
      */
     fun calculateRiskTargets(
         entryPrice: Double,
@@ -84,7 +79,7 @@ data class TradingConfig(
         require(entryPrice > 0.0)
         require(stakeIdr > 0.0)
         require(initialCapitalIdr > 0.0)
-        require(stopLossPercent >= 0.0)
+        require(stopLossPercent > 0.0)
         require(takeProfitPercent > stopLossPercent)
 
         val quantity = stakeIdr / entryPrice
@@ -94,11 +89,7 @@ data class TradingConfig(
         }
         val stopLossAmountIdr = referenceCapital * stopLossPercent / 100.0
         val takeProfitAmountIdr = referenceCapital * takeProfitPercent / 100.0
-        val stopLossPrice = if (stopLossPercent == 0.0) {
-            0.0
-        } else {
-            (entryPrice - (stopLossAmountIdr / quantity)).coerceAtLeast(entryPrice * 0.000001)
-        }
+        val stopLossPrice = (entryPrice - (stopLossAmountIdr / quantity)).coerceAtLeast(entryPrice * 0.000001)
         val takeProfitPrice = entryPrice + (takeProfitAmountIdr / quantity)
 
         return RiskTargets(
