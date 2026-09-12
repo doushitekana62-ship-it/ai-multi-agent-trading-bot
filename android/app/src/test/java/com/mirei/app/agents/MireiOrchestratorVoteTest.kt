@@ -17,9 +17,9 @@ class MireiOrchestratorVoteTest {
         dataFresh = true,
     )
 
-    private fun agent(type: AgentType, action: AgentAction) = object : MireiAgent {
+    private fun agent(type: AgentType, action: AgentAction, confidence: Double = 0.80) = object : MireiAgent {
         override val type = type
-        override fun evaluate(snapshot: MarketSnapshot) = AgentObservation(type, action, 0.80, "test")
+        override fun evaluate(snapshot: MarketSnapshot) = AgentObservation(type, action, confidence, "test")
     }
 
     @Test
@@ -40,7 +40,7 @@ class MireiOrchestratorVoteTest {
     }
 
     @Test
-    fun tiedVoteHoldsWithoutHumanConfirmation() {
+    fun tiedVoteWithEqualConfidenceStillHolds() {
         val decision = MireiOrchestrator(
             listOf(
                 agent(AgentType.CANDLE, AgentAction.BUY),
@@ -52,5 +52,20 @@ class MireiOrchestratorVoteTest {
         assertEquals(AgentAction.HOLD, decision.action)
         assertFalse(decision.requiresHumanDecision)
         assertEquals("agent_vote_tie_hold", decision.rationale)
+    }
+
+    @Test
+    fun tiedVoteUsesConfidenceWhenDirectionalEvidenceIsStronger() {
+        val decision = MireiOrchestrator(
+            listOf(
+                agent(AgentType.CANDLE, AgentAction.BUY, 0.95),
+                agent(AgentType.MARKET, AgentAction.CLOSE, 0.80),
+            ),
+            DecisionMode.SUGGESTION,
+        ).evaluate(snapshot)
+
+        assertEquals(AgentAction.BUY, decision.action)
+        assertFalse(decision.requiresHumanDecision)
+        assertEquals("agent_confidence_weighted_tie_resolved", decision.rationale)
     }
 }
