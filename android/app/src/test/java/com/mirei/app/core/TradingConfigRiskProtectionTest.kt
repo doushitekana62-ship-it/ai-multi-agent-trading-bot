@@ -26,4 +26,6 @@ class TradingConfigRiskProtectionTest {
             assertTrue(targets.takeProfitPrice > 100_000.0)
         }
     }
+
+    // CI trigger marker: validate the canonical main risk/runtime source state.
 }
