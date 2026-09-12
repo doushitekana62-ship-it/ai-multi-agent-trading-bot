@@ -2,6 +2,7 @@ package com.mirei.app.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TradingConfigRiskTargetsTest {
@@ -56,17 +57,19 @@ class TradingConfigRiskTargetsTest {
     }
 
     @Test
-    fun zeroStopLossMeansUnlimitedHoldAndStillHasTakeProfit() {
-        val aggressive = TradingConfig(mode = ScalpingMode.AGGRESSIVE, manualRiskMode = ManualRiskMode.AUTO)
-        val autoTargets = aggressive.calculateRiskTargets(100_000.0, 50_000.0)
-        assertEquals(0.0, aggressive.effectiveStopLossPercent(), 1e-9)
-        assertEquals(0.0, autoTargets.stopLossPrice, 1e-9)
-        assertEquals(500.0, autoTargets.takeProfitAmountIdr, 1e-9)
-        assertEquals(101_000.0, autoTargets.takeProfitPrice, 1e-9)
+    fun everyModeRequiresAnExplicitStopLossAndTakeProfit() {
+        listOf(ScalpingMode.AGGRESSIVE, ScalpingMode.BALANCED, ScalpingMode.SAFETY).forEach { mode ->
+            val config = TradingConfig(mode = mode, manualRiskMode = ManualRiskMode.AUTO)
+            val targets = config.calculateRiskTargets(100_000.0, 50_000.0)
+            assertTrue(config.effectiveStopLossPercent() > 0.0)
+            assertTrue(targets.stopLossPrice > 0.0)
+            assertTrue(targets.stopLossPrice < 100_000.0)
+            assertTrue(targets.takeProfitPrice > 100_000.0)
+        }
 
-        val manual = TradingConfig(mode = ScalpingMode.BALANCED, manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = 0.0, manualTakeProfitPercent = 1.0)
+        val manual = TradingConfig(mode = ScalpingMode.BALANCED, manualRiskMode = ManualRiskMode.MANUAL, manualStopLossPercent = 0.25, manualTakeProfitPercent = 1.0)
         val manualTargets = manual.calculateRiskTargets(100_000.0, 50_000.0)
-        assertEquals(0.0, manualTargets.stopLossPrice, 1e-9)
+        assertEquals(99_750.0, manualTargets.stopLossPrice, 1e-9)
         assertEquals(101_000.0, manualTargets.takeProfitPrice, 1e-9)
     }
 
