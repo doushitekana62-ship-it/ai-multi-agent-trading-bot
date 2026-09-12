@@ -26,4 +26,12 @@ class TradingConfigRiskProtectionTest {
             assertTrue(targets.takeProfitPrice > 100_000.0)
         }
     }
+
+    @Test
+    fun baselineBalancedRiskIsOneToTwo() {
+        val config = TradingConfig(mode = ScalpingMode.BALANCED)
+        val targets = config.calculateRiskTargets(100_000.0, 50_000.0)
+        assertEquals(99_500.0, targets.stopLossPrice, 1e-6)
+        assertEquals(101_000.0, targets.takeProfitPrice, 1e-6)
+    }
 }
