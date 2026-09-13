@@ -138,15 +138,9 @@ class MireiPaperTradingRuntime(
             val snapshot = marketData.snapshot(managedSymbol) ?: continue
             if (!snapshot.dataFresh) continue
             results += engine.seedExistingHolding(
-                exchangeId,
-                managedSymbol,
-                amount,
-                snapshot.price,
-                config.effectiveStopLossPercent(),
-                config.effectiveTakeProfitPercent(),
-                nowMs,
-                config.riskReferenceMode,
-                amount,
+                exchangeId, managedSymbol, amount, snapshot.price,
+                config.effectiveStopLossPercent(), config.effectiveTakeProfitPercent(), nowMs,
+                config.riskReferenceMode, amount,
             )
         }
         holdingsSeeded = results.any { it.success }
@@ -168,14 +162,10 @@ class MireiPaperTradingRuntime(
     }
 
     fun persistenceState(): PaperRuntimePersistence = PaperRuntimePersistence(
-        engineState = engine.snapshotState(),
-        dailyPnlIdr = dailyPnlIdr,
-        consecutiveLosses = consecutiveLosses,
-        holdingsSeeded = holdingsSeeded,
-        buyDecisionCount = buyDecisionCount,
-        holdDecisionCount = holdDecisionCount,
-        sellDecisionCount = sellDecisionCount,
-        initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
+        engineState = engine.snapshotState(), dailyPnlIdr = dailyPnlIdr,
+        consecutiveLosses = consecutiveLosses, holdingsSeeded = holdingsSeeded,
+        buyDecisionCount = buyDecisionCount, holdDecisionCount = holdDecisionCount,
+        sellDecisionCount = sellDecisionCount, initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
     )
 
     fun humanVerificationForm(symbol: String): Pair<List<String>, List<String>> {
@@ -193,43 +183,25 @@ class MireiPaperTradingRuntime(
         if (!decision.requiresHumanDecision || allowed.isEmpty()) return status(RuntimeEnvironment(), errorOverride = "human_verification_not_required")
         if (confirmedIndicators != allowed) return status(RuntimeEnvironment(), errorOverride = "human_verification_form_incomplete")
         val markPrices = lastSnapshots.filterValues { it.dataFresh }.mapValues { it.value.price }
-        val risk = RiskSnapshot(
-            dailyPnlIdr = dailyPnlIdr,
-            dailyStartBalanceIdr = dailyStartBalanceIdr,
-            equityIdr = engine.equityIdr(markPrices),
-            openPositions = engine.positionCount(),
-            consecutiveLosses = consecutiveLosses,
-            marketDataFresh = snapshot.dataFresh,
-            exchangeHealthy = lastExchangeHealthy,
-            internetAvailable = true,
-        )
-        val plan = decisionEngine.buildEntryPlan(snapshot, risk.copy(openPositions = engine.positionCount()), initialCapitalBySymbol[symbol])
+        val risk = RiskSnapshot(dailyPnlIdr, dailyStartBalanceIdr, engine.equityIdr(markPrices), engine.positionCount(), consecutiveLosses, snapshot.dataFresh, lastExchangeHealthy, true)
+        val plan = decisionEngine.buildEntryPlan(snapshot, risk, initialCapitalBySymbol[symbol])
         lastEntryPlanReasons = plan.reasons
         if (!plan.allowed) return status(RuntimeEnvironment(), errorOverride = "human_verification_risk_or_market_gate")
         if (engine.positionCount() >= config.maxOpenPositions) return status(RuntimeEnvironment(), errorOverride = "human_verification_position_limit")
         val reason = if (recentlyClosedSymbols.containsKey(symbol)) "human_verified_re_entry" else "human_verified_entry"
         val execution = engine.open(exchangeId, symbol, plan, nowMs, reason)
         lastExecution = execution
-        if (execution.success) {
-            tickExecutions += execution
-            recentlyClosedSymbols.remove(symbol)
-        }
+        if (execution.success) { tickExecutions += execution; recentlyClosedSymbols.remove(symbol) }
         lastError = if (execution.success) null else execution.error
-        return status(RuntimeEnvironment(internetAvailable = true, exchangeHealthy = lastExchangeHealthy), markPrices)
+        return status(RuntimeEnvironment(true, lastExchangeHealthy), markPrices)
     }
 
-    /** Adds paper cash while keeping every active position intact. */
     fun topUp(amountIdr: Double, nowMs: Long = System.currentTimeMillis()): PaperRuntimeStatus {
         val execution = engine.topUp(amountIdr)
         tickExecutions = mutableListOf()
-        if (execution.success) {
-            lastExecution = execution
-            lastError = null
-            lastTickEpochMs = nowMs
-        } else {
-            lastError = execution.error ?: "top_up_failed"
-        }
-        return status(RuntimeEnvironment(internetAvailable = true, exchangeHealthy = lastExchangeHealthy))
+        if (execution.success) { lastExecution = execution; lastError = null; lastTickEpochMs = nowMs }
+        else lastError = execution.error ?: "top_up_failed"
+        return status(RuntimeEnvironment(true, lastExchangeHealthy))
     }
 
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
@@ -247,22 +219,14 @@ class MireiPaperTradingRuntime(
         if (fresh.isEmpty()) { lastEntryPlanReasons = listOf("market_snapshot_stale"); return status(environment) }
         val markPrices = fresh.mapValues { it.value.price }
         val tpClosedSymbols = linkedSetOf<String>()
+        val slClosedEntries = linkedMapOf<String, Double>()
 
         fresh.forEach { (managedSymbol, snapshot) ->
             applyTrailingProtection(managedSymbol, snapshot)
-            closeTriggeredPositions(managedSymbol, snapshot.price, nowMs, tpClosedSymbols)
+            closeTriggeredPositions(managedSymbol, snapshot.price, nowMs, tpClosedSymbols, slClosedEntries)
         }
 
-        val riskSnapshot = RiskSnapshot(
-            dailyPnlIdr = dailyPnlIdr,
-            dailyStartBalanceIdr = dailyStartBalanceIdr,
-            equityIdr = engine.equityIdr(markPrices),
-            openPositions = engine.positionCount(),
-            consecutiveLosses = consecutiveLosses,
-            marketDataFresh = fresh.size == snapshots.size,
-            exchangeHealthy = lastExchangeHealthy,
-            internetAvailable = environment.internetAvailable,
-        )
+        val riskSnapshot = RiskSnapshot(dailyPnlIdr, dailyStartBalanceIdr, engine.equityIdr(markPrices), engine.positionCount(), consecutiveLosses, fresh.size == snapshots.size, lastExchangeHealthy, environment.internetAvailable)
         val decisions = linkedMapOf<String, MireiDecision>()
         val planReasons = linkedMapOf<String, List<String>>()
         var lastExecutionForTick: ExecutionResult? = null
@@ -278,20 +242,43 @@ class MireiPaperTradingRuntime(
                 AgentAction.CLOSE -> sellDecisionCount++
             }
 
-            if (managedSymbol in tpClosedSymbols && engine.positionCount() < config.maxOpenPositions) {
+            // A stop-loss re-entry is intentionally anchored to the exact last
+            // protected stop price. Market direction is irrelevant for this
+            // paper recovery cycle. Risk targets still use the original capital
+            // reference stored for the symbol.
+            val slEntryPrice = slClosedEntries[managedSymbol]
+            if (slEntryPrice != null && engine.positionCount() < config.maxOpenPositions) {
                 val cycleCapital = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: config.positionSizeIdr
-                val compoundPlan = buildTakeProfitReentryPlan(snapshot, cycleCapital)
-                val execution = engine.open(exchangeId, managedSymbol, compoundPlan, nowMs, "re_entry")
+                val reentryPlan = buildStopLossReentryPlan(slEntryPrice, cycleCapital)
+                val execution = engine.open(exchangeId, managedSymbol, reentryPlan, nowMs, "sl_re_entry")
                 lastExecutionForTick = execution
                 if (execution.success) {
                     tickExecutions += execution
                     recentlyClosedSymbols.remove(managedSymbol)
                 }
+                slClosedEntries.remove(managedSymbol)
+                continue
+            }
+
+            if (managedSymbol in tpClosedSymbols && engine.positionCount() < config.maxOpenPositions) {
+                // TP re-entry remains gate-driven; unlike SL recovery it must
+                // pass the normal Mirei entry plan before another position opens.
+                if (decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
+                    val cycleCapital = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: config.positionSizeIdr
+                    val compoundPlan = buildTakeProfitReentryPlan(snapshot, cycleCapital)
+                    val execution = engine.open(exchangeId, managedSymbol, compoundPlan, nowMs, "re_entry")
+                    lastExecutionForTick = execution
+                    if (execution.success) { tickExecutions += execution; recentlyClosedSymbols.remove(managedSymbol) }
+                }
                 tpClosedSymbols.remove(managedSymbol)
                 continue
             }
 
-            if (decision.action == AgentAction.CLOSE && !decision.requiresHumanDecision) {
+            // Initial holdings are portfolio inventory, not a fresh AI entry.
+            // Do not let the first decision tick liquidate them immediately;
+            // their explicit TP/SL remains active from the moment they are seeded.
+            val initialHolding = engine.positions().any { it.symbol == managedSymbol && it.entryReason == "initial_holding" && nowMs - it.openedAtEpochMs < INITIAL_HOLDING_GRACE_MS }
+            if (decision.action == AgentAction.CLOSE && !decision.requiresHumanDecision && !initialHolding) {
                 engine.positions().filter { it.symbol == managedSymbol && it.stopLossPrice != 0.0 }.toList().forEach { position ->
                     val execution = engine.close(position.id, snapshot.price, "ai_close", nowMs)
                     if (execution.success) {
@@ -306,10 +293,7 @@ class MireiPaperTradingRuntime(
                 val entryReason = if (recentlyClosedSymbols.containsKey(managedSymbol)) "re_entry" else "entry_filled"
                 val execution = engine.open(exchangeId, managedSymbol, plan, nowMs, entryReason)
                 lastExecutionForTick = execution
-                if (execution.success) {
-                    tickExecutions += execution
-                    recentlyClosedSymbols.remove(managedSymbol)
-                }
+                if (execution.success) { tickExecutions += execution; recentlyClosedSymbols.remove(managedSymbol) }
             }
         }
 
@@ -329,9 +313,7 @@ class MireiPaperTradingRuntime(
     fun updateScannerSummary(summary: String) { lastScannerSummary = summary }
 
     fun closeAll(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment(), reason: String = "manual_close_all"): PaperRuntimeStatus {
-        tickExecutions = mutableListOf()
-        lastTickEpochMs = nowMs
-        lastError = null
+        tickExecutions = mutableListOf(); lastTickEpochMs = nowMs; lastError = null
         if (!environment.internetAvailable || !environment.exchangeHealthy) { lastExchangeHealthy = false; lastError = "close_all_exchange_unavailable"; lastEntryPlanReasons = listOf("close_all_exchange_unavailable"); return status(environment) }
         engine.positions().toList().forEach { position ->
             val snapshot = marketData.snapshot(position.symbol)
@@ -352,23 +334,19 @@ class MireiPaperTradingRuntime(
         return PaperRuntimeStatus(
             availableBalanceIdr = engine.availableBalanceIdr(), equityIdr = engine.equityIdr(prices), activePositions = engine.positions(),
             lastDecision = lastDecision, lastExecution = lastExecution, recentExecutions = tickExecutions.toList(), dailyPnlIdr = dailyPnlIdr, consecutiveLosses = consecutiveLosses,
-            marketSymbol = snapshot?.symbol.orEmpty(), marketPrice = snapshot?.price ?: 0.0, marketBidPrice = snapshot?.bidPrice ?: 0.0,
-            marketAskPrice = snapshot?.askPrice ?: 0.0, marketHigh24h = snapshot?.high24h ?: 0.0, marketLow24h = snapshot?.low24h ?: 0.0,
-            marketVolume24h = snapshot?.volume24h ?: 0.0, marketMomentumPercent = snapshot?.momentumPercent ?: 0.0,
-            marketVolatilityPercent = snapshot?.volatilityPercent ?: 0.0, marketSentimentScore = snapshot?.sentimentScore ?: 0.0,
-            forecastConfidence = snapshot?.forecastConfidence ?: 0.0, marketSpreadPercent = snapshot?.spreadPercent ?: 0.0,
-            changeSinceLastTickPercent = snapshot?.changeSinceLastTickPercent ?: 0.0, change1mPercent = snapshot?.change1mPercent ?: 0.0,
-            change5mPercent = snapshot?.change5mPercent ?: 0.0, change15mPercent = snapshot?.change15mPercent ?: 0.0,
-            tradeFlowPercent = snapshot?.tradeFlowPercent ?: 0.0, trendScorePercent = snapshot?.trendScorePercent ?: 0.0,
-            tradeCount = snapshot?.tradeCount ?: 0, buyVolume = snapshot?.buyVolume ?: 0.0, sellVolume = snapshot?.sellVolume ?: 0.0,
-            lastTradeEpochMs = snapshot?.lastTradeEpochMs ?: 0L, snapshotEpochMs = snapshot?.snapshotEpochMs ?: 0L,
-            sourceAgeMs = snapshot?.sourceAgeMs ?: 0L, marketDataFresh = snapshot?.dataFresh == true,
+            marketSymbol = snapshot?.symbol.orEmpty(), marketPrice = snapshot?.price ?: 0.0, marketBidPrice = snapshot?.bidPrice ?: 0.0, marketAskPrice = snapshot?.askPrice ?: 0.0,
+            marketHigh24h = snapshot?.high24h ?: 0.0, marketLow24h = snapshot?.low24h ?: 0.0, marketVolume24h = snapshot?.volume24h ?: 0.0,
+            marketMomentumPercent = snapshot?.momentumPercent ?: 0.0, marketVolatilityPercent = snapshot?.volatilityPercent ?: 0.0, marketSentimentScore = snapshot?.sentimentScore ?: 0.0,
+            forecastConfidence = snapshot?.forecastConfidence ?: 0.0, marketSpreadPercent = snapshot?.spreadPercent ?: 0.0, changeSinceLastTickPercent = snapshot?.changeSinceLastTickPercent ?: 0.0,
+            change1mPercent = snapshot?.change1mPercent ?: 0.0, change5mPercent = snapshot?.change5mPercent ?: 0.0, change15mPercent = snapshot?.change15mPercent ?: 0.0,
+            tradeFlowPercent = snapshot?.tradeFlowPercent ?: 0.0, trendScorePercent = snapshot?.trendScorePercent ?: 0.0, tradeCount = snapshot?.tradeCount ?: 0,
+            buyVolume = snapshot?.buyVolume ?: 0.0, sellVolume = snapshot?.sellVolume ?: 0.0, lastTradeEpochMs = snapshot?.lastTradeEpochMs ?: 0L,
+            snapshotEpochMs = snapshot?.snapshotEpochMs ?: 0L, sourceAgeMs = snapshot?.sourceAgeMs ?: 0L, marketDataFresh = snapshot?.dataFresh == true,
             internetAvailable = environment.internetAvailable, exchangeHealthy = lastExchangeHealthy && environment.exchangeHealthy && environment.internetAvailable,
             lastTickEpochMs = lastTickEpochMs, lastError = errorOverride ?: lastError, entryPlanReasons = lastEntryPlanReasons,
             decisionsBySymbol = lastDecisions, snapshotsBySymbol = lastSnapshots, scannerSummary = lastScannerSummary,
             buyDecisionCount = buyDecisionCount, holdDecisionCount = holdDecisionCount, sellDecisionCount = sellDecisionCount,
-            humanVerificationRequired = humanDecision?.requiresHumanDecision == true && humanAllowed.isNotEmpty(),
-            humanAllowedIndicators = humanAllowed, humanBlockedIndicators = humanBlocked,
+            humanVerificationRequired = humanDecision?.requiresHumanDecision == true && humanAllowed.isNotEmpty(), humanAllowedIndicators = humanAllowed, humanBlockedIndicators = humanBlocked,
         )
     }
 
@@ -377,27 +355,25 @@ class MireiPaperTradingRuntime(
     private fun applyTrailingProtection(managedSymbol: String, snapshot: MarketSnapshot) {
         engine.positions().filter { it.symbol == managedSymbol && it.stopLossPrice != 0.0 }.forEach { position ->
             val initialStop = (2.0 * position.entryPrice - position.trailingActivationPrice).coerceAtLeast(0.00000001)
-            val plan = exitPolicy.evaluate(
-                entryPrice = position.entryPrice,
-                currentPrice = snapshot.price,
-                initialStopLossPrice = initialStop,
-                initialTakeProfitPrice = position.takeProfitPrice,
-                atrPercent = snapshot.volatilityPercent,
-                recentSwingLow = null,
-            )
-            if (plan.trailingStopPrice != null && plan.breakevenApplied) {
-                engine.updateTrailingStop(position.id, plan.trailingStopPrice)
-            }
+            val plan = exitPolicy.evaluate(position.entryPrice, snapshot.price, initialStop, position.takeProfitPrice, snapshot.volatilityPercent, null)
+            if (plan.trailingStopPrice != null && plan.breakevenApplied) engine.updateTrailingStop(position.id, plan.trailingStopPrice)
         }
     }
 
-    private fun closeTriggeredPositions(managedSymbol: String, marketPrice: Double, nowMs: Long, tpClosedSymbols: MutableSet<String>) {
+    private fun closeTriggeredPositions(
+        managedSymbol: String,
+        marketPrice: Double,
+        nowMs: Long,
+        tpClosedSymbols: MutableSet<String>,
+        slClosedEntries: MutableMap<String, Double>,
+    ) {
         engine.positions().filter { it.symbol == managedSymbol }.forEach { position ->
             val reason = when {
                 position.stopLossPrice != 0.0 && marketPrice <= position.stopLossPrice -> "stop_loss"
                 marketPrice >= position.takeProfitPrice -> "take_profit"
                 else -> null
             } ?: return@forEach
+            val reentryAnchor = position.stopLossPrice
             val result = engine.close(position.id, marketPrice, reason, nowMs)
             if (!result.success) return@forEach
             dailyPnlIdr += result.pnlIdr
@@ -409,32 +385,28 @@ class MireiPaperTradingRuntime(
                 val previousCycleCapital = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: position.stakeIdr
                 initialCapitalBySymbol[managedSymbol] = maxOf(position.stakeIdr, previousCycleCapital + result.pnlIdr)
                 tpClosedSymbols += managedSymbol
+            } else if (reason == "stop_loss") {
+                // Always anchor recovery to the last protected SL, not to a
+                // later market quote. This makes the paper cycle deterministic.
+                if (reentryAnchor > 0.0) slClosedEntries[managedSymbol] = reentryAnchor
             }
         }
+    }
+
+    private fun buildStopLossReentryPlan(entryPrice: Double, cycleCapital: Double): EntryPlan {
+        val stake = cycleCapital.coerceAtMost(engine.availableBalanceIdr()).coerceAtLeast(0.0)
+        if (stake <= 0.0 || entryPrice <= 0.0) return EntryPlan(false, entryPrice, 0.0, 0.0, 0.0, 0.0, listOf("sl_reentry_insufficient_cash"), config.riskReferenceMode, cycleCapital)
+        val targets = config.calculateRiskTargets(entryPrice, stake, cycleCapital, config.effectiveStopLossPercent(), config.effectiveTakeProfitPercent())
+        val activation = entryPrice + (entryPrice - targets.stopLossPrice) * config.trailingActivationR
+        return EntryPlan(true, entryPrice, targets.stopLossPrice, targets.takeProfitPrice, activation, stake, listOf("sl_reentry_from_last_stop"), config.riskReferenceMode, targets.referenceCapitalIdr)
     }
 
     private fun buildTakeProfitReentryPlan(snapshot: MarketSnapshot, cycleCapital: Double): EntryPlan {
         val stake = cycleCapital.coerceAtMost(engine.availableBalanceIdr()).coerceAtLeast(0.0)
         if (stake <= 0.0) return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, listOf("tp_compound_insufficient_cash"), config.riskReferenceMode, cycleCapital)
-        val targets = config.calculateRiskTargets(
-            entryPrice = snapshot.price,
-            stakeIdr = stake,
-            initialCapitalIdr = cycleCapital,
-            stopLossPercent = config.effectiveStopLossPercent(),
-            takeProfitPercent = config.effectiveTakeProfitPercent(),
-        )
-        val activation = if (targets.stopLossPrice == 0.0) 0.0 else snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR
-        return EntryPlan(
-            allowed = true,
-            entryPrice = snapshot.price,
-            stopLossPrice = targets.stopLossPrice,
-            takeProfitPrice = targets.takeProfitPrice,
-            trailingActivationPrice = activation,
-            stakeIdr = stake,
-            reasons = listOf("tp_compound_reentry"),
-            riskReferenceMode = config.riskReferenceMode,
-            riskReferenceCapitalIdr = targets.referenceCapitalIdr,
-        )
+        val targets = config.calculateRiskTargets(snapshot.price, stake, cycleCapital, config.effectiveStopLossPercent(), config.effectiveTakeProfitPercent())
+        val activation = snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR
+        return EntryPlan(true, snapshot.price, targets.stopLossPrice, targets.takeProfitPrice, activation, stake, listOf("tp_compound_reentry"), config.riskReferenceMode, targets.referenceCapitalIdr)
     }
 
     private fun close(positionId: String, marketPrice: Double, reason: String, nowMs: Long) {
@@ -444,5 +416,9 @@ class MireiPaperTradingRuntime(
         consecutiveLosses = if (result.pnlIdr < 0.0) consecutiveLosses + 1 else 0
         lastExecution = result
         tickExecutions += result
+    }
+
+    companion object {
+        private const val INITIAL_HOLDING_GRACE_MS = 5_000L
     }
 }
