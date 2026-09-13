@@ -24,7 +24,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
             put("id", position.id)
             put("exchange_id", position.exchangeId)
             put("symbol", position.symbol)
-            put("side", when (position.entryReason) { "initial_holding" -> "INITIAL_HOLDING"; "re_entry" -> "RE_ENTRY"; else -> "BUY" })
+            put("side", when (position.entryReason) { "initial_holding" -> "INITIAL_HOLDING"; "re_entry", "sl_re_entry" -> "RE_ENTRY"; else -> "BUY" })
             put("status", "OPEN")
             put("entry_price", position.entryPrice)
             put("stake_idr", position.stakeIdr)
@@ -33,12 +33,25 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
             put("opened_at", position.openedAtEpochMs)
             put("entry_reason", position.entryReason)
         })
+        recordAudit(
+            "TRADE_OPEN",
+            "symbol=${position.symbol}|side=${position.entryReason}|entry=${position.entryPrice}|stake=${position.stakeIdr}|sl=${position.stopLossPrice}|tp=${position.takeProfitPrice}|risk_ref=${position.riskReferenceCapitalIdr}",
+            position.openedAtEpochMs,
+        )
     }
 
     fun recordTradeClosed(positionId: String, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) {
         require(exitPrice > 0.0)
         require(feeIdr >= 0.0)
         require(exitReason.isNotBlank())
+        val position = readableDatabase.rawQuery(
+            "SELECT symbol, entry_price, stake_idr, opened_at, entry_reason FROM trades WHERE id = ? LIMIT 1",
+            arrayOf(positionId),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else listOf(
+                cursor.getString(0), cursor.getDouble(1), cursor.getDouble(2), cursor.getLong(3), cursor.getString(4),
+            )
+        } ?: error("trade_not_found:$positionId")
         val updated = writableDatabase.update(
             "trades",
             ContentValues().apply {
@@ -53,6 +66,11 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
             arrayOf(positionId),
         )
         check(updated == 1) { "trade_not_found:$positionId" }
+        recordAudit(
+            "TRADE_CLOSE",
+            "symbol=${position[0]}|side=${position[4]}|entry=${position[1]}|exit=$exitPrice|stake=${position[2]}|pnl=$pnlIdr|fee=$feeIdr|exit_reason=$exitReason|opened_at=${position[3]}",
+            closedAtEpochMs,
+        )
     }
 
     fun recordAudit(eventType: String, details: String, nowMs: Long = System.currentTimeMillis()) = writableDatabase.insertOrThrow("audit_log", null, ContentValues().apply {
