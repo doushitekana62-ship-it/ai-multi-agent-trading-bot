@@ -38,6 +38,7 @@ class MireiPaperTradingRuntime(
     private val exchangeId: String = "paper", private val managedSymbols: List<String> = listOf(symbol), private val engine: PaperExecutionEngine = PaperExecutionEngine(config, tradeLedger = tradeLedger),
     private val orchestrator: MireiOrchestrator = MireiOrchestrator(DefaultMireiAgents.create(), config.decisionMode), decisionEngine: MireiDecisionEngine = MireiDecisionEngine(config),
 ) {
+    companion object { private const val MIN_AI_CLOSE_HOLD_MS = 60_000L }
     private var config = config; private var decisionEngine = decisionEngine; private var exitPolicy = ExitPolicy(config); private val dailyStartBalanceIdr = config.totalCapitalIdr
     private var dailyPnlIdr = 0.0; private var consecutiveLosses = 0; private var lastDecision: MireiDecision? = null; private var lastExecution: ExecutionResult? = null; private var tickExecutions: MutableList<ExecutionResult> = mutableListOf()
     private var lastError: String? = null; private var lastSnapshot: MarketSnapshot? = null; private var lastSnapshots: Map<String, MarketSnapshot> = emptyMap(); private var lastDecisions: Map<String, MireiDecision> = emptyMap(); private var lastTickEpochMs = 0L
@@ -93,7 +94,15 @@ class MireiPaperTradingRuntime(
         val riskSnapshot = RiskSnapshot(dailyPnlIdr, dailyStartBalanceIdr, engine.equityIdr(markPrices), engine.positionCount(), consecutiveLosses, fresh.size == snapshots.size, lastExchangeHealthy, environment.internetAvailable)
         val decisions = linkedMapOf<String, MireiDecision>(); val planReasons = linkedMapOf<String, List<String>>(); var lastExecutionForTick: ExecutionResult? = null
         for ((managedSymbol, snapshot) in fresh) {
-            val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot.copy(openPositions = engine.positionCount()), initialCapitalBySymbol[managedSymbol]); planReasons[managedSymbol] = plan.reasons; val decision = orchestrator.evaluate(snapshot); decisions[managedSymbol] = decision
+            val plan = decisionEngine.buildEntryPlan(snapshot, riskSnapshot.copy(openPositions = engine.positionCount()), initialCapitalBySymbol[managedSymbol]); planReasons[managedSymbol] = plan.reasons; val rawDecision = orchestrator.evaluate(snapshot)
+            val positionsForSymbol = engine.positions().filter { it.symbol == managedSymbol }
+            val initialHoldingActive = positionsForSymbol.any { it.entryReason == "initial_holding" }
+            val aiCloseDeferred = rawDecision.action == AgentAction.CLOSE && positionsForSymbol.any { nowMs - it.openedAtEpochMs < MIN_AI_CLOSE_HOLD_MS }
+            val aiCloseBlockedByInitialHolding = rawDecision.action == AgentAction.CLOSE && initialHoldingActive
+            val decision = if (aiCloseDeferred || aiCloseBlockedByInitialHolding) rawDecision.copy(
+                rationale = rawDecision.rationale + if (aiCloseBlockedByInitialHolding) "_initial_holding_protected_by_tp_sl" else "_ai_close_deferred_min_hold_60s"
+            ) else rawDecision
+            decisions[managedSymbol] = decision
             when (decision.action) { AgentAction.BUY -> buyDecisionCount++; AgentAction.HOLD -> holdDecisionCount++; AgentAction.CLOSE -> sellDecisionCount++ }
             val slEntryPrice = slClosedEntries[managedSymbol]
             if (slEntryPrice != null && engine.positionCount() < config.maxOpenPositions) {
@@ -102,16 +111,19 @@ class MireiPaperTradingRuntime(
                     val cycleCapital = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: config.positionSizeIdr
                     val reentryPlan = buildStopLossReentryPlan(slEntryPrice, cycleCapital); val execution = engine.open(exchangeId, managedSymbol, reentryPlan, nowMs, "sl_re_entry"); lastExecutionForTick = execution
                     if (execution.success) { tickExecutions += execution; recentlyClosedSymbols.remove(managedSymbol) }
-                } else planReasons[managedSymbol] = planReasons[managedSymbol].orEmpty() + risk.reasons.map { "sl_reentry_blocked_$it" }
+                } else planReasons[managedSymbol] = planReasons[managedSymbol].orEmpty() + risk.reasons.map { "sl_reentry_waiting_$it" }
                 slClosedEntries.remove(managedSymbol); continue
             }
             if (managedSymbol in tpClosedSymbols && engine.positionCount() < config.maxOpenPositions) {
                 if (decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
                     val cycleCapital = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: config.positionSizeIdr; val compoundPlan = buildTakeProfitReentryPlan(snapshot, cycleCapital); val execution = engine.open(exchangeId, managedSymbol, compoundPlan, nowMs, "re_entry"); lastExecutionForTick = execution; if (execution.success) { tickExecutions += execution; recentlyClosedSymbols.remove(managedSymbol) }
-                }
+                } else if (decision.action != AgentAction.BUY) planReasons[managedSymbol] = planReasons[managedSymbol].orEmpty() + "tp_reentry_waiting_ai_${decision.action.name.lowercase()}"
                 tpClosedSymbols.remove(managedSymbol); continue
             }
-            val protectInitialHolding = initialHoldingProtectionPending && engine.positions().any { it.symbol == managedSymbol && it.entryReason == "initial_holding" }; if (protectInitialHolding) continue
+            if (aiCloseBlockedByInitialHolding || aiCloseDeferred) {
+                planReasons[managedSymbol] = planReasons[managedSymbol].orEmpty() + if (aiCloseBlockedByInitialHolding) "ai_close_waiting_initial_holding_tp_sl" else "ai_close_waiting_min_hold_60s"
+                continue
+            }
             if (decision.action == AgentAction.CLOSE && !decision.requiresHumanDecision) {
                 engine.positions().filter { it.symbol == managedSymbol && it.stopLossPrice != 0.0 }.toList().forEach { position -> val execution = engine.close(position.id, snapshot.price, "ai_close", nowMs); if (execution.success) { recentlyClosedSymbols[managedSymbol] = nowMs; lastExecutionForTick = execution; tickExecutions += execution; dailyPnlIdr += execution.pnlIdr; consecutiveLosses = if (execution.pnlIdr < 0.0) consecutiveLosses + 1 else 0 } }
             } else if (engine.positionCount() < config.maxOpenPositions && decision.action == AgentAction.BUY && !decision.requiresHumanDecision && plan.allowed) {
@@ -137,11 +149,12 @@ class MireiPaperTradingRuntime(
     private fun buildStopLossReentryPlan(entryPrice: Double, cycleCapital: Double): EntryPlan {
         val executableStake = cycleCapital.coerceAtMost(engine.availableBalanceIdr()).coerceAtLeast(0.0)
         if (executableStake <= 0.0 || entryPrice <= 0.0) return EntryPlan(false, entryPrice, 0.0, 0.0, 0.0, 0.0, listOf("sl_reentry_insufficient_cash"), config.riskReferenceMode, cycleCapital)
-        // Calculate the new SL/TP from the original cycle capital, while the
-        // actual paper stake may be slightly smaller after fees/slippage.
+        // SL re-entry intentionally ignores the current direction of the market.
+        // The last SL is the new entry anchor; the original cycle capital remains
+        // the monetary reference for the new TP/SL calculation.
         val targets = config.calculateRiskTargets(entryPrice, cycleCapital, cycleCapital, config.effectiveStopLossPercent(), config.effectiveTakeProfitPercent())
         val activation = entryPrice + (entryPrice - targets.stopLossPrice) * config.trailingActivationR
-        return EntryPlan(true, entryPrice, targets.stopLossPrice, targets.takeProfitPrice, activation, executableStake, listOf("sl_reentry_from_last_stop"), config.riskReferenceMode, cycleCapital)
+        return EntryPlan(true, entryPrice, targets.stopLossPrice, targets.takeProfitPrice, activation, executableStake, listOf("sl_reentry_from_last_stop", "sl_reentry_ignores_market_direction"), config.riskReferenceMode, cycleCapital)
     }
     private fun buildTakeProfitReentryPlan(snapshot: MarketSnapshot, cycleCapital: Double): EntryPlan { val stake = cycleCapital.coerceAtMost(engine.availableBalanceIdr()).coerceAtLeast(0.0); if (stake <= 0.0) return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, listOf("tp_compound_insufficient_cash"), config.riskReferenceMode, cycleCapital); val targets = config.calculateRiskTargets(snapshot.price, stake, cycleCapital, config.effectiveStopLossPercent(), config.effectiveTakeProfitPercent()); val activation = snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR; return EntryPlan(true, snapshot.price, targets.stopLossPrice, targets.takeProfitPrice, activation, stake, listOf("tp_compound_reentry"), config.riskReferenceMode, targets.referenceCapitalIdr) }
     private fun close(positionId: String, marketPrice: Double, reason: String, nowMs: Long) { val result = engine.close(positionId, marketPrice, reason, nowMs); if (!result.success) return; dailyPnlIdr += result.pnlIdr; consecutiveLosses = if (result.pnlIdr < 0.0) consecutiveLosses + 1 else 0; lastExecution = result; tickExecutions += result }
