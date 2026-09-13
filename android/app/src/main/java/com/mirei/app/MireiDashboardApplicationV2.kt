@@ -119,7 +119,7 @@ class MireiDashboardApplicationV2 : Application() {
         addView(card(a, equityText(a, i), 14f).apply { setTag(TAG_EQUITY) }, params(6))
         addTitle(this, "AI VS ACTUAL · SESI INI")
         addView(buildAiTable(a, i), params(2))
-        addView(card(a, "BUY/OPEN = keputusan AI atau pembukaan paper. HOLD/ACTIVE = tidak ada order HOLD; angka ACTIVE adalah posisi nyata yang sedang terbuka. SELL/CLOSE = keputusan AI atau posisi yang benar-benar ditutup.", 12f), params(5))
+        addView(card(a, "AI = keputusan analitik per tick. ACTUAL = ledger paper: OPEN = posisi benar-benar dibuka, ACTIVE = posisi nyata yang masih terbuka, CLOSE = posisi benar-benar ditutup. SELL/CLOSE AI tidak berarti posisi langsung ditutup.", 12f), params(5))
         addTitle(this, "KONTROL SESI")
         val primary = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         primary.addView(action(a, "MULAI") { invokeStartDialog(a) }, weight())
@@ -133,7 +133,7 @@ class MireiDashboardApplicationV2 : Application() {
         addView(action(a, "BERHENTI") { send(a, MireiForegroundService.ACTION_STOP) }, params(2))
         addView(action(a, "TUTUP SEMUA POSISI") { send(a, MireiForegroundService.ACTION_CLOSE_ALL) }, params(2))
         addTitle(this, "EVENT / GATE TERAKHIR")
-        addView(card(a, eventText(i), 13f).apply { setTag(TAG_EVENT) }, params(5))
+        addView(card(a, eventText(a, i), 13f).apply { setTag(TAG_EVENT) }, params(5))
         addTitle(this, "KEPUTUSAN TERAKHIR")
         addView(card(a, decisionText(i), 13f).apply { setTag(TAG_DECISION) }, params(5))
         addTitle(this, "KESEHATAN")
@@ -154,7 +154,7 @@ class MireiDashboardApplicationV2 : Application() {
         val i = currentIntent(a) ?: return
         (d.findViewWithTag<View>(TAG_STATUS) as? TextView)?.text = statusText(i)
         (d.findViewWithTag<View>(TAG_EQUITY) as? TextView)?.text = equityText(a, i)
-        (d.findViewWithTag<View>(TAG_EVENT) as? TextView)?.text = eventText(i)
+        (d.findViewWithTag<View>(TAG_EVENT) as? TextView)?.text = eventText(a, i)
         (d.findViewWithTag<View>(TAG_DECISION) as? TextView)?.text = decisionText(i)
         (d.findViewWithTag<View>(TAG_HEALTH) as? TextView)?.text = healthText(i)
         (d.findViewWithTag<View>(TAG_AI) as? TableLayout)?.let { updateAi(it, i) }
@@ -198,8 +198,21 @@ class MireiDashboardApplicationV2 : Application() {
             "MODAL    Rp ${money(i.getDoubleExtra(MireiForegroundService.EXTRA_TOTAL_CAPITAL, 0.0))}"
     }
 
-    private fun eventText(i: Intent): String {
-        val event = i.getStringExtra(MireiForegroundService.EXTRA_RECENT_EXECUTIONS).orEmpty().ifBlank { "Belum ada OPEN/CLOSE pada tick terakhir." }
+    private fun eventText(a: MainActivity, i: Intent): String {
+        val live = i.getStringExtra(MireiForegroundService.EXTRA_RECENT_EXECUTIONS).orEmpty().trim()
+        val start = i.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L)
+        val historical = runCatching {
+            MireiDatabase(a).recentTrades(200)
+                .filter { start == 0L || it.openedAtEpochMs >= start || (it.closedAtEpochMs ?: Long.MIN_VALUE) >= start }
+                .maxByOrNull { maxOf(it.openedAtEpochMs, it.closedAtEpochMs ?: 0L) }
+        }.getOrNull()
+        val event = if (live.isNotBlank()) live else historical?.let {
+            if (it.closedAtEpochMs != null) {
+                "TRADE CLOSE\nsymbol=${it.symbol}\nentry=${it.entryPrice}\nexit=${it.exitPrice}\npnl=${it.pnlIdr}\nexit reason=${it.exitReason}"
+            } else {
+                "TRADE OPEN\nsymbol=${it.symbol}\nentry=${it.entryPrice}\nstake=${it.stakeIdr}\nstatus=ACTIVE"
+            }
+        } ?: "Belum ada OPEN/CLOSE pada sesi ini."
         val gate = i.getStringExtra(MireiForegroundService.EXTRA_ENTRY_REASONS).orEmpty().ifBlank { "Tidak ada gate yang tercatat." }.split("|").joinToString("\n") { "• ${it.trim().replace('_', ' ')}" }
         return "EVENT\n$event\n\nGATE / BLOK RISIKO\n$gate"
     }
