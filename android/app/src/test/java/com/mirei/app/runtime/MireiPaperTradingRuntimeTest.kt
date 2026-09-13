@@ -86,7 +86,6 @@ class MireiPaperTradingRuntimeTest {
 
     @Test fun nonInitialAiCloseIsDeferredUntilMinimumHoldTimeAndExplained() {
         val market = ScenarioMarket(); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(maxOpenPositions = 3), marketData = market, symbol = "BTC/IDR", managedSymbols = listOf("BTC/IDR"), tradeLedger = ledger)
-        market.bearishSymbol = null
         val opened = runtime.tick(1_000L).activePositions.single()
         market.bearishSymbol = "BTC/IDR"
         val deferred = runtime.tick(opened.openedAtEpochMs + 30_000L)
@@ -128,7 +127,7 @@ private fun sampleBullishSnapshot() = MarketSnapshot("BTC/IDR", 10_000.0, 1.0, 0
 private class MutableMarket(var price: Double, private val fresh: Boolean = true) : PaperMarketDataSource { override fun snapshot(symbol: String) = sampleBullishSnapshot().copy(symbol = symbol, price = price, dataFresh = fresh) }
 private class ScenarioMarket : PaperMarketDataSource {
     var bearishSymbol: String? = null
-    override fun snapshot(symbol: String): MarketSnapshot = if (bearishSymbol == symbol) sampleBullishSnapshot().copy(symbol = symbol, price = 9_900.0, momentumPercent = -5.0, sentimentScore = -40.0, forecastConfidence = 0.90, changeSinceLastTickPercent = -0.5, change1mPercent = -0.5, change5mPercent = -0.5, change15mPercent = -0.5, tradeFlowPercent = -40.0, trendScorePercent = -5.0) else sampleBullishSnapshot().copy(symbol = symbol, price = 10_000.0, momentumPercent = 5.0, sentimentScore = 20.0, forecastConfidence = 0.90, changeSinceLastTickPercent = 0.5, change1mPercent = 0.5, change5mPercent = 0.5, change15mPercent = 0.5, tradeFlowPercent = 40.0, trendScorePercent = 5.0)
+    override fun snapshot(symbol: String): MarketSnapshot = if (bearishSymbol == symbol) sampleBullishSnapshot().copy(symbol = symbol, price = 9_990.0, momentumPercent = -5.0, sentimentScore = -40.0, forecastConfidence = 0.90, changeSinceLastTickPercent = -0.5, change1mPercent = -0.5, change5mPercent = -0.5, change15mPercent = -0.5, tradeFlowPercent = -40.0, trendScorePercent = -5.0) else sampleBullishSnapshot().copy(symbol = symbol, price = 10_000.0, momentumPercent = 5.0, sentimentScore = 20.0, forecastConfidence = 0.90, changeSinceLastTickPercent = 0.5, change1mPercent = 0.5, change5mPercent = 0.5, change15mPercent = 0.5, tradeFlowPercent = 40.0, trendScorePercent = 5.0)
 }
 private class RecordingLedger : TradeLedger {
     var openedCount = 0; var closedCount = 0
