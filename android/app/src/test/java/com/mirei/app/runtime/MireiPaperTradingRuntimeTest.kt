@@ -72,6 +72,31 @@ class MireiPaperTradingRuntimeTest {
         assertEquals(0, ledger.closedCount)
     }
 
+    @Test fun initialHoldingAiCloseIsDeferredForProtectionAndExplained() {
+        val market = ScenarioMarket(); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(maxOpenPositions = 3), marketData = market, symbol = "BTC/IDR", managedSymbols = listOf("BTC/IDR"), tradeLedger = ledger)
+        val seed = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 50_000.0), 1_000L).single(); assertTrue(seed.success)
+        market.bearishSymbol = "BTC/IDR"
+        val status = runtime.tick(2_000L)
+        assertTrue(status.lastDecision!!.action == AgentAction.CLOSE)
+        assertTrue(status.lastDecision!!.rationale.contains("initial_holding_protected_by_tp_sl"))
+        assertTrue(status.entryPlanReasons.any { it == "ai_close_waiting_initial_holding_tp_sl" })
+        assertTrue(status.activePositions.any { it.entryReason == "initial_holding" })
+        assertEquals(0, ledger.closedCount)
+    }
+
+    @Test fun nonInitialAiCloseIsDeferredUntilMinimumHoldTimeAndExplained() {
+        val market = ScenarioMarket(); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(maxOpenPositions = 3), marketData = market, symbol = "BTC/IDR", managedSymbols = listOf("BTC/IDR"), tradeLedger = ledger)
+        market.bearishSymbol = null
+        val opened = runtime.tick(1_000L).activePositions.single()
+        market.bearishSymbol = "BTC/IDR"
+        val deferred = runtime.tick(opened.openedAtEpochMs + 30_000L)
+        assertTrue(deferred.lastDecision!!.action == AgentAction.CLOSE)
+        assertTrue(deferred.lastDecision!!.rationale.contains("ai_close_deferred_min_hold_60s"))
+        assertTrue(deferred.entryPlanReasons.any { it == "ai_close_waiting_min_hold_60s" })
+        assertTrue(deferred.activePositions.any { it.id == opened.id })
+        assertEquals(0, ledger.closedCount)
+    }
+
     @Test fun takeProfitAfterSeedKeepsRuntimeAvailableForReentry() {
         val market = MutableMarket(10_000.0); val ledger = RecordingLedger(); val runtime = MireiPaperTradingRuntime(config = TradingConfig(maxOpenPositions = 3), marketData = market, symbol = "BTC/IDR", managedSymbols = listOf("BTC/IDR"), tradeLedger = ledger)
         val seed = runtime.seedInitialHoldings(mapOf("BTC/IDR" to 150_000.0), 1_000L).single(); assertTrue(seed.success); val position = runtime.paperEngine().positions().single(); market.price = position.takeProfitPrice * 1.01
