@@ -231,7 +231,7 @@ class MireiDashboardApplicationV2 : Application() {
     }
 
     private fun invokeStartDialog(a: MainActivity) {
-        runCatching { MainActivity::class.java.getDeclaredMethod("showStartDialog").apply { isAccessible = true }.invoke(a) }.onFailure { showMessage(a, "Form MULAI tidak dapat dibuka: ${it.message ?: "error"}") }
+        MireiStartSessionDialog.show(a)
     }
 
     private fun topUp(a: MainActivity) {
