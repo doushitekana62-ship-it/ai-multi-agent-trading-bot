@@ -7,10 +7,10 @@ import org.junit.Test
 
 class TradingUniverseTest {
     @Test
-    fun currentPaperUniverseContainsAllSupportedIndodaxCryptoPairs() {
+    fun currentPaperUniverseContainsCryptoAndPaperObservationMarkets() {
         val expected = setOf(
-            "BTC/IDR", "ETH/IDR", "HYPE/IDR", "FARTCOIN/IDR", "SOL/IDR",
-            "XRP/IDR", "DOGE/IDR", "ADA/IDR", "SUI/IDR", "TRX/IDR",
+            "BTC/IDR", "ETH/IDR", "HYPE/IDR", "FARTCOIN/IDR", "SOL/IDR", "XRP/IDR", "DOGE/IDR", "ADA/IDR", "SUI/IDR", "TRX/IDR",
+            "AAPL", "TSLA", "EUR/USD", "GBP/USD", "XAU/USD", "WTI",
         )
         assertEquals(expected, TradingUniverse.paperReady().map { it.symbol }.toSet())
     }
