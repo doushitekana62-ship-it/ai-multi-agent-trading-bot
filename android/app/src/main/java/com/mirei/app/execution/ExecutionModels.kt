@@ -1,8 +1,10 @@
 package com.mirei.app.execution
 
 import com.mirei.app.core.EntryPlan
+import com.mirei.app.core.ExecutionCostProfile
 import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.core.TradingConfig
+import com.mirei.app.core.TradingUniverse
 
 interface ExchangeAdapter {
     val exchangeId: String
@@ -45,16 +47,14 @@ data class PaperPosition(
 
 data class PaperLimitOrder(val id: String, val exchangeId: String, val symbol: String, val quoteAmount: Double, val limitPrice: Double, val reservedIdr: Double, val createdAtEpochMs: Long)
 
-data class PaperEngineState(
-    val availableBalanceIdr: Double,
-    val positions: List<PaperPosition>,
-)
+data class PaperEngineState(val availableBalanceIdr: Double, val positions: List<PaperPosition>)
 
 class PaperExecutionEngine(
     private val config: TradingConfig = TradingConfig(),
     private val feePercent: Double = 0.3,
     private val slippagePercent: Double = 0.05,
     private val tradeLedger: TradeLedger? = null,
+    private val useInstrumentCosts: Boolean = false,
 ) {
     companion object {
         const val AI_CLOSE_WARMUP_MS = 60_000L
@@ -66,6 +66,14 @@ class PaperExecutionEngine(
     private var positionSequence = 0L
 
     init { require(feePercent >= 0.0); require(slippagePercent >= 0.0) }
+
+    private fun costsFor(symbol: String): ExecutionCostProfile = if (useInstrumentCosts) {
+        TradingUniverse.bySymbol(symbol)?.executionCosts ?: ExecutionCostProfile(
+            feePercent, feePercent, 0.0, slippagePercent
+        )
+    } else {
+        ExecutionCostProfile(feePercent, feePercent, 0.0, slippagePercent)
+    }
 
     fun seedExistingHolding(
         exchangeId: String,
@@ -110,8 +118,8 @@ class PaperExecutionEngine(
         if (!plan.allowed || plan.stakeIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         if (reservedIdr > 0.0 && reservedIdr + 1e-9 < plan.stakeIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
-
-        val allowPartialReentry = entryReason == "re_entry" || entryReason == "human_verified_re_entry" || entryReason == "tp_compound_reentry"
+        val costs = costsFor(symbol)
+        val allowPartialReentry = entryReason == "re_entry" || entryReason == "human_verified_re_entry" || entryReason == "tp_compound_reentry" || entryReason == "sl_re_entry"
         val effectiveStake = when {
             reservedIdr > 0.0 -> plan.stakeIdr
             allowPartialReentry -> minOf(plan.stakeIdr, availableBalanceIdr)
@@ -119,20 +127,22 @@ class PaperExecutionEngine(
             else -> return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
         }
         if (effectiveStake <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
+        if (effectiveStake + 1e-9 < costs.minimumOrderIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "minimum_order_not_met")
 
-        val entryFee = effectiveStake * feePercent / (100.0 + feePercent)
+        val entryFee = effectiveStake * costs.buyFeePercent / (100.0 + costs.buyFeePercent)
         val entryNotional = effectiveStake - entryFee
         val required = effectiveStake
         val before = availableBalanceIdr
         require(plan.entryPrice > 0.0)
-        val executionPrice = plan.entryPrice * (1.0 + slippagePercent / 100.0)
+        val entryMarketAdjustment = costs.spreadPercent / 2.0 + costs.slippagePercent
+        val executionPrice = plan.entryPrice * (1.0 + entryMarketAdjustment / 100.0)
         val entryRatio = executionPrice / plan.entryPrice
         val stakeScale = if (effectiveStake > 0.0) plan.stakeIdr / effectiveStake else 1.0
         val stopDistance = (plan.entryPrice - plan.stopLossPrice).coerceAtLeast(0.0) * if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
         val takeDistance = (plan.takeProfitPrice - plan.entryPrice).coerceAtLeast(0.0) * if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
         val trailingDistance = (plan.trailingActivationPrice - plan.entryPrice).coerceAtLeast(0.0) * if (plan.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) stakeScale else 1.0
-
-        val id = nextPositionId("paper", nowMs)
+        val executedAt = nowMs + costs.executionLatencyMs
+        val id = nextPositionId("paper", executedAt)
         val stopPrice = if (plan.stopLossPrice == 0.0) 0.0 else (executionPrice - stopDistance * entryRatio).coerceAtLeast(executionPrice * 0.000001)
         val position = PaperPosition(
             id = id,
@@ -143,7 +153,7 @@ class PaperExecutionEngine(
             stopLossPrice = stopPrice,
             takeProfitPrice = executionPrice + takeDistance * entryRatio,
             trailingActivationPrice = if (stopPrice == 0.0) 0.0 else executionPrice + trailingDistance * entryRatio,
-            openedAtEpochMs = nowMs,
+            openedAtEpochMs = executedAt,
             entryReason = entryReason,
             riskReferenceMode = plan.riskReferenceMode,
             riskReferenceCapitalIdr = plan.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: effectiveStake,
@@ -151,7 +161,7 @@ class PaperExecutionEngine(
         tradeLedger?.recordOpened(position, entryFee)
         if (reservedIdr <= 0.0) availableBalanceIdr -= required
         positions[id] = position
-        return ExecutionResult(true, id, entryNotional / executionPrice, executionPrice, entryFee, entryFee = entryFee, slippagePercent = slippagePercent, remainingBalanceIdr = availableBalanceIdr, reason = entryReason, balanceBeforeIdr = before)
+        return ExecutionResult(true, id, entryNotional / executionPrice, executionPrice, entryFee, entryFee = entryFee, slippagePercent = entryMarketAdjustment, remainingBalanceIdr = availableBalanceIdr, reason = entryReason, balanceBeforeIdr = before)
     }
 
     fun close(positionId: String, marketPrice: Double, reason: String, nowMs: Long = System.currentTimeMillis()): ExecutionResult {
@@ -161,20 +171,23 @@ class PaperExecutionEngine(
         if (reason == "ai_close" && ageMs < AI_CLOSE_WARMUP_MS) {
             return ExecutionResult(false, positionId, remainingBalanceIdr = availableBalanceIdr, reason = "ai_close_warmup_hold", error = "ai_close_warmup_hold")
         }
+        val costs = costsFor(position.symbol)
         val before = availableBalanceIdr
         val isInitial = position.entryReason == "initial_holding"
-        val executionPrice = marketPrice * (1.0 - slippagePercent / 100.0)
-        val entryFee = if (isInitial) 0.0 else position.stakeIdr * feePercent / (100.0 + feePercent)
+        val exitMarketAdjustment = costs.spreadPercent / 2.0 + costs.slippagePercent
+        val executionPrice = marketPrice * (1.0 - exitMarketAdjustment / 100.0)
+        val entryFee = if (isInitial) 0.0 else position.stakeIdr * costsFor(position.symbol).buyFeePercent / (100.0 + costsFor(position.symbol).buyFeePercent)
         val entryNotional = position.stakeIdr - entryFee
         val amount = entryNotional / position.entryPrice
         val exitNotional = executionPrice * amount
-        val exitFee = exitNotional * feePercent / 100.0
+        val exitFee = exitNotional * costs.sellFeePercent / 100.0
         val proceedsAfterFee = exitNotional - exitFee
         val netPnl = proceedsAfterFee - position.stakeIdr
-        tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, nowMs, reason)
+        val executedAt = nowMs + costs.executionLatencyMs
+        tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, executedAt, reason)
         availableBalanceIdr += proceedsAfterFee
         positions.remove(positionId)
-        return ExecutionResult(true, positionId, amount, executionPrice, exitFee, entryFee = entryFee, exitFee = exitFee, slippagePercent = slippagePercent, pnlIdr = netPnl, remainingBalanceIdr = availableBalanceIdr, reason = reason, balanceBeforeIdr = before)
+        return ExecutionResult(true, positionId, amount, executionPrice, exitFee, entryFee = entryFee, exitFee = exitFee, slippagePercent = exitMarketAdjustment, pnlIdr = netPnl, remainingBalanceIdr = availableBalanceIdr, reason = reason, balanceBeforeIdr = before)
     }
 
     fun placeLimit(exchangeId: String, symbol: String, quoteAmount: Double, limitPrice: Double, nowMs: Long): ExecutionResult {
@@ -201,7 +214,6 @@ class PaperExecutionEngine(
 
     fun cancelLimit(orderId: String): Boolean { val order = limitOrders.remove(orderId) ?: return false; availableBalanceIdr += order.reservedIdr; return true }
 
-    /** Adds paper cash without touching active positions. */
     fun topUp(amountIdr: Double): ExecutionResult {
         if (amountIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_top_up")
         val before = availableBalanceIdr
@@ -219,9 +231,11 @@ class PaperExecutionEngine(
             val stopAmount = referenceCapital * newConfig.effectiveStopLossPercent() / 100.0
             val takeAmount = referenceCapital * newConfig.effectiveTakeProfitPercent() / 100.0
             val stopPrice = if (newConfig.effectiveStopLossPercent() == 0.0) 0.0 else (position.entryPrice - stopAmount / quantity).coerceAtLeast(position.entryPrice * 0.000001)
+            val costs = costsFor(position.symbol)
+            val targets = newConfig.calculateRiskTargets(position.entryPrice, position.stakeIdr, referenceCapital, newConfig.effectiveStopLossPercent(), newConfig.effectiveTakeProfitPercent(), costs)
             positions[id] = position.copy(
                 stopLossPrice = stopPrice,
-                takeProfitPrice = position.entryPrice + takeAmount / quantity,
+                takeProfitPrice = targets.takeProfitPrice,
                 trailingActivationPrice = if (stopPrice == 0.0) 0.0 else position.entryPrice + stopAmount / quantity,
                 riskReferenceMode = newConfig.riskReferenceMode,
                 riskReferenceCapitalIdr = referenceCapital,
@@ -245,7 +259,7 @@ class PaperExecutionEngine(
     fun pendingLimitOrders(): List<PaperLimitOrder> = limitOrders.values.toList()
     fun availableBalanceIdr(): Double = availableBalanceIdr
     fun reservedBalanceIdr(): Double = limitOrders.values.sumOf { it.reservedIdr }
-    fun equityIdr(markPrices: Map<String, Double>): Double = availableBalanceIdr + reservedBalanceIdr() + positions.values.sumOf { position -> val mark = markPrices[position.symbol] ?: position.entryPrice; val entryFee = if (position.entryReason == "initial_holding") 0.0 else position.stakeIdr * feePercent / (100.0 + feePercent); val entryNotional = position.stakeIdr - entryFee; mark.coerceAtLeast(0.0) * (entryNotional / position.entryPrice) }
+    fun equityIdr(markPrices: Map<String, Double>): Double = availableBalanceIdr + reservedBalanceIdr() + positions.values.sumOf { position -> val mark = markPrices[position.symbol] ?: position.entryPrice; val costs = costsFor(position.symbol); val entryFee = if (position.entryReason == "initial_holding") 0.0 else position.stakeIdr * costs.buyFeePercent / (100.0 + costs.buyFeePercent); val entryNotional = position.stakeIdr - entryFee; mark.coerceAtLeast(0.0) * (entryNotional / position.entryPrice) }
 
     fun snapshotState(): PaperEngineState = PaperEngineState(availableBalanceIdr, positions.values.toList())
 
