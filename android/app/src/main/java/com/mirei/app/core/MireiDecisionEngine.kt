@@ -26,6 +26,9 @@ data class MarketSnapshot(
     val lastTradeEpochMs: Long = 0L,
     val snapshotEpochMs: Long = 0L,
     val sourceAgeMs: Long = 0L,
+    val assetClass: AssetClass = AssetClass.CRYPTO,
+    val providerId: String = "paper",
+    val quoteCurrency: String = "IDR",
 )
 
 data class EntryPlan(
@@ -57,10 +60,6 @@ class MireiDecisionEngine(
         if (snapshot.price <= 0.0) reasons += "invalid_price"
         if (snapshot.forecastConfidence < minimumConfidence()) reasons += "forecast_confidence_low"
         if (snapshot.sentimentScore <= config.sentimentHoldThreshold) reasons += "negative_sentiment_hold"
-
-        // Neutral/weak momentum is not itself a blocker. The agent vote determines
-        // HOLD vs BUY, while only strongly negative momentum prevents a BUY that is
-        // otherwise unsupported by market conditions.
         if (snapshot.momentumPercent < -2.0) reasons += "momentum_strongly_negative"
 
         if (!risk.allowedToOpen || reasons.isNotEmpty()) {
