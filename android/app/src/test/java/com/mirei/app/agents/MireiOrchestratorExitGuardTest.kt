@@ -2,8 +2,8 @@ package com.mirei.app.agents
 
 import com.mirei.app.core.DecisionMode
 import com.mirei.app.core.MarketSnapshot
-import kotlin.test.Test
-import kotlin.test.assertEquals
+import org.junit.Assert.assertEquals
+import org.junit.Test
 
 class MireiOrchestratorExitGuardTest {
     @Test
