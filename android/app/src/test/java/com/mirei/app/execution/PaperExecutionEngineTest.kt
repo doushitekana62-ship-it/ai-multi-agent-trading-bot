@@ -11,6 +11,29 @@ class PaperExecutionEngineTest {
 
     @Test fun openAndCloseCalculatesNetPnl() { val engine = PaperExecutionEngine(feePercent = 0.3, slippagePercent = 0.05); val opened = engine.open("paper-exchange", "BTC/IDR", plan, 1000L); assertTrue(opened.success); assertEquals(1, engine.positionCount()); val closed = engine.close(opened.orderId!!, 1_010_000.0, "take_profit", 2000L); assertTrue(closed.success); assertTrue(closed.pnlIdr > 0.0); assertEquals(0, engine.positionCount()) }
 
+    @Test fun aiCloseIsHeldDuringWarmupButProtectiveCloseStillWorks() {
+        val engine = PaperExecutionEngine(feePercent = 0.0, slippagePercent = 0.0)
+        val opened = engine.open("paper", "BTC/IDR", plan, 1_000L)
+        assertTrue(opened.success)
+        val earlyAiClose = engine.close(opened.orderId!!, 999_000.0, "ai_close", 1_000L + PaperExecutionEngine.AI_CLOSE_WARMUP_MS - 1)
+        assertTrue(!earlyAiClose.success)
+        assertEquals("ai_close_warmup_hold", earlyAiClose.reason)
+        assertEquals(1, engine.positionCount())
+        val stopClose = engine.close(opened.orderId!!, 999_000.0, "stop_loss", 1_001L)
+        assertTrue(stopClose.success)
+        assertEquals(0, engine.positionCount())
+    }
+
+    @Test fun aiCloseWorksAfterWarmup() {
+        val engine = PaperExecutionEngine(feePercent = 0.0, slippagePercent = 0.0)
+        val opened = engine.open("paper", "BTC/IDR", plan, 1_000L)
+        assertTrue(opened.success)
+        val closed = engine.close(opened.orderId!!, 1_000_000.0, "ai_close", 1_000L + PaperExecutionEngine.AI_CLOSE_WARMUP_MS)
+        assertTrue(closed.success)
+        assertEquals("ai_close", closed.reason)
+        assertEquals(0, engine.positionCount())
+    }
+
     @Test fun invalidClosePriceDoesNotRemovePosition() { val engine = PaperExecutionEngine(); val opened = engine.open("paper-exchange", "BTC/IDR", plan, 1000L); val closed = engine.close(opened.orderId!!, 0.0, "invalid"); assertTrue(!closed.success); assertEquals(1, engine.positionCount()) }
 
     @Test fun ledgerFailureDoesNotCommitOpenState() { val ledger = object : TradeLedger { override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) { error("ledger_down") }; override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) = Unit }; val engine = PaperExecutionEngine(tradeLedger = ledger); var failed = false; try { engine.open("paper", "BTC/IDR", plan, 1000L) } catch (_: IllegalStateException) { failed = true }; assertTrue(failed); assertEquals(0, engine.positionCount()); assertEquals(150_000.0, engine.availableBalanceIdr(), 0.001) }
