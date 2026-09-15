@@ -112,7 +112,14 @@ object MireiStartSessionDialog {
             .setPositiveButton("MULAI", null)
             .create()
         dialog.setOnShowListener {
+            // Keep the action buttons outside the scrollable form. The form gets a
+            // bounded height so MULAI/BATAL remain visible on short phone screens.
             dialog.window?.setLayout((activity.resources.displayMetrics.widthPixels * 0.94f).toInt(), (activity.resources.displayMetrics.heightPixels * 0.88f).toInt())
+            scroll.layoutParams = scroll.layoutParams.apply {
+                height = (activity.resources.displayMetrics.heightPixels * 0.58f).toInt()
+                width = ViewGroup.LayoutParams.MATCH_PARENT
+            }
+            scroll.requestLayout()
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val selected = rows.mapNotNull { (market, pair) ->
                     val (check, amount) = pair
