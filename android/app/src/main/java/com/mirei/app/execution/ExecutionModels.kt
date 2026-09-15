@@ -56,6 +56,10 @@ class PaperExecutionEngine(
     private val slippagePercent: Double = 0.05,
     private val tradeLedger: TradeLedger? = null,
 ) {
+    companion object {
+        const val AI_CLOSE_WARMUP_MS = 60_000L
+    }
+
     private var availableBalanceIdr = config.totalCapitalIdr
     private val positions = linkedMapOf<String, PaperPosition>()
     private val limitOrders = linkedMapOf<String, PaperLimitOrder>()
@@ -153,6 +157,10 @@ class PaperExecutionEngine(
     fun close(positionId: String, marketPrice: Double, reason: String, nowMs: Long = System.currentTimeMillis()): ExecutionResult {
         if (marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "invalid_market_price")
         val position = positions[positionId] ?: return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reason, error = "paper_position_not_found")
+        val ageMs = (nowMs - position.openedAtEpochMs).coerceAtLeast(0L)
+        if (reason == "ai_close" && ageMs < AI_CLOSE_WARMUP_MS) {
+            return ExecutionResult(false, positionId, remainingBalanceIdr = availableBalanceIdr, reason = "ai_close_warmup_hold", error = "ai_close_warmup_hold")
+        }
         val before = availableBalanceIdr
         val isInitial = position.entryReason == "initial_holding"
         val executionPrice = marketPrice * (1.0 - slippagePercent / 100.0)
