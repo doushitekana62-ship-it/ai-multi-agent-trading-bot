@@ -27,6 +27,8 @@ data class TradingConfig(
     val manualRiskMode: ManualRiskMode = ManualRiskMode.AUTO,
     val manualStopLossPercent: Double? = null,
     val manualTakeProfitPercent: Double? = null,
+    /** When set, manual TP is a net realized IDR target after execution costs. */
+    val manualNetProfitTargetIdr: Double? = null,
     val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
 ) {
     init {
@@ -40,15 +42,14 @@ data class TradingConfig(
         require(maxConsecutiveLosses > 0)
         if (manualRiskMode == ManualRiskMode.MANUAL) {
             require(manualStopLossPercent != null && manualStopLossPercent > 0)
-            require(manualTakeProfitPercent != null && manualTakeProfitPercent > manualStopLossPercent)
+            require((manualTakeProfitPercent != null && manualTakeProfitPercent > manualStopLossPercent) || (manualNetProfitTargetIdr != null && manualNetProfitTargetIdr > 0.0))
         }
+        if (manualNetProfitTargetIdr != null) require(manualNetProfitTargetIdr > 0.0)
     }
 
     fun effectiveStopLossPercent(): Double = when (manualRiskMode) {
         ManualRiskMode.MANUAL -> manualStopLossPercent!!
         ManualRiskMode.AUTO -> when (mode) {
-            // Aggressive is tighter and more responsive, but every position still
-            // has explicit downside protection as required by the trading spec.
             ScalpingMode.AGGRESSIVE -> 0.40
             ScalpingMode.BALANCED -> 0.50
             ScalpingMode.SAFETY -> 0.65
@@ -56,7 +57,7 @@ data class TradingConfig(
     }
 
     fun effectiveTakeProfitPercent(): Double = when (manualRiskMode) {
-        ManualRiskMode.MANUAL -> manualTakeProfitPercent!!
+        ManualRiskMode.MANUAL -> manualTakeProfitPercent ?: baseTakeProfitPercent
         ManualRiskMode.AUTO -> when (mode) {
             ScalpingMode.AGGRESSIVE -> 1.00
             ScalpingMode.BALANCED -> 1.00
@@ -65,9 +66,9 @@ data class TradingConfig(
     }
 
     /**
-     * Calculates exit thresholds only. This function is deliberately outside
-     * Mirei's entry decision gates: changing riskReferenceMode must never turn
-     * a BUY/SELL/HOLD decision into another decision.
+     * Calculates exit thresholds only. Entry/exit decisions remain outside this
+     * function. A manual IDR target, when configured, solves the TP price from
+     * the expected buy/sell fee and slippage so the target represents net PnL.
      */
     fun calculateRiskTargets(
         entryPrice: Double,
@@ -75,12 +76,13 @@ data class TradingConfig(
         initialCapitalIdr: Double = stakeIdr,
         stopLossPercent: Double = effectiveStopLossPercent(),
         takeProfitPercent: Double = effectiveTakeProfitPercent(),
+        executionCosts: ExecutionCostProfile? = null,
     ): RiskTargets {
         require(entryPrice > 0.0)
         require(stakeIdr > 0.0)
         require(initialCapitalIdr > 0.0)
         require(stopLossPercent > 0.0)
-        require(takeProfitPercent > stopLossPercent)
+        require(takeProfitPercent > stopLossPercent || manualNetProfitTargetIdr != null)
 
         val quantity = stakeIdr / entryPrice
         val referenceCapital = when (riskReferenceMode) {
@@ -88,9 +90,21 @@ data class TradingConfig(
             RiskReferenceMode.INITIAL_CAPITAL -> initialCapitalIdr
         }
         val stopLossAmountIdr = referenceCapital * stopLossPercent / 100.0
-        val takeProfitAmountIdr = referenceCapital * takeProfitPercent / 100.0
+        val configuredTakeProfitAmountIdr = referenceCapital * takeProfitPercent / 100.0
         val stopLossPrice = (entryPrice - (stopLossAmountIdr / quantity)).coerceAtLeast(entryPrice * 0.000001)
-        val takeProfitPrice = entryPrice + (takeProfitAmountIdr / quantity)
+
+        val netTarget = manualNetProfitTargetIdr
+        val takeProfitPrice = if (manualRiskMode == ManualRiskMode.MANUAL && netTarget != null && executionCosts != null) {
+            val buyFeeIdr = stakeIdr * executionCosts.buyFeePercent / (100.0 + executionCosts.buyFeePercent)
+            val entryNotional = stakeIdr - buyFeeIdr
+            val executionEntryPrice = entryPrice * (1.0 + (executionCosts.spreadPercent / 2.0 + executionCosts.slippagePercent) / 100.0)
+            val executedQuantity = entryNotional / executionEntryPrice
+            val exitMultiplier = (1.0 - (executionCosts.spreadPercent / 2.0 + executionCosts.slippagePercent) / 100.0) * (1.0 - executionCosts.sellFeePercent / 100.0)
+            ((stakeIdr + netTarget) / (executedQuantity * exitMultiplier)).coerceAtLeast(entryPrice * 1.000001)
+        } else {
+            entryPrice + (configuredTakeProfitAmountIdr / quantity)
+        }
+        val takeProfitAmountIdr = if (netTarget != null) netTarget else configuredTakeProfitAmountIdr
 
         return RiskTargets(
             stopLossPrice = stopLossPrice,
