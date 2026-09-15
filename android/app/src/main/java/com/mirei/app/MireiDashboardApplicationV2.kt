@@ -28,199 +28,46 @@ import java.text.NumberFormat
 import java.util.Locale
 import java.util.WeakHashMap
 
-/** Single dashboard owner for RINGKASAN and effective settings. */
 class MireiDashboardApplicationV2 : Application() {
-    private val installed = WeakHashMap<MainActivity, Boolean>()
-    private val wrappers = WeakHashMap<MainActivity, LinearLayout>()
-    private val dashboards = WeakHashMap<MainActivity, LinearLayout>()
-    private val settingsPanels = WeakHashMap<MainActivity, LinearLayout>()
-    private val refreshers = WeakHashMap<MainActivity, Runnable>()
-    private val handler = Handler(Looper.getMainLooper())
-
-    override fun onCreate() {
-        super.onCreate()
-        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
-            override fun onActivityResumed(activity: Activity) { if (activity is MainActivity) install(activity) }
-            override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
-            override fun onActivityStarted(activity: Activity) = Unit
-            override fun onActivityPaused(activity: Activity) { if (activity is MainActivity) refreshers.remove(activity)?.let(handler::removeCallbacks) }
-            override fun onActivityStopped(activity: Activity) = Unit
-            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-            override fun onActivityDestroyed(activity: Activity) {
-                if (activity is MainActivity) {
-                    refreshers.remove(activity)?.let(handler::removeCallbacks)
-                    installed.remove(activity); wrappers.remove(activity); dashboards.remove(activity); settingsPanels.remove(activity)
-                }
-            }
-        })
-    }
-
-    private fun install(activity: MainActivity) {
-        if (installed.put(activity, true) == true) { scheduleRefresh(activity); return }
-        handler.post { reconcileMenu(activity) }
-        scheduleRefresh(activity)
-    }
-
-    private fun scheduleRefresh(activity: MainActivity) {
-        if (refreshers.containsKey(activity)) return
-        val r = object : Runnable {
-            override fun run() {
-                reconcileMenu(activity); refreshDashboard(activity); refreshSettings(activity)
-                if (installed[activity] == true) handler.postDelayed(this, 500L)
-            }
-        }
-        refreshers[activity] = r; handler.post(r)
-    }
-
+    private val installed = WeakHashMap<MainActivity, Boolean>(); private val wrappers = WeakHashMap<MainActivity, LinearLayout>(); private val dashboards = WeakHashMap<MainActivity, LinearLayout>(); private val settingsPanels = WeakHashMap<MainActivity, LinearLayout>(); private val marketPanels = WeakHashMap<MainActivity, LinearLayout>(); private val refreshers = WeakHashMap<MainActivity, Runnable>(); private val handler = Handler(Looper.getMainLooper())
+    override fun onCreate() { super.onCreate(); registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+        override fun onActivityResumed(activity: Activity) { if (activity is MainActivity) install(activity) }
+        override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit; override fun onActivityStarted(activity: Activity) = Unit
+        override fun onActivityPaused(activity: Activity) { if (activity is MainActivity) refreshers.remove(activity)?.let(handler::removeCallbacks) }
+        override fun onActivityStopped(activity: Activity) = Unit; override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+        override fun onActivityDestroyed(activity: Activity) { if (activity is MainActivity) { refreshers.remove(activity)?.let(handler::removeCallbacks); installed.remove(activity); wrappers.remove(activity); dashboards.remove(activity); settingsPanels.remove(activity); marketPanels.remove(activity) } }
+    }) }
+    private fun install(activity: MainActivity) { if (installed.put(activity, true) == true) { scheduleRefresh(activity); return }; handler.post { reconcileMenu(activity) }; scheduleRefresh(activity) }
+    private fun scheduleRefresh(activity: MainActivity) { if (refreshers.containsKey(activity)) return; val r = object : Runnable { override fun run() { reconcileMenu(activity); refreshDashboard(activity); refreshSettings(activity); refreshMarket(activity); if (installed[activity] == true) handler.postDelayed(this, 500L) } }; refreshers[activity] = r; handler.post(r) }
     private fun reconcileMenu(activity: MainActivity) {
-        val menu = findMenu(activity.window.decorView) ?: return
-        val wrapper = ensureWrapper(activity) ?: return
-        val selected = menu.selectedItem?.toString()
-        val content = content(activity) ?: return
-        if (selected == "RINGKASAN") {
-            content.visibility = View.GONE
-            ensureDashboard(activity, wrapper)
-            dashboards[activity]?.visibility = View.VISIBLE
-            settingsPanels[activity]?.visibility = View.GONE
-        } else if (selected == "PENGATURAN") {
-            content.visibility = View.GONE
-            ensureSettings(activity, wrapper)
-            dashboards[activity]?.visibility = View.GONE
-            settingsPanels[activity]?.visibility = View.VISIBLE
-        } else {
-            content.visibility = View.VISIBLE
-            dashboards[activity]?.visibility = View.GONE
-            settingsPanels[activity]?.visibility = View.GONE
+        val menu = findMenu(activity.window.decorView) ?: return; val wrapper = ensureWrapper(activity) ?: return; val selected = menu.selectedItem?.toString(); val content = content(activity) ?: return
+        when (selected) {
+            "RINGKASAN" -> { content.visibility = View.GONE; ensureDashboard(activity, wrapper); dashboards[activity]?.visibility = View.VISIBLE; settingsPanels[activity]?.visibility = View.GONE; marketPanels[activity]?.visibility = View.GONE }
+            "PENGATURAN" -> { content.visibility = View.GONE; ensureSettings(activity, wrapper); dashboards[activity]?.visibility = View.GONE; settingsPanels[activity]?.visibility = View.VISIBLE; marketPanels[activity]?.visibility = View.GONE }
+            "PASAR" -> { content.visibility = View.GONE; ensureMarket(activity, wrapper); dashboards[activity]?.visibility = View.GONE; settingsPanels[activity]?.visibility = View.GONE; marketPanels[activity]?.visibility = View.VISIBLE }
+            else -> { content.visibility = View.VISIBLE; dashboards[activity]?.visibility = View.GONE; settingsPanels[activity]?.visibility = View.GONE; marketPanels[activity]?.visibility = View.GONE }
         }
     }
+    private fun ensureWrapper(activity: MainActivity): LinearLayout? { wrappers[activity]?.let { return it }; val content = content(activity) ?: return null; var parent = content.parent; var scroll: ScrollView? = null; while (parent != null) { if (parent is ScrollView) { scroll = parent; break }; parent = parent.parent }; val host = scroll ?: return null; val child = host.getChildAt(0); if (child is LinearLayout && child.getTag() == WRAPPER_TAG) { wrappers[activity] = child; return child }; if (host.childCount != 1 || child !== content) return null; host.removeView(content); val wrapper = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setTag(WRAPPER_TAG) }; wrapper.addView(content, LinearLayout.LayoutParams(-1, -2)); host.addView(wrapper, ViewGroup.LayoutParams(-1, -2)); wrappers[activity] = wrapper; return wrapper }
+    private fun ensureDashboard(activity: MainActivity, wrapper: LinearLayout) { dashboards[activity]?.let { if (it.parent === wrapper) return }; (wrapper.findViewWithTag<View>(DASHBOARD_TAG) as? LinearLayout)?.let { dashboards[activity] = it; return }; val dashboard = buildDashboard(activity, currentIntent(activity) ?: Intent()); wrapper.addView(dashboard, LinearLayout.LayoutParams(-1, -2)); dashboards[activity] = dashboard }
+    private fun ensureSettings(activity: MainActivity, wrapper: LinearLayout) { settingsPanels[activity]?.let { if (it.parent === wrapper) return }; (wrapper.findViewWithTag<View>(SETTINGS_TAG) as? LinearLayout)?.let { settingsPanels[activity] = it; return }; val panel = buildSettings(activity); wrapper.addView(panel, LinearLayout.LayoutParams(-1, -2)); settingsPanels[activity] = panel }
+    private fun ensureMarket(activity: MainActivity, wrapper: LinearLayout) { marketPanels[activity]?.let { if (it.parent === wrapper) return }; (wrapper.findViewWithTag<View>(MARKET_TAG) as? LinearLayout)?.let { marketPanels[activity] = it; return }; val panel = buildMarket(activity, currentIntent(activity) ?: Intent()); wrapper.addView(panel, LinearLayout.LayoutParams(-1, -2)); marketPanels[activity] = panel }
 
-    private fun ensureWrapper(activity: MainActivity): LinearLayout? {
-        wrappers[activity]?.let { return it }
-        val content = content(activity) ?: return null
-        var parent = content.parent
-        var scroll: ScrollView? = null
-        while (parent != null) { if (parent is ScrollView) { scroll = parent; break }; parent = parent.parent }
-        val host = scroll ?: return null
-        val child = host.getChildAt(0)
-        if (child is LinearLayout && child.getTag() == WRAPPER_TAG) { wrappers[activity] = child; return child }
-        if (host.childCount != 1 || child !== content) return null
-        host.removeView(content)
-        val wrapper = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setTag(WRAPPER_TAG) }
-        wrapper.addView(content, LinearLayout.LayoutParams(-1, -2)); host.addView(wrapper, ViewGroup.LayoutParams(-1, -2)); wrappers[activity] = wrapper
-        return wrapper
-    }
+    private fun buildSettings(a: MainActivity) = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setTag(SETTINGS_TAG); addTitle(this, "PENGATURAN AKTIF"); addView(card(a, activeSettingsText(a), 14f).apply { setTag(TAG_SETTINGS) }, params(4)); addTitle(this, "ATURAN EFEKTIF"); addView(card(a, "Jika TP/SL MANUAL aktif, mode AGGRESSIVE/BALANCED/SAFETY tidak menjadi sumber TP/SL. Target manual adalah target profit bersih setelah biaya simulasi.\n\nRe-entry TP mempertahankan modal siklus pertama dan tidak otomatis menggabungkan profit ke modal berikutnya.\n\nProvider market ditentukan oleh MarketInstrument.", 13f), params(4)); addView(action(a, "UBAH MODE / TP / SL") { MireiStartSessionDialog.show(a) }, params(4)); addView(action(a, "RESET TIMESTAMP") { send(a, MireiForegroundService.ACTION_RESET_CLOCK) }, params(4)); addView(action(a, "HAPUS RIWAYAT DATABASE") { send(a, MireiForegroundService.ACTION_DELETE_HISTORY) }, params(4)) }
+    private fun refreshSettings(a: MainActivity) { val panel = settingsPanels[a] ?: return; if (findMenu(a.window.decorView)?.selectedItem?.toString() != "PENGATURAN") return; (panel.findViewWithTag<View>(TAG_SETTINGS) as? TextView)?.text = activeSettingsText(a) }
+    private fun activeSettingsText(a: MainActivity): String { val prefs = a.getSharedPreferences("mirei_settings", Context.MODE_PRIVATE); val manual = prefs.getBoolean("manual_risk", false); val mode = prefs.getString("mode", "BALANCED") ?: "BALANCED"; val sl = prefs.getString("manual_sl", "0.50") ?: "0.50"; val net = prefs.getString("manual_net_target", "30") ?: "30"; val basis = prefs.getString("risk_basis", RiskReferenceMode.ENTRY_PRICE.name) ?: RiskReferenceMode.ENTRY_PRICE.name; val intent = currentIntent(a); val symbol = intent?.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: "belum dipilih"; val instrument = TradingUniverse.bySymbol(symbol); val provider = instrument?.providerId?.uppercase(Locale.US) ?: (intent?.getStringExtra(MireiForegroundService.EXTRA_EXCHANGE)?.uppercase(Locale.US) ?: "—"); val market = instrument?.assetClass?.label ?: "—"; return "Market aktif: $symbol\nJenis market: $market\nProvider: $provider\n\nMode efektif: ${if (manual) "MANUAL TP/SL" else mode}\nTP efektif: ${if (manual) "target profit bersih Rp ${money(net.toDoubleOrNull() ?: 0.0)}" else "mengikuti mode $mode"}\nSL efektif: ${if (manual) "$sl%" else "otomatis mengikuti mode $mode"}\nDasar TP/SL: ${if (basis == RiskReferenceMode.INITIAL_CAPITAL.name) "MODAL BELI PERTAMA" else "HARGA ENTRY"}\nDecision Mode: SUGGESTION" }
 
-    private fun ensureDashboard(activity: MainActivity, wrapper: LinearLayout) {
-        dashboards[activity]?.let { if (it.parent === wrapper) return }
-        (wrapper.findViewWithTag<View>(DASHBOARD_TAG) as? LinearLayout)?.let { dashboards[activity] = it; return }
-        val dashboard = buildDashboard(activity, currentIntent(activity) ?: Intent()); wrapper.addView(dashboard, LinearLayout.LayoutParams(-1, -2)); dashboards[activity] = dashboard
-    }
+    private data class MarketRow(val symbol: String, val type: String, val provider: String, val price: String, val change1m: String, val momentum: String, val trend: String, val age: String)
+    private fun parseMarket(raw: String): List<MarketRow> = raw.lines().mapNotNull { line -> val p = line.split('|'); if (p.size >= 9 && p[1] in setOf("Crypto", "Saham", "Forex", "Komoditas")) MarketRow(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[8]) else if (p.size >= 5) MarketRow(p[0], "Crypto", "indodax", p[1], p[2], p[3], p[4], "—") else null }
+    private fun buildMarket(a: MainActivity, i: Intent) = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setTag(MARKET_TAG); addTitle(this, "PASAR · MARKET RECOMMENDATION"); val fresh = i.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false); addView(card(a, if (fresh) "DATA MARKET SEGAR · provider/freshness ditampilkan per instrument" else "LOADING / SEARCHING MARKET DATA", 13f), params(4)); val rows = parseMarket(i.getStringExtra(MireiForegroundService.EXTRA_SCANNER).orEmpty()); val table = TableLayout(a).apply { isStretchAllColumns = false }; table.addView(row(a, listOf("TYPE", "INSTRUMENT", "PROVIDER", "PRICE", "1M", "TREND", "AGE"), true)); rows.forEach { r -> table.addView(row(a, listOf(r.type, r.symbol, r.provider, r.price, signed(r.change1m), signed(r.trend), r.age), false)) }; addView(table, params(4)); addTitle(this, "SUGGEST TRADE"); val ranked = rows.sortedByDescending { parseValue(it.trend) * 0.5 + parseValue(it.momentum) * 0.3 + parseValue(it.change1m) * 0.2 }.take(5); if (ranked.isEmpty()) addView(card(a, "Belum ada data market yang fresh.", 12f), params(4)) else ranked.forEachIndexed { index, r -> addView(card(a, "${index + 1}. ${r.symbol} · ${r.type}\nProvider: ${r.provider} · 1M ${signed(r.change1m)}% · Trend ${signed(r.trend)}% · age ${r.age}ms", 12f), params(4)) }; addView(card(a, "SUGGEST TRADE adalah rekomendasi market, bukan perintah BUY. Keputusan entry tetap melewati gate Mirei.", 12f), params(4)) }
+    private fun refreshMarket(a: MainActivity) { val panel = marketPanels[a] ?: return; if (findMenu(a.window.decorView)?.selectedItem?.toString() != "PASAR") return; val replacement = buildMarket(a, currentIntent(a) ?: Intent()); val wrapper = panel.parent as? ViewGroup ?: return; val index = wrapper.indexOfChild(panel); wrapper.removeViewAt(index); wrapper.addView(replacement, index, LinearLayout.LayoutParams(-1, -2)); marketPanels[a] = replacement }
 
-    private fun ensureSettings(activity: MainActivity, wrapper: LinearLayout) {
-        settingsPanels[activity]?.let { if (it.parent === wrapper) return }
-        (wrapper.findViewWithTag<View>(SETTINGS_TAG) as? LinearLayout)?.let { settingsPanels[activity] = it; return }
-        val panel = buildSettings(activity); wrapper.addView(panel, LinearLayout.LayoutParams(-1, -2)); settingsPanels[activity] = panel
-    }
-
-    private fun buildSettings(a: MainActivity) = LinearLayout(a).apply {
-        orientation = LinearLayout.VERTICAL; setTag(SETTINGS_TAG)
-        addTitle(this, "PENGATURAN AKTIF")
-        addView(card(a, activeSettingsText(a), 14f).apply { setTag(TAG_SETTINGS) }, params(4))
-        addTitle(this, "ATURAN EFEKTIF")
-        addView(card(a, "Jika TP/SL MANUAL aktif, mode AGGRESSIVE/BALANCED/SAFETY tidak menjadi sumber TP/SL. Target manual adalah target profit bersih setelah biaya simulasi.\n\nRe-entry TP mempertahankan modal siklus pertama dan tidak otomatis menggabungkan profit ke modal berikutnya.\n\nProvider market ditentukan oleh MarketInstrument, bukan diasumsikan sama untuk semua asset class.", 13f), params(4))
-        addView(action(a, "UBAH MODE / TP / SL") { MireiStartSessionDialog.show(a) }, params(4))
-        addView(action(a, "RESET TIMESTAMP") { send(a, MireiForegroundService.ACTION_RESET_CLOCK) }, params(4))
-        addView(action(a, "HAPUS RIWAYAT DATABASE") { send(a, MireiForegroundService.ACTION_DELETE_HISTORY) }, params(4))
-    }
-
-    private fun refreshSettings(a: MainActivity) {
-        val panel = settingsPanels[a] ?: return
-        if (findMenu(a.window.decorView)?.selectedItem?.toString() != "PENGATURAN") return
-        (panel.findViewWithTag<View>(TAG_SETTINGS) as? TextView)?.text = activeSettingsText(a)
-    }
-
-    private fun activeSettingsText(a: MainActivity): String {
-        val prefs = a.getSharedPreferences("mirei_settings", Context.MODE_PRIVATE)
-        val manual = prefs.getBoolean("manual_risk", false)
-        val mode = prefs.getString("mode", "BALANCED") ?: "BALANCED"
-        val sl = prefs.getString("manual_sl", "0.50") ?: "0.50"
-        val net = prefs.getString("manual_net_target", "30") ?: "30"
-        val basis = prefs.getString("risk_basis", RiskReferenceMode.ENTRY_PRICE.name) ?: RiskReferenceMode.ENTRY_PRICE.name
-        val intent = currentIntent(a)
-        val symbol = intent?.getStringExtra(MireiForegroundService.EXTRA_SYMBOL) ?: "belum dipilih"
-        val instrument = TradingUniverse.bySymbol(symbol)
-        val provider = instrument?.providerId?.uppercase(Locale.US) ?: (intent?.getStringExtra(MireiForegroundService.EXTRA_EXCHANGE)?.uppercase(Locale.US) ?: "—")
-        val market = instrument?.assetClass?.label ?: "—"
-        return "Market aktif: $symbol\nJenis market: $market\nProvider: $provider\n\nMode efektif: ${if (manual) "MANUAL TP/SL" else mode}\nTP efektif: ${if (manual) "target profit bersih Rp ${money(net.toDoubleOrNull() ?: 0.0)}" else "mengikuti mode $mode"}\nSL efektif: ${if (manual) "$sl%" else "otomatis mengikuti mode $mode"}\nDasar TP/SL: ${if (basis == RiskReferenceMode.INITIAL_CAPITAL.name) "MODAL BELI PERTAMA" else "HARGA ENTRY"}\nDecision Mode: SUGGESTION"
-    }
-
-    private fun buildDashboard(a: MainActivity, i: Intent) = LinearLayout(a).apply {
-        orientation = LinearLayout.VERTICAL; setTag(DASHBOARD_TAG)
-        addTitle(this, "DASHBOARD · RINGKASAN")
-        addView(card(a, statusText(i), 15f).apply { setTag(TAG_STATUS) }, params(4))
-        addView(card(a, equityText(a, i), 14f).apply { setTag(TAG_EQUITY) }, params(6))
-        addTitle(this, "AI VS ACTUAL · SESI INI")
-        addView(buildAiTable(a, i), params(2))
-        addView(card(a, "BUY/OPEN = keputusan AI atau pembukaan paper. HOLD/ACTIVE = tidak ada order HOLD; angka ACTIVE adalah posisi nyata yang sedang terbuka. SELL/CLOSE = keputusan AI atau posisi yang benar-benar ditutup.", 12f), params(5))
-        addTitle(this, "KONTROL SESI")
-        val primary = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        primary.addView(action(a, "MULAI") { invokeStartDialog(a) }, weight())
-        primary.addView(action(a, "LANJUTKAN") { resumeSession(a) }, weight())
-        primary.addView(action(a, "TOP UP") { topUp(a) }, weight())
-        addView(primary, params(3))
-        val utility = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        utility.addView(action(a, "SEGARKAN DATA") { send(a, MireiForegroundService.ACTION_REFRESH) }, weight())
-        utility.addView(action(a, "JEDA / HOLD") { send(a, MireiForegroundService.ACTION_HOLD) }, weight())
-        addView(utility, params(2))
-        addView(action(a, "BERHENTI") { send(a, MireiForegroundService.ACTION_STOP) }, params(2))
-        addView(action(a, "TUTUP SEMUA POSISI") { send(a, MireiForegroundService.ACTION_CLOSE_ALL) }, params(2))
-        addTitle(this, "EVENT / GATE TERAKHIR")
-        addView(card(a, eventText(i), 13f).apply { setTag(TAG_EVENT) }, params(5))
-        addTitle(this, "KEPUTUSAN TERAKHIR")
-        addView(card(a, decisionText(i), 13f).apply { setTag(TAG_DECISION) }, params(5))
-        addTitle(this, "KESEHATAN")
-        addView(card(a, healthText(i), 13f).apply { setTag(TAG_HEALTH) }, params(5))
-    }
-
-    private fun buildAiTable(c: Context, i: Intent) = TableLayout(c).apply {
-        isStretchAllColumns = true; setTag(TAG_AI)
-        addView(row(c, listOf("SUMBER", "BUY/OPEN", "HOLD/ACTIVE", "SELL/CLOSE"), true))
-        addView(row(c, listOf("AI DECISION", "0", "0", "0"), false).apply { setTag(TAG_AI_ROW) })
-        addView(row(c, listOf("ACTUAL PAPER", "0", "0", "0"), false).apply { setTag(TAG_ACTUAL_ROW) })
-        updateAi(this, i)
-    }
-
-    private fun refreshDashboard(a: MainActivity) {
-        val d = dashboards[a] ?: return
-        if (findMenu(a.window.decorView)?.selectedItem?.toString() != "RINGKASAN") return
-        val i = currentIntent(a) ?: return
-        (d.findViewWithTag<View>(TAG_STATUS) as? TextView)?.text = statusText(i)
-        (d.findViewWithTag<View>(TAG_EQUITY) as? TextView)?.text = equityText(a, i)
-        (d.findViewWithTag<View>(TAG_EVENT) as? TextView)?.text = eventText(i)
-        (d.findViewWithTag<View>(TAG_DECISION) as? TextView)?.text = decisionText(i)
-        (d.findViewWithTag<View>(TAG_HEALTH) as? TextView)?.text = healthText(i)
-        (d.findViewWithTag<View>(TAG_AI) as? TableLayout)?.let { updateAi(it, i) }
-    }
-
-    private fun updateAi(table: TableLayout, i: Intent) {
-        val start = i.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L)
-        val db = MireiDatabase(table.context)
-        val trades = runCatching { db.recentTrades(200) }.getOrDefault(emptyList())
-        val sessionOpened = trades.count { start == 0L || it.openedAtEpochMs >= start }
-        val sessionClosed = trades.count { start == 0L || (it.closedAtEpochMs ?: Long.MIN_VALUE) >= start }
-        val suggestions = runCatching { db.recentSuggestions(300).filter { start == 0L || it.createdAtEpochMs >= start } }.getOrDefault(emptyList())
-        val activePositions = i.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)
-        setRow(table.findViewWithTag(TAG_AI_ROW) as? TableRow, listOf("AI DECISION", suggestions.count { it.action == "BUY" }.toString(), suggestions.count { it.action == "HOLD" }.toString(), suggestions.count { it.action == "SELL" || it.action == "CLOSE" }.toString()))
-        setRow(table.findViewWithTag(TAG_ACTUAL_ROW) as? TableRow, listOf("ACTUAL PAPER", sessionOpened.toString(), activePositions.toString(), sessionClosed.toString()))
-    }
-
+    private fun buildDashboard(a: MainActivity, i: Intent) = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setTag(DASHBOARD_TAG); addTitle(this, "DASHBOARD · RINGKASAN"); addView(card(a, statusText(i), 15f).apply { setTag(TAG_STATUS) }, params(4)); addView(card(a, equityText(a, i), 14f).apply { setTag(TAG_EQUITY) }, params(6)); addTitle(this, "AI VS ACTUAL · SESI INI"); addView(buildAiTable(a, i), params(2)); addView(card(a, "BUY/OPEN = keputusan AI atau pembukaan paper. HOLD/ACTIVE = tidak ada order HOLD; angka ACTIVE adalah posisi nyata yang sedang terbuka. SELL/CLOSE = keputusan AI atau posisi yang benar-benar ditutup.", 12f), params(5)); addTitle(this, "KONTROL SESI"); val primary = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }; primary.addView(action(a, "MULAI") { invokeStartDialog(a) }, weight()); primary.addView(action(a, "LANJUTKAN") { resumeSession(a) }, weight()); primary.addView(action(a, "TOP UP") { topUp(a) }, weight()); addView(primary, params(3)); val utility = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }; utility.addView(action(a, "SEGARKAN DATA") { send(a, MireiForegroundService.ACTION_REFRESH) }, weight()); utility.addView(action(a, "JEDA / HOLD") { send(a, MireiForegroundService.ACTION_HOLD) }, weight()); addView(utility, params(2)); addView(action(a, "BERHENTI") { send(a, MireiForegroundService.ACTION_STOP) }, params(2)); addView(action(a, "TUTUP SEMUA POSISI") { send(a, MireiForegroundService.ACTION_CLOSE_ALL) }, params(2)); addTitle(this, "EVENT / GATE TERAKHIR"); addView(card(a, eventText(i), 13f).apply { setTag(TAG_EVENT) }, params(5)); addTitle(this, "KEPUTUSAN TERAKHIR"); addView(card(a, decisionText(i), 13f).apply { setTag(TAG_DECISION) }, params(5)); addTitle(this, "KESEHATAN"); addView(card(a, healthText(i), 13f).apply { setTag(TAG_HEALTH) }, params(5)) }
+    private fun buildAiTable(c: Context, i: Intent) = TableLayout(c).apply { isStretchAllColumns = true; setTag(TAG_AI); addView(row(c, listOf("SUMBER", "BUY/OPEN", "HOLD/ACTIVE", "SELL/CLOSE"), true)); addView(row(c, listOf("AI DECISION", "0", "0", "0"), false).apply { setTag(TAG_AI_ROW) }); addView(row(c, listOf("ACTUAL PAPER", "0", "0", "0"), false).apply { setTag(TAG_ACTUAL_ROW) }); updateAi(this, i) }
+    private fun refreshDashboard(a: MainActivity) { val d = dashboards[a] ?: return; if (findMenu(a.window.decorView)?.selectedItem?.toString() != "RINGKASAN") return; val i = currentIntent(a) ?: return; (d.findViewWithTag<View>(TAG_STATUS) as? TextView)?.text = statusText(i); (d.findViewWithTag<View>(TAG_EQUITY) as? TextView)?.text = equityText(a, i); (d.findViewWithTag<View>(TAG_EVENT) as? TextView)?.text = eventText(i); (d.findViewWithTag<View>(TAG_DECISION) as? TextView)?.text = decisionText(i); (d.findViewWithTag<View>(TAG_HEALTH) as? TextView)?.text = healthText(i); (d.findViewWithTag<View>(TAG_AI) as? TableLayout)?.let { updateAi(it, i) } }
+    private fun updateAi(table: TableLayout, i: Intent) { val start = i.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L); val db = MireiDatabase(table.context); val trades = runCatching { db.recentTrades(200) }.getOrDefault(emptyList()); val sessionOpened = trades.count { start == 0L || it.openedAtEpochMs >= start }; val sessionClosed = trades.count { start == 0L || (it.closedAtEpochMs ?: Long.MIN_VALUE) >= start }; val suggestions = runCatching { db.recentSuggestions(300).filter { start == 0L || it.createdAtEpochMs >= start } }.getOrDefault(emptyList()); val activePositions = i.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0); setRow(table.findViewWithTag(TAG_AI_ROW) as? TableRow, listOf("AI DECISION", suggestions.count { it.action == "BUY" }.toString(), suggestions.count { it.action == "HOLD" }.toString(), suggestions.count { it.action == "SELL" || it.action == "CLOSE" }.toString())); setRow(table.findViewWithTag(TAG_ACTUAL_ROW) as? TableRow, listOf("ACTUAL PAPER", sessionOpened.toString(), activePositions.toString(), sessionClosed.toString())) }
     private fun setRow(row: TableRow?, values: List<String>) { if (row != null) values.forEachIndexed { index, value -> (row.getChildAt(index) as? TextView)?.text = value } }
-    private fun equityText(a: MainActivity, i: Intent): String {
-        val start = i.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L)
-        val closed = runCatching { MireiDatabase(a).recentTrades(200).filter { start == 0L || (it.closedAtEpochMs ?: Long.MIN_VALUE) >= start }.filter { it.closedAtEpochMs != null } }.getOrDefault(emptyList())
-        val wins = closed.count { it.pnlIdr > 0.0 }; val rate = if (closed.isEmpty()) 0.0 else wins * 100.0 / closed.size
-        return "EQUITY   Rp ${money(i.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0))}\nKAS      Rp ${money(i.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0))}\nPOSISI   ${i.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)}/3\nWIN RATE ${"%.2f".format(Locale.US, rate)}%  ($wins/${closed.size})\nMODAL    Rp ${money(i.getDoubleExtra(MireiForegroundService.EXTRA_TOTAL_CAPITAL, 0.0))}"
-    }
+    private fun equityText(a: MainActivity, i: Intent): String { val start = i.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L); val closed = runCatching { MireiDatabase(a).recentTrades(200).filter { start == 0L || (it.closedAtEpochMs ?: Long.MIN_VALUE) >= start }.filter { it.closedAtEpochMs != null } }.getOrDefault(emptyList()); val wins = closed.count { it.pnlIdr > 0.0 }; val rate = if (closed.isEmpty()) 0.0 else wins * 100.0 / closed.size; return "EQUITY   Rp ${money(i.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0))}\nKAS      Rp ${money(i.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0))}\nPOSISI   ${i.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)}/3\nWIN RATE ${"%.2f".format(Locale.US, rate)}%  ($wins/${closed.size})\nMODAL    Rp ${money(i.getDoubleExtra(MireiForegroundService.EXTRA_TOTAL_CAPITAL, 0.0))}" }
     private fun eventText(i: Intent): String { val event = i.getStringExtra(MireiForegroundService.EXTRA_RECENT_EXECUTIONS).orEmpty().ifBlank { "Belum ada OPEN/CLOSE pada tick terakhir." }; val gate = i.getStringExtra(MireiForegroundService.EXTRA_ENTRY_REASONS).orEmpty().ifBlank { "Tidak ada gate yang tercatat." }.split("|").joinToString("\n") { "• ${it.trim().replace('_', ' ')}" }; return "EVENT\n$event\n\nGATE / BLOK RISIKO\n$gate" }
     private fun decisionText(i: Intent): String { val action = i.getStringExtra(MireiForegroundService.EXTRA_ACTION) ?: "HOLD"; val confidence = (i.getDoubleExtra(MireiForegroundService.EXTRA_CONFIDENCE, 0.0) * 100).toInt(); val reason = i.getStringExtra(MireiForegroundService.EXTRA_RATIONALE).orEmpty().replace('_', ' ').ifBlank { "belum ada alasan" }; return "$action · $confidence%\n$reason" }
     private fun healthText(i: Intent) = "Internet: ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_INTERNET, false)) "OK" else "PUTUS"}\nMarket: ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)) "SEGAR" else "STALE"}\nExchange: ${if (i.getBooleanExtra(MireiForegroundService.EXTRA_EXCHANGE_HEALTHY, false)) "OK" else "TIDAK SIAP"}"
@@ -241,8 +88,7 @@ class MireiDashboardApplicationV2 : Application() {
     private fun params(top: Int = 0) = LinearLayout.LayoutParams(-1, -2).apply { topMargin = top; bottomMargin = 4 }
     private fun weight() = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = 4 }
     private fun money(value: Double) = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 2 }.format(value)
-
-    companion object {
-        private const val WRAPPER_TAG = "mirei_dashboard_wrapper_v2"; private const val DASHBOARD_TAG = "mirei_dashboard_v2"; private const val SETTINGS_TAG = "mirei_effective_settings_v2"; private const val TAG_STATUS = "mirei_dash_v2_status"; private const val TAG_EQUITY = "mirei_dash_v2_equity"; private const val TAG_AI = "mirei_dash_v2_ai"; private const val TAG_AI_ROW = "mirei_dash_v2_ai_row"; private const val TAG_ACTUAL_ROW = "mirei_dash_v2_actual_row"; private const val TAG_EVENT = "mirei_dash_v2_event"; private const val TAG_DECISION = "mirei_dash_v2_decision"; private const val TAG_HEALTH = "mirei_dash_v2_health"; private const val TAG_SETTINGS = "mirei_effective_settings_text"; private val MENU_LABELS = setOf("RINGKASAN", "PASAR", "POSISI", "AKTIVITAS", "KEPUTUSAN", "RISIKO", "EXCHANGE / API", "PENGATURAN", "LOG / AUDIT")
-    }
+    private fun parseValue(raw: String): Double = raw.replace("+", "").replace("%", "").trim().replace(",", ".").toDoubleOrNull() ?: 0.0
+    private fun signed(raw: String): String { val v = parseValue(raw); return when { v > 0.000001 -> "+%.3f".format(Locale.US, v); v < -0.000001 -> "%.3f".format(Locale.US, v); else -> "0.000" } }
+    companion object { private const val WRAPPER_TAG = "mirei_dashboard_wrapper_v2"; private const val DASHBOARD_TAG = "mirei_dashboard_v2"; private const val SETTINGS_TAG = "mirei_effective_settings_v2"; private const val MARKET_TAG = "mirei_market_v2"; private const val TAG_STATUS = "mirei_dash_v2_status"; private const val TAG_EQUITY = "mirei_dash_v2_equity"; private const val TAG_AI = "mirei_dash_v2_ai"; private const val TAG_AI_ROW = "mirei_dash_v2_ai_row"; private const val TAG_ACTUAL_ROW = "mirei_dash_v2_actual_row"; private const val TAG_EVENT = "mirei_dash_v2_event"; private const val TAG_DECISION = "mirei_dash_v2_decision"; private const val TAG_HEALTH = "mirei_dash_v2_health"; private const val TAG_SETTINGS = "mirei_effective_settings_text"; private val MENU_LABELS = setOf("RINGKASAN", "PASAR", "POSISI", "AKTIVITAS", "KEPUTUSAN", "RISIKO", "EXCHANGE / API", "PENGATURAN", "LOG / AUDIT") }
 }
