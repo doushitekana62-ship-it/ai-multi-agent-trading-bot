@@ -79,12 +79,14 @@ class MireiDecisionEngine(
         val configuredStake = stakeOverrideIdr?.takeIf { it > 0.0 } ?: config.positionSizeIdr
         val stake = minOf(configuredStake * risk.positionMultiplier, config.totalCapitalIdr / config.maxOpenPositions)
         val initialCapital = initialCapitalIdr?.takeIf { it > 0.0 } ?: stake
+        val instrumentCosts = TradingUniverse.bySymbol(snapshot.symbol)?.executionCosts
         val targets = config.calculateRiskTargets(
             entryPrice = snapshot.price,
             stakeIdr = stake,
             initialCapitalIdr = initialCapital,
             stopLossPercent = riskLossPercent,
             takeProfitPercent = baseTake,
+            executionCosts = instrumentCosts,
         )
         val activation = if (targets.stopLossPrice == 0.0) 0.0 else snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR
 
