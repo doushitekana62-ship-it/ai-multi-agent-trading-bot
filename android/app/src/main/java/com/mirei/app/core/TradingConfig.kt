@@ -28,9 +28,10 @@ data class TradingConfig(
     val manualRiskMode: ManualRiskMode = ManualRiskMode.AUTO,
     val manualStopLossPercent: Double? = null,
     val manualTakeProfitPercent: Double? = null,
-    /** When set, manual TP is a net realized IDR target after execution costs. */
     val manualNetProfitTargetIdr: Double? = null,
     val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
+    /** Optional immutable risk contract keyed by symbol. Empty means use the session defaults. */
+    val positionProfiles: Map<String, PositionTradeConfig> = emptyMap(),
 ) {
     init {
         require(totalCapitalIdr > 0)
@@ -46,6 +47,29 @@ data class TradingConfig(
             require((manualTakeProfitPercent != null && manualTakeProfitPercent > manualStopLossPercent) || (manualNetProfitTargetIdr != null && manualNetProfitTargetIdr > 0.0))
         }
         if (manualNetProfitTargetIdr != null) require(manualNetProfitTargetIdr > 0.0)
+    }
+
+    fun profileFor(symbol: String): PositionTradeConfig? = positionProfiles[symbol]
+
+    /** Resolve the session configuration for one symbol without mutating the session configuration. */
+    fun forPosition(symbol: String): TradingConfig {
+        val profile = profileFor(symbol) ?: return this
+        val resolvedMode = profile.mode ?: mode
+        val resolvedManual = profile.manualRiskMode
+        val resolvedStop = profile.stopLossPercent
+        val resolvedTpMode = profile.takeProfitMode
+        val resolvedTpPercent = profile.manualTakeProfitPercent
+        val resolvedNetTarget = profile.manualNetProfitTargetIdr
+        val resolvedBasis = profile.riskReferenceMode ?: riskReferenceMode
+        return copy(
+            mode = resolvedMode,
+            manualRiskMode = resolvedManual,
+            manualStopLossPercent = if (resolvedManual == ManualRiskMode.MANUAL) resolvedStop else null,
+            manualTakeProfitPercent = if (resolvedManual == ManualRiskMode.MANUAL && resolvedTpMode == TakeProfitMode.MANUAL_PERCENT) resolvedTpPercent else null,
+            manualNetProfitTargetIdr = if (resolvedManual == ManualRiskMode.MANUAL && resolvedTpMode == TakeProfitMode.MANUAL_NET_IDR) resolvedNetTarget else null,
+            riskReferenceMode = resolvedBasis,
+            positionProfiles = emptyMap(),
+        )
     }
 
     fun effectiveStopLossPercent(): Double = when (manualRiskMode) {
