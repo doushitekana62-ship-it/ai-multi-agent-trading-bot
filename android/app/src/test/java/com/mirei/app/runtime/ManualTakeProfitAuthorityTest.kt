@@ -30,9 +30,15 @@ class ManualTakeProfitAuthorityTest {
         assertEquals(0, hit.activePositions.size)
         assertEquals(1, ledger.closedCount)
         assertTrue(hit.recentExecutions.any { it.reason == "take_profit" })
-        val reentry = runtime.tick(4_000L)
+
+        val blocked = runtime.tick(4_000L)
+        assertEquals(0, blocked.activePositions.size)
+        assertTrue(blocked.recentExecutions.any { it.reason == "reentry_price_tolerance_hold" })
+
+        market.price = opened.entryPrice
+        val reentry = runtime.tick(5_000L)
         assertEquals(1, reentry.activePositions.size)
-        assertEquals(4_000L, reentry.activePositions.single().openedAtEpochMs)
+        assertEquals(5_000L, reentry.activePositions.single().openedAtEpochMs)
         assertEquals(com.mirei.app.core.TakeProfitMode.MANUAL_NET_IDR, reentry.activePositions.single().takeProfitMode)
         assertEquals(113.0, reentry.activePositions.single().manualNetProfitTargetIdr!!, 0.0001)
     }
