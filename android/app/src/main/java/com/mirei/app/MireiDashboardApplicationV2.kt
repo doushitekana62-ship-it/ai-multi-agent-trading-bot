@@ -12,7 +12,6 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -153,9 +152,8 @@ class MireiDashboardApplicationV2 : Application() {
         val prefs = a.getSharedPreferences("mirei_settings", Context.MODE_PRIVATE)
         val manualSession = prefs.getBoolean("manual_risk", false)
         session.positions.forEachIndexed { index, position ->
-            val current = currentIntent(a)?.let { it.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty() }
-                .lines().firstOrNull { it.startsWith("${position.symbol}|") }
-                ?.let(::parsePosition)
+            val detail = currentIntent(a)?.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty()
+            val current = detail.lines().firstOrNull { it.startsWith("${position.symbol}|") }?.let(::parsePosition)
             val now = current?.get("current")?.toDoubleOrNull() ?: position.entryPrice
             val gross = current?.get("unrealized")?.toDoubleOrNull() ?: 0.0
             val targetText = when (position.takeProfitMode) {
@@ -273,5 +271,5 @@ class MireiDashboardApplicationV2 : Application() {
     private fun signed(raw: String): String { val v = parseValue(raw); return when { v > 0.000001 -> "+%.3f".format(Locale.US, v); v < -0.000001 -> "%.3f".format(Locale.US, v); else -> "0.000" } }
     private fun parsePosition(raw: String): Map<String, String> = raw.split('|').drop(1).mapNotNull { token -> val p = token.split('=', limit = 2); if (p.size == 2) p[0] to p[1] else null }.toMap()
     private fun ageText(openedAt: Long): String { if (openedAt <= 0L) return "—"; val age = (System.currentTimeMillis() - openedAt).coerceAtLeast(0L) / 1000L; return when { age < 60 -> "${age}s"; age < 3600 -> "${age / 60}m ${age % 60}s"; else -> "${age / 3600}h ${(age % 3600) / 60}m" } }
-    companion object { private const val WRAPPER_TAG = "mirei_dashboard_wrapper_v2"; private const val DASHBOARD_TAG = "mirei_dashboard_v2"; private const val SETTINGS_TAG = "mirei_effective_settings_v2"; private const val MARKET_TAG = "mirei_market_v2"; private const val POSITION_TAG = "mirei_position_v2"; private const val TAG_STATUS = "mirei_dash_v2_status"; private const val TAG_EQUITY = "mirei_dash_v2_equity"; private const val TAG_AI = "mirei_dash_v2_ai"; private const val TAG_AI_ROW = "mirei_dash_v2_ai_row"; private const val TAG_ACTUAL_ROW = "mirei_dash_v2_actual_row"; private const val TAG_EVENT = "mirei_dash_v2_event"; private const val TAG_DECISION = "mirei_dash_v2_decision"; private const val TAG_HEALTH = "mirei_dash_v2_health"; private const val TAG_SETTINGS = "mirei_effective_settings_text"; private val MENU_LABELS = setOf("RINGKASAN", "PASAR", "POSISI", "AKTIVITAS", "KEPUTUSAN", "RISIKO", "EXCHANGE / API", "PENGATURAN", "LOG / AUDIT") }
+    companion object { private const val WRAPPER_TAG = "mirei_dashboard_wrapper_v2"; private const val DASHBOARD_TAG = "mirei_dashboard_v2"; private const val MARKET_TAG = "mirei_market_v2"; private const val POSITION_TAG = "mirei_position_v2"; private const val TAG_STATUS = "mirei_dash_v2_status"; private const val TAG_EQUITY = "mirei_dash_v2_equity"; private const val TAG_AI = "mirei_dash_v2_ai"; private const val TAG_AI_ROW = "mirei_dash_v2_ai_row"; private const val TAG_ACTUAL_ROW = "mirei_dash_v2_actual_row"; private const val TAG_EVENT = "mirei_dash_v2_event"; private const val TAG_DECISION = "mirei_dash_v2_decision"; private const val TAG_HEALTH = "mirei_dash_v2_health"; private const val TAG_SETTINGS = "mirei_effective_settings_text"; private val MENU_LABELS = setOf("RINGKASAN", "PASAR", "POSISI", "AKTIVITAS", "KEPUTUSAN", "RISIKO", "EXCHANGE / API", "PENGATURAN", "LOG / AUDIT") }
 }
