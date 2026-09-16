@@ -47,16 +47,24 @@ data class EntryPlan(
 )
 
 class MireiDecisionEngine(
-    private val config: TradingConfig,
-    private val riskPolicy: RiskPolicy = RiskPolicy(config),
+    initialConfig: TradingConfig,
+    private val riskPolicy: RiskPolicy = RiskPolicy(initialConfig),
 ) {
+    @Volatile
+    private var config: TradingConfig = initialConfig
+
+    fun updateConfig(newConfig: TradingConfig) {
+        config = newConfig
+    }
+
     fun buildEntryPlan(
         snapshot: MarketSnapshot,
         riskSnapshot: RiskSnapshot,
         initialCapitalIdr: Double? = null,
         stakeOverrideIdr: Double? = null,
     ): EntryPlan {
-        val positionConfig = config.forPosition(snapshot.symbol)
+        val activeConfig = config
+        val positionConfig = activeConfig.forPosition(snapshot.symbol)
         val positionRiskPolicy = RiskPolicy(positionConfig)
         val risk = positionRiskPolicy.evaluate(riskSnapshot)
         val reasons = mutableListOf<String>()
