@@ -20,10 +20,26 @@ class PaperExecutionEngine(
     private val tradeLedger: TradeLedger? = null, private val useInstrumentCosts: Boolean = false,
 ) {
     companion object { const val AI_CLOSE_WARMUP_MS = 60_000L; const val REENTRY_COOLDOWN_MS = 1_000L }
-    private var availableBalanceIdr = config.totalCapitalIdr; private val positions = linkedMapOf<String, PaperPosition>(); private val limitOrders = linkedMapOf<String, PaperLimitOrder>(); private val lastClosedAtBySymbol = linkedMapOf<String, Long>(); private var positionSequence = 0L
+    private var availableBalanceIdr = config.totalCapitalIdr
+    private val positions = linkedMapOf<String, PaperPosition>()
+    private val limitOrders = linkedMapOf<String, PaperLimitOrder>()
+    private val lastClosedAtBySymbol = linkedMapOf<String, Long>()
+    private val lastClosedEntryPriceBySymbol = linkedMapOf<String, Double>()
+    private var positionSequence = 0L
+
     init { require(feePercent >= 0.0); require(slippagePercent >= 0.0) }
     private fun costsFor(symbol: String): ExecutionCostProfile = if (useInstrumentCosts) TradingUniverse.bySymbol(symbol)?.executionCosts ?: ExecutionCostProfile(feePercent, feePercent, 0.0, slippagePercent) else ExecutionCostProfile(feePercent, feePercent, 0.0, slippagePercent)
-    private fun reentryBlocked(symbol: String, nowMs: Long, entryReason: String): Boolean = entryReason in setOf("re_entry", "human_verified_re_entry", "tp_compound_reentry", "sl_re_entry") && lastClosedAtBySymbol[symbol]?.let { nowMs - it < REENTRY_COOLDOWN_MS } == true
+    private fun reentryBlocked(symbol: String, nowMs: Long, entryReason: String, entryPrice: Double): String? {
+        if (entryReason !in setOf("re_entry", "human_verified_re_entry", "tp_compound_reentry", "sl_re_entry")) return null
+        val closedAt = lastClosedAtBySymbol[symbol]
+        if (closedAt != null && nowMs - closedAt < REENTRY_COOLDOWN_MS) return "reentry_cooldown_hold"
+        val anchor = lastClosedEntryPriceBySymbol[symbol]
+        if (anchor != null && anchor > 0.0) {
+            val deviation = kotlin.math.abs(entryPrice - anchor) / anchor * 100.0
+            if (deviation > config.reentryPriceTolerancePercent) return "reentry_price_tolerance_hold"
+        }
+        return null
+    }
 
     fun seedExistingHolding(exchangeId: String, symbol: String, quoteAmount: Double, marketPrice: Double, stopLossPercent: Double, takeProfitPercent: Double, nowMs: Long, riskReferenceMode: RiskReferenceMode = config.riskReferenceMode, initialCapitalIdr: Double = quoteAmount): ExecutionResult {
         if (quoteAmount <= 0.0 || marketPrice <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_initial_holding")
@@ -41,7 +57,8 @@ class PaperExecutionEngine(
     fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, entryReason: String = "entry_filled"): ExecutionResult = openInternal(exchangeId, symbol, plan, nowMs, 0.0, entryReason)
     private fun openInternal(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, reservedIdr: Double, entryReason: String): ExecutionResult {
         if (!plan.allowed || plan.stakeIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
-        if (reentryBlocked(symbol, nowMs, entryReason)) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = "reentry_cooldown_hold", error = "reentry_cooldown_hold")
+        val reentryBlock = reentryBlocked(symbol, nowMs, entryReason, plan.entryPrice)
+        if (reentryBlock != null) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reentryBlock, error = reentryBlock)
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         if (reservedIdr > 0.0 && reservedIdr + 1e-9 < plan.stakeIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
         val costs = costsFor(symbol); val allowPartialReentry = entryReason in setOf("re_entry", "human_verified_re_entry", "tp_compound_reentry", "sl_re_entry")
@@ -63,7 +80,7 @@ class PaperExecutionEngine(
         val ageMs = (nowMs - position.openedAtEpochMs).coerceAtLeast(0L); if (reason == "ai_close" && ageMs < AI_CLOSE_WARMUP_MS) return ExecutionResult(false, positionId, remainingBalanceIdr = availableBalanceIdr, reason = "ai_close_warmup_hold", error = "ai_close_warmup_hold")
         val costs = costsFor(position.symbol); val before = availableBalanceIdr; val isInitial = position.entryReason == "initial_holding"; val exitMarketAdjustment = costs.spreadPercent / 2.0 + costs.slippagePercent; val executionPrice = marketPrice * (1.0 - exitMarketAdjustment / 100.0)
         val entryFee = if (isInitial) 0.0 else position.stakeIdr * costs.buyFeePercent / (100.0 + costs.buyFeePercent); val entryNotional = position.stakeIdr - entryFee; val amount = entryNotional / position.entryPrice; val exitNotional = executionPrice * amount; val exitFee = exitNotional * costs.sellFeePercent / 100.0; val proceedsAfterFee = exitNotional - exitFee; val netPnl = proceedsAfterFee - position.stakeIdr
-        val executedAt = nowMs + costs.executionLatencyMs; tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, executedAt, reason); availableBalanceIdr += proceedsAfterFee; positions.remove(positionId); lastClosedAtBySymbol[position.symbol] = nowMs
+        val executedAt = nowMs + costs.executionLatencyMs; tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, executedAt, reason); availableBalanceIdr += proceedsAfterFee; positions.remove(positionId); lastClosedAtBySymbol[position.symbol] = nowMs; lastClosedEntryPriceBySymbol[position.symbol] = position.entryPrice
         return ExecutionResult(true, positionId, amount, executionPrice, exitFee, entryFee = entryFee, exitFee = exitFee, slippagePercent = exitMarketAdjustment, pnlIdr = netPnl, remainingBalanceIdr = availableBalanceIdr, reason = reason, balanceBeforeIdr = before)
     }
 
@@ -77,7 +94,7 @@ class PaperExecutionEngine(
     fun position(positionId: String): PaperPosition? = positions[positionId]; fun positionCount(): Int = positions.size; fun positions(): List<PaperPosition> = positions.values.toList(); fun pendingLimitOrders(): List<PaperLimitOrder> = limitOrders.values.toList(); fun availableBalanceIdr(): Double = availableBalanceIdr; fun reservedBalanceIdr(): Double = limitOrders.values.sumOf { it.reservedIdr }
     fun equityIdr(markPrices: Map<String, Double>): Double = availableBalanceIdr + reservedBalanceIdr() + positions.values.sumOf { position -> val mark = markPrices[position.symbol] ?: position.entryPrice; val costs = costsFor(position.symbol); val entryFee = if (position.entryReason == "initial_holding") 0.0 else position.stakeIdr * costs.buyFeePercent / (100.0 + costs.buyFeePercent); val entryNotional = position.stakeIdr - entryFee; mark.coerceAtLeast(0.0) * (entryNotional / position.entryPrice) }
     fun snapshotState(): PaperEngineState = PaperEngineState(availableBalanceIdr, positions.values.toList())
-    fun restoreState(state: PaperEngineState) { require(state.availableBalanceIdr >= 0.0) { "invalid_paper_balance_state" }; require(state.positions.size <= config.maxOpenPositions) { "paper_position_limit" }; positions.clear(); limitOrders.clear(); lastClosedAtBySymbol.clear(); state.positions.forEach { position -> require(position.stakeIdr > 0.0 && position.entryPrice > 0.0); positions[position.id] = position }; availableBalanceIdr = state.availableBalanceIdr; positionSequence = state.positions.mapNotNull { it.id.substringAfterLast('-').toLongOrNull() }.maxOrNull() ?: 0L }
+    fun restoreState(state: PaperEngineState) { require(state.availableBalanceIdr >= 0.0) { "invalid_paper_balance_state" }; require(state.positions.size <= config.maxOpenPositions) { "paper_position_limit" }; positions.clear(); limitOrders.clear(); lastClosedAtBySymbol.clear(); lastClosedEntryPriceBySymbol.clear(); state.positions.forEach { position -> require(position.stakeIdr > 0.0 && position.entryPrice > 0.0); positions[position.id] = position }; availableBalanceIdr = state.availableBalanceIdr; positionSequence = state.positions.mapNotNull { it.id.substringAfterLast('-').toLongOrNull() }.maxOrNull() ?: 0L }
     fun forgetPositionAfterReconciliation(positionId: String): PaperPosition? = positions.remove(positionId)
     private fun nextPositionId(prefix: String, nowMs: Long): String { positionSequence += 1; return "$prefix-$nowMs-$positionSequence" }
 }
