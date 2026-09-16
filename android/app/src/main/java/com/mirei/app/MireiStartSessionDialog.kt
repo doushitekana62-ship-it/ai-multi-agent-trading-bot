@@ -117,6 +117,7 @@ object MireiStartSessionDialog {
                 val total = selected.sumOf { it.second }
                 if (total > 150_000.0 + 1e-6) { dialog.setTitle("MULAI SESI PAPER · modal melebihi Rp150.000"); return@setOnClickListener }
                 val profileText = selected.joinToString(";") { (symbol, _) -> "$symbol|${encode(drafts[symbol] ?: Draft())}" }
+                // Global manual_risk is intentionally false: per-instrument position_profiles is the authoritative TP/SL contract; the global flag is only a legacy fallback.
                 prefs.edit().putString("position_profiles", profileText).putString("mode", drafts[selected.first().first]?.mode?.name ?: ScalpingMode.BALANCED.name).putBoolean("manual_risk", false).putString("risk_basis", drafts[selected.first().first]?.basis?.name ?: RiskReferenceMode.ENTRY_PRICE.name).apply()
                 PositionTradeConfigStore.reload(activity)
                 val allocations = selected.joinToString(";") { "${it.first}=${it.second}" }
