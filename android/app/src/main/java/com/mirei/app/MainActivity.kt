@@ -141,7 +141,7 @@ class MainActivity : Activity() {
         content.addView(card("AI DECISION  · BUY $buys · HOLD $holds · SELL $sells\nACTUAL PAPER · posisi aktif $positions\n\nAI OPEN adalah keputusan analisis. ACTUAL OPEN hanya bertambah setelah execution gate benar-benar berhasil.", 13f))
         addTitle("PENGATURAN AKTIF")
         if (profiles.isEmpty()) content.addView(card("Belum ada kontrak instrument tersimpan."))
-        else profiles.forEach { (symbol, profile) -> content.addView(card("$symbol\nMode: ${profile.mode?.name ?: "BALANCED"}\nTP/SL: ${if (profile.manualRiskMode.name == "MANUAL") "MANUAL" else "AUTO"}\nTP: ${profile.manualNetProfitTargetIdr?.let { "NET Rp${numberFormat.format(it)}" } ?: profile.manualTakeProfitPercent?.let { "${it}%" } ?: "mengikuti mode"}\nSL: ${profile.stopLossPercent?.let { "${it}%" } ?: "mengikuti mode"}\nDasar: ${profile.riskReferenceMode?.let(::riskBasisLabel) ?: "HARGA ENTRY"}", 12.5f)) }
+        else profiles.forEach { (symbol, profile) -> content.addView(card("$symbol\nMode: ${profile.mode?.name ?: "BALANCED"}\nTP/SL: ${if (profile.manualRiskMode.name == "MANUAL") "MANUAL" else "AUTO"}\nTP: ${profile.manualNetProfitTargetIdr?.let { "NET Rp${numberFormat.format(it)}" } ?: profile.manualTakeProfitPercent?.let { "${it}%" } ?: "mengikuti mode"}\nSL: ${profile.stopLossPercent?.let { "${it}%" } ?: "mengikuti mode"}\nDasar: ${profile.riskReferenceMode?.let { riskBasisLabel(it.name) } ?: "HARGA ENTRY"}", 12.5f)) }
         addControls()
     }
 
@@ -167,11 +167,9 @@ class MainActivity : Activity() {
         rows.forEach { row ->
             val symbol = row["symbol"].orEmpty()
             val profile = PositionTradeConfigStore.get(symbol)
-            val tpMode = if (row["tp_pct"].orEmpty().isNotBlank()) {
-                profile?.manualNetProfitTargetIdr?.let { "MANUAL NET Rp${numberFormat.format(it)}" }
-                    ?: profile?.manualTakeProfitPercent?.let { "MANUAL ${it}%" }
-                    ?: "AUTO/MODE"
-            } else "AUTO/MODE"
+            val tpMode = profile?.manualNetProfitTargetIdr?.let { "MANUAL NET Rp${numberFormat.format(it)}" }
+                ?: profile?.manualTakeProfitPercent?.let { "MANUAL ${it}%" }
+                ?: "AUTO/MODE"
             content.addView(card("$symbol\nModal Rp ${numberFormat.format(row["stake"].orEmpty().toDoubleOrNull() ?: 0.0)}\nEntry Rp ${numberFormat.format(row["entry"].orEmpty().toDoubleOrNull() ?: 0.0)}\nSekarang Rp ${numberFormat.format(row["current"].orEmpty().toDoubleOrNull() ?: 0.0)}\nPnL berjalan Rp ${signedMoney(row["unrealized"].orEmpty().toDoubleOrNull() ?: 0.0)}\n\nTP Rp ${numberFormat.format(row["tp"].orEmpty().toDoubleOrNull() ?: 0.0)} · $tpMode\nSL Rp ${numberFormat.format(row["sl"].orEmpty().toDoubleOrNull() ?: 0.0)}\nDasar: ${riskBasisLabel(row["risk_basis"].orEmpty())}\nAsal: ${row["entry_reason"].orEmpty()}", 13f))
         }
     }
@@ -217,9 +215,7 @@ class MainActivity : Activity() {
 
     private fun addAuditRow(table: LinearLayout, time: String, symbol: String, event: String, price: String, reason: String) {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.rgb(24, 34, 43)) }
-        listOf(time, symbol, event, price, reason).forEach { value ->
-            row.addView(text(value, 10f), LinearLayout.LayoutParams(dp(118), ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
+        listOf(time, symbol, event, price, reason).forEach { value -> row.addView(text(value, 10f), LinearLayout.LayoutParams(dp(118), ViewGroup.LayoutParams.WRAP_CONTENT)) }
         table.addView(row, margin(0, 1, 0, 1))
     }
 
@@ -241,7 +237,7 @@ class MainActivity : Activity() {
     private fun formatEpoch(epoch: Long): String = if (epoch <= 0L) "—" else SimpleDateFormat("MM/dd HH:mm:ss", Locale.US).format(Date(epoch))
     private fun addTitle(value: String) { content.addView(text(value, 20f, true), margin(0, 8, 0, 5)) }
     private fun text(value: String, size: Float, bold: Boolean = false): TextView = TextView(this).apply { text = value; textSize = size; setTextColor(Color.WHITE); if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(5, 4, 5, 4) }
-    private fun card(value: String, size: Float = 14f): TextView = TextView(this).apply { text = value; textSize = size; setTextColor(Color.WHITE); setPadding(9, 9, 9, 9); setBackgroundColor(Color.rgb(24, 34, 43)) }.also { it.layoutParams = margin(0, 3, 0, 5) }
+    private fun card(value: String, size: Float = 14f): TextView = TextView(this).apply { text = value; textSize = size; setTextColor(Color.WHITE); setPadding(9, 9, 9, 9); setBackgroundColor(Color.rgb(24, 34, 43) }.also { it.layoutParams = margin(0, 3, 0, 5) }
     private fun button(label: String, onClick: () -> Unit): Button = Button(this).apply { text = label; setOnClickListener { onClick() }; minHeight = dp(46); layoutParams = margin(0, 3, 3, 5) }
     private fun weight(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = 3 }
     private fun margin(l: Int, t: Int, r: Int, b: Int): ViewGroup.MarginLayoutParams = ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = l; topMargin = t; rightMargin = r; bottomMargin = b }
