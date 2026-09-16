@@ -5,6 +5,14 @@ enum class Exchange(val id: String, val label: String, val enabledForSixHourTest
     YAHOO_FINANCE("yahoo_finance", "Saham & Forex (Yahoo Finance, delayed)", true),
     BYBIT("bybit", "Bybit", false),
     STOCKBIT("stockbit", "Stockbit", false),
+    BINANCE("binance", "Binance", false),
+    BINGX("bingx", "BingX", false),
+    BITGET("bitget", "Bitget", false),
+    GATE("gate", "Gate", false),
+    HTX("htx", "HTX", false),
+    HYPERLIQUID("hyperliquid", "Hyperliquid", false),
+    KRAKEN("kraken", "Kraken", false),
+    OKX("okx", "OKX", false),
 }
 
 enum class AssetClass(val label: String) { CRYPTO("Crypto"), STOCKS("Saham"), FOREX("Forex"), COMMODITIES("Komoditas") }
