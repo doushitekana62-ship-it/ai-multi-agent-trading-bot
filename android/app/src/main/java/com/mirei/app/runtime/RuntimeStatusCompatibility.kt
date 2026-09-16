@@ -1,6 +1,7 @@
 package com.mirei.app.runtime
 
 import com.mirei.app.agents.AgentAction
+import com.mirei.app.execution.ExecutionResult
 import com.mirei.app.execution.PaperPosition
 
 // Compatibility aliases keep the foreground-service status contract stable while
@@ -25,6 +26,10 @@ val PaperRuntimeStatus.spreadPercent: Double get() = marketSpreadPercent
 val PaperRuntimeStatus.changeTickPercent: Double get() = changeSinceLastTickPercent
 val PaperRuntimeStatus.flowScore: Double get() = tradeFlowPercent
 val PaperRuntimeStatus.marketFresh: Boolean get() = marketDataFresh
+
+// ExecutionResult does not carry a symbol; orderId is the closest stable runtime
+// identifier for the legacy audit/status payload.
+val ExecutionResult.symbol: String get() = orderId ?: "-"
 
 // PaperPosition deliberately has no continuously marked price field. These aliases
 // preserve the existing UI payload shape without inventing a market price.
