@@ -2,6 +2,7 @@ package com.mirei.app.storage
 
 import android.content.Context
 import com.mirei.app.core.RiskReferenceMode
+import com.mirei.app.core.TakeProfitMode
 import com.mirei.app.execution.PaperPosition
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,6 +39,8 @@ class PaperSessionStore(context: Context) {
             for (i in 0 until array.length()) {
                 val item = array.getJSONObject(i)
                 val storedMode = runCatching { RiskReferenceMode.valueOf(item.optString("riskReferenceMode", RiskReferenceMode.ENTRY_PRICE.name)) }.getOrDefault(RiskReferenceMode.ENTRY_PRICE)
+                val storedTpMode = runCatching { TakeProfitMode.valueOf(item.optString("takeProfitMode", TakeProfitMode.MODE.name)) }.getOrDefault(TakeProfitMode.MODE)
+                val storedManualTarget = if (item.has("manualNetProfitTargetIdr") && !item.isNull("manualNetProfitTargetIdr")) item.optDouble("manualNetProfitTargetIdr", 0.0).takeIf { it > 0.0 } else null
                 positions += PaperPosition(
                     id = item.getString("id"),
                     exchangeId = item.getString("exchange"),
@@ -51,6 +54,8 @@ class PaperSessionStore(context: Context) {
                     entryReason = item.optString("reason", "entry_filled"),
                     riskReferenceMode = storedMode,
                     riskReferenceCapitalIdr = item.optDouble("riskReferenceCapital", item.optDouble("stake", 0.0)),
+                    takeProfitMode = storedTpMode,
+                    manualNetProfitTargetIdr = storedManualTarget,
                 )
             }
             val capitalObject = root.optJSONObject("initialCapitalBySymbol")
@@ -110,11 +115,11 @@ class PaperSessionStore(context: Context) {
                     put("reason", position.entryReason)
                     put("riskReferenceMode", position.riskReferenceMode.name)
                     put("riskReferenceCapital", position.riskReferenceCapitalIdr)
+                    put("takeProfitMode", position.takeProfitMode.name)
+                    if (position.manualNetProfitTargetIdr != null) put("manualNetProfitTargetIdr", position.manualNetProfitTargetIdr)
                 }) }
             })
         }
-        // STOP -> START can happen before an asynchronous apply() reaches disk.
-        // Session state is the portfolio source of truth, so commit it synchronously.
         prefs.edit().putString(KEY_STATE, root.toString()).commit()
     }
 
