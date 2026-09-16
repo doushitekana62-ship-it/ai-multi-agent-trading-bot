@@ -7,7 +7,8 @@ class MireiRuntimeController {
         private set
 
     fun start() {
-        if (state == MireiState.ERROR || state == MireiState.RECOVERY) state = MireiState.RECOVERY
+        // Recovery is represented by the explicit error/hold transitions; start() is synchronous.
+        // Do not assign RECOVERY and immediately overwrite it with RUNNING.
         state = MireiState.RUNNING
     }
 
@@ -32,7 +33,7 @@ class MireiRuntimeController {
     }
 
     fun recoverToHold() {
-        state = MireiState.RECOVERY
+        // There is no asynchronous observer between these assignments, so expose the stable state only.
         state = MireiState.HOLD
     }
 }

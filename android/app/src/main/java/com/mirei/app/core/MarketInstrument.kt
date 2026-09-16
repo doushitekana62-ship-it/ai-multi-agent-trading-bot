@@ -2,6 +2,7 @@ package com.mirei.app.core
 
 enum class Exchange(val id: String, val label: String, val enabledForSixHourTest: Boolean) {
     INDODAX("indodax", "Indodax", true),
+    YAHOO_FINANCE("yahoo_finance", "Saham & Forex (Yahoo Finance, delayed)", true),
     BYBIT("bybit", "Bybit", false),
     STOCKBIT("stockbit", "Stockbit", false),
 }
