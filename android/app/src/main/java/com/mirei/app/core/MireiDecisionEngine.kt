@@ -41,6 +41,8 @@ data class EntryPlan(
     val reasons: List<String>,
     val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
     val riskReferenceCapitalIdr: Double = 0.0,
+    val takeProfitMode: TakeProfitMode = TakeProfitMode.MODE,
+    val manualNetProfitTargetIdr: Double? = null,
 )
 
 class MireiDecisionEngine(
@@ -100,6 +102,8 @@ class MireiDecisionEngine(
             reasons = listOf("mirei_entry_gates_passed"),
             riskReferenceMode = config.riskReferenceMode,
             riskReferenceCapitalIdr = targets.referenceCapitalIdr,
+            takeProfitMode = config.effectiveTakeProfitMode(),
+            manualNetProfitTargetIdr = config.manualNetProfitTargetIdr,
         )
     }
 
