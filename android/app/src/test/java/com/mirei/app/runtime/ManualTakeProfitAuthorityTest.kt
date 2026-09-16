@@ -27,6 +27,8 @@ class ManualTakeProfitAuthorityTest {
         val opened = first.activePositions.single()
         assertEquals(com.mirei.app.core.TakeProfitMode.MANUAL_NET_IDR, opened.takeProfitMode)
         assertEquals(113.0, opened.manualNetProfitTargetIdr!!, 0.0001)
+        val targetNet = runtime.paperEngine().unrealizedNetPnl(opened.id, opened.takeProfitPrice)!!
+        assertTrue("manual TP price must realize at least the configured net target", targetNet >= 112.99)
 
         market.price = opened.takeProfitPrice - 0.01
         val below = runtime.tick(2_000L)
