@@ -43,6 +43,7 @@ data class EntryPlan(
     val riskReferenceCapitalIdr: Double = 0.0,
     val takeProfitMode: TakeProfitMode = TakeProfitMode.MODE,
     val manualNetProfitTargetIdr: Double? = null,
+    val positionProfile: PositionTradeConfig? = null,
 )
 
 class MireiDecisionEngine(
@@ -55,34 +56,34 @@ class MireiDecisionEngine(
         initialCapitalIdr: Double? = null,
         stakeOverrideIdr: Double? = null,
     ): EntryPlan {
-        val risk = riskPolicy.evaluate(riskSnapshot)
+        val positionConfig = config.forPosition(snapshot.symbol)
+        val positionRiskPolicy = RiskPolicy(positionConfig)
+        val risk = positionRiskPolicy.evaluate(riskSnapshot)
         val reasons = mutableListOf<String>()
         if (!risk.allowedToOpen) reasons += risk.reasons
         if (!snapshot.dataFresh) reasons += "market_snapshot_stale"
         if (snapshot.price <= 0.0) reasons += "invalid_price"
-        if (snapshot.forecastConfidence < minimumConfidence()) reasons += "forecast_confidence_low"
-        if (snapshot.sentimentScore <= config.sentimentHoldThreshold) reasons += "negative_sentiment_hold"
+        if (snapshot.forecastConfidence < positionMinimumConfidence(positionConfig)) reasons += "forecast_confidence_low"
+        if (snapshot.sentimentScore <= positionConfig.sentimentHoldThreshold) reasons += "negative_sentiment_hold"
         if (snapshot.momentumPercent < -2.0) reasons += "momentum_strongly_negative"
 
         if (!risk.allowedToOpen || reasons.isNotEmpty()) {
-            return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, reasons.ifEmpty { listOf("no_trade") }, config.riskReferenceMode)
+            return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, reasons.ifEmpty { listOf("no_trade") }, positionConfig.riskReferenceMode, positionProfile = positionConfig.profileFor(snapshot.symbol))
         }
 
-        val baseStop = config.effectiveStopLossPercent()
-        val baseTake = config.effectiveTakeProfitPercent()
+        val baseStop = positionConfig.effectiveStopLossPercent()
+        val baseTake = positionConfig.effectiveTakeProfitPercent()
         val volatilityFactor = (snapshot.volatilityPercent / 0.5).coerceAtLeast(1.0)
-        val riskLossPercent = if (config.manualRiskMode == ManualRiskMode.MANUAL) {
+        val riskLossPercent = if (positionConfig.manualRiskMode == ManualRiskMode.MANUAL) {
             baseStop
-        } else if (baseStop == 0.0) {
-            0.0
         } else {
             (baseStop / volatilityFactor).coerceIn(baseStop * 0.50, baseStop)
         }
-        val configuredStake = stakeOverrideIdr?.takeIf { it > 0.0 } ?: config.positionSizeIdr
-        val stake = minOf(configuredStake * risk.positionMultiplier, config.totalCapitalIdr / config.maxOpenPositions)
+        val configuredStake = stakeOverrideIdr?.takeIf { it > 0.0 } ?: positionConfig.positionSizeIdr
+        val stake = minOf(configuredStake * risk.positionMultiplier, positionConfig.totalCapitalIdr / positionConfig.maxOpenPositions)
         val initialCapital = initialCapitalIdr?.takeIf { it > 0.0 } ?: stake
         val instrumentCosts = TradingUniverse.bySymbol(snapshot.symbol)?.executionCosts
-        val targets = config.calculateRiskTargets(
+        val targets = positionConfig.calculateRiskTargets(
             entryPrice = snapshot.price,
             stakeIdr = stake,
             initialCapitalIdr = initialCapital,
@@ -90,7 +91,7 @@ class MireiDecisionEngine(
             takeProfitPercent = baseTake,
             executionCosts = instrumentCosts,
         )
-        val activation = if (targets.stopLossPrice == 0.0) 0.0 else snapshot.price + (snapshot.price - targets.stopLossPrice) * config.trailingActivationR
+        val activation = if (targets.stopLossPrice == 0.0) 0.0 else snapshot.price + (snapshot.price - targets.stopLossPrice) * positionConfig.trailingActivationR
 
         return EntryPlan(
             allowed = true,
@@ -100,14 +101,21 @@ class MireiDecisionEngine(
             trailingActivationPrice = activation,
             stakeIdr = stake,
             reasons = listOf("mirei_entry_gates_passed"),
-            riskReferenceMode = config.riskReferenceMode,
+            riskReferenceMode = positionConfig.riskReferenceMode,
             riskReferenceCapitalIdr = targets.referenceCapitalIdr,
-            takeProfitMode = config.effectiveTakeProfitMode(),
-            manualNetProfitTargetIdr = config.manualNetProfitTargetIdr,
+            takeProfitMode = positionConfig.effectiveTakeProfitMode(),
+            manualNetProfitTargetIdr = positionConfig.manualNetProfitTargetIdr,
+            positionProfile = positionConfig.profileFor(snapshot.symbol),
         )
     }
 
     fun minimumConfidence(): Double = when (config.mode) {
+        ScalpingMode.AGGRESSIVE -> 0.55
+        ScalpingMode.BALANCED -> 0.65
+        ScalpingMode.SAFETY -> 0.75
+    }
+
+    private fun positionMinimumConfidence(positionConfig: TradingConfig): Double = when (positionConfig.mode) {
         ScalpingMode.AGGRESSIVE -> 0.55
         ScalpingMode.BALANCED -> 0.65
         ScalpingMode.SAFETY -> 0.75

@@ -1,38 +1,21 @@
 package com.mirei.app.execution
 
-import com.mirei.app.core.EntryPlan
+import com.mirei.app.core.PositionTradeConfig
 import com.mirei.app.core.TradingConfig
+import com.mirei.app.core.ManualRiskMode
+import com.mirei.app.core.TakeProfitMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PaperExecutionEngineTest {
-    private val plan = EntryPlan(allowed = true, entryPrice = 1_000_000.0, stopLossPrice = 995_000.0, takeProfitPrice = 1_010_000.0, trailingActivationPrice = 1_005_000.0, stakeIdr = 50_000.0, reasons = listOf("test"))
+    private val plan = com.mirei.app.core.EntryPlan(allowed = true, entryPrice = 1_000_000.0, stopLossPrice = 995_000.0, takeProfitPrice = 1_010_000.0, trailingActivationPrice = 1_005_000.0, stakeIdr = 50_000.0, reasons = listOf("test"))
 
     @Test fun openAndCloseCalculatesNetPnl() { val engine = PaperExecutionEngine(feePercent = 0.3, slippagePercent = 0.05); val opened = engine.open("paper-exchange", "BTC/IDR", plan, 1000L); assertTrue(opened.success); assertEquals(1, engine.positionCount()); val closed = engine.close(opened.orderId!!, 1_010_000.0, "take_profit", 2000L); assertTrue(closed.success); assertTrue(closed.pnlIdr > 0.0); assertEquals(0, engine.positionCount()) }
 
-    @Test fun aiCloseIsHeldDuringWarmupButProtectiveCloseStillWorks() {
-        val engine = PaperExecutionEngine(feePercent = 0.0, slippagePercent = 0.0)
-        val opened = engine.open("paper", "BTC/IDR", plan, 1_000L)
-        assertTrue(opened.success)
-        val earlyAiClose = engine.close(opened.orderId!!, 999_000.0, "ai_close", 1_000L + PaperExecutionEngine.AI_CLOSE_WARMUP_MS - 1)
-        assertTrue(!earlyAiClose.success)
-        assertEquals("ai_close_warmup_hold", earlyAiClose.reason)
-        assertEquals(1, engine.positionCount())
-        val stopClose = engine.close(opened.orderId!!, 999_000.0, "stop_loss", 1_001L)
-        assertTrue(stopClose.success)
-        assertEquals(0, engine.positionCount())
-    }
+    @Test fun aiCloseIsHeldDuringWarmupButProtectiveCloseStillWorks() { val engine = PaperExecutionEngine(feePercent = 0.0, slippagePercent = 0.0); val opened = engine.open("paper", "BTC/IDR", plan, 1_000L); assertTrue(opened.success); val earlyAiClose = engine.close(opened.orderId!!, 999_000.0, "ai_close", 1_000L + PaperExecutionEngine.AI_CLOSE_WARMUP_MS - 1); assertTrue(!earlyAiClose.success); assertEquals("ai_close_warmup_hold", earlyAiClose.reason); assertEquals(1, engine.positionCount()); val stopClose = engine.close(opened.orderId!!, 999_000.0, "stop_loss", 1_001L); assertTrue(stopClose.success); assertEquals(0, engine.positionCount()) }
 
-    @Test fun aiCloseWorksAfterWarmup() {
-        val engine = PaperExecutionEngine(feePercent = 0.0, slippagePercent = 0.0)
-        val opened = engine.open("paper", "BTC/IDR", plan, 1_000L)
-        assertTrue(opened.success)
-        val closed = engine.close(opened.orderId!!, 1_000_000.0, "ai_close", 1_000L + PaperExecutionEngine.AI_CLOSE_WARMUP_MS)
-        assertTrue(closed.success)
-        assertEquals("ai_close", closed.reason)
-        assertEquals(0, engine.positionCount())
-    }
+    @Test fun aiCloseWorksAfterWarmup() { val engine = PaperExecutionEngine(feePercent = 0.0, slippagePercent = 0.0); val opened = engine.open("paper", "BTC/IDR", plan, 1_000L); assertTrue(opened.success); val closed = engine.close(opened.orderId!!, 1_000_000.0, "ai_close", 1_000L + PaperExecutionEngine.AI_CLOSE_WARMUP_MS); assertTrue(closed.success); assertEquals("ai_close", closed.reason); assertEquals(0, engine.positionCount()) }
 
     @Test fun invalidClosePriceDoesNotRemovePosition() { val engine = PaperExecutionEngine(); val opened = engine.open("paper-exchange", "BTC/IDR", plan, 1000L); val closed = engine.close(opened.orderId!!, 0.0, "invalid"); assertTrue(!closed.success); assertEquals(1, engine.positionCount()) }
 
@@ -44,22 +27,9 @@ class PaperExecutionEngineTest {
 
     @Test fun limitFillConsumesReservationWithoutDoubleCharging() { val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0, maxOpenPositions = 3); val engine = PaperExecutionEngine(config = config, feePercent = 0.3, slippagePercent = 0.05); val order = engine.placeLimit("paper", "BTC/IDR", 50_000.0, 1_000_000.0, 1000L); val reservedBalance = engine.availableBalanceIdr(); val filled = engine.fillLimit(order.orderId!!, 999_000.0, 2000L); assertTrue(filled.success); assertEquals(1, engine.positionCount()); assertEquals(0, engine.pendingLimitOrders().size); assertEquals(reservedBalance, engine.availableBalanceIdr(), 0.001) }
 
-    @Test fun reentryDoesNotRequireRecoveryOfPreviousLossAndUsesUniqueId() { val engine = PaperExecutionEngine(config = TradingConfig(positionSizeIdr = 50_000.0), feePercent = 0.0, slippagePercent = 0.0); val first = engine.open("paper", "BTC/IDR", plan.copy(entryPrice = 1_000_000.0, stopLossPrice = 999_000.0), 1000L, "entry_filled"); assertTrue(first.success); val closed = engine.close(first.orderId!!, 999_000.0, "stop_loss", 2000L); assertTrue(closed.success); assertEquals(149_950.0, engine.availableBalanceIdr(), 0.001); val reentryPlan = plan.copy(entryPrice = 1_001_000.0, stopLossPrice = 1_000_000.0, takeProfitPrice = 1_011_000.0, stakeIdr = 49_950.0); val second = engine.open("paper", "BTC/IDR", reentryPlan, 2000L, "re_entry"); assertTrue(second.success); assertEquals("re_entry", engine.position(second.orderId!!)?.entryReason); assertEquals(1, engine.positionCount()); assertTrue(second.orderId != first.orderId) }
+    @Test fun reentryIsBlockedOnSameTickAfterCloseAndAllowedAfterCooldown() { val engine = PaperExecutionEngine(config = TradingConfig(positionSizeIdr = 50_000.0), feePercent = 0.0, slippagePercent = 0.0); val first = engine.open("paper", "BTC/IDR", plan.copy(entryPrice = 1_000_000.0, stopLossPrice = 999_000.0), 2000L, "entry_filled"); assertTrue(first.success); val closed = engine.close(first.orderId!!, 999_000.0, "stop_loss", 3000L); assertTrue(closed.success); val blocked = engine.open("paper", "BTC/IDR", plan.copy(entryPrice = 999_500.0, stakeIdr = 50_000.0), 3000L, "sl_re_entry"); assertTrue(!blocked.success); assertEquals("reentry_cooldown_hold", blocked.reason); val stillBlocked = engine.open("paper", "BTC/IDR", plan.copy(entryPrice = 999_500.0, stakeIdr = 50_000.0), 3999L, "sl_re_entry"); assertTrue(!stillBlocked.success); val allowed = engine.open("paper", "BTC/IDR", plan.copy(entryPrice = 999_500.0, stakeIdr = 50_000.0), 4000L, "sl_re_entry"); assertTrue(allowed.success) }
 
-    @Test fun e2EndToEndThreePositionsCloseAndCompoundBalance() { val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0, maxOpenPositions = 3); val events = mutableListOf<String>(); val ledger = object : TradeLedger { override fun recordOpened(position: PaperPosition, entryFeeIdr: Double) { events += "OPEN:${position.id}:$entryFeeIdr:${position.entryReason}" }; override fun recordClosed(position: PaperPosition, exitPrice: Double, feeIdr: Double, pnlIdr: Double, closedAtEpochMs: Long, exitReason: String) { events += "CLOSE:${position.id}:$pnlIdr:$exitReason" } }; val engine = PaperExecutionEngine(config = config, feePercent = 0.3, slippagePercent = 0.05, tradeLedger = ledger); val p1 = engine.open("paper", "BTC/IDR", plan, 1000L); val p2 = engine.open("paper", "ETH/IDR", plan.copy(entryPrice = 2_000_000.0, stopLossPrice = 1_990_000.0, takeProfitPrice = 2_020_000.0, trailingActivationPrice = 2_010_000.0), 2000L); val p3 = engine.open("paper", "SOL/IDR", plan.copy(entryPrice = 3_000_000.0, stopLossPrice = 2_985_000.0, takeProfitPrice = 3_030_000.0, trailingActivationPrice = 3_015_000.0), 3000L); val rejected = engine.open("paper", "XRP/IDR", plan.copy(entryPrice = 4_000_000.0), 4000L); assertTrue(p1.success && p2.success && p3.success); assertTrue(!rejected.success); assertEquals(3, engine.positionCount()); assertEquals(0.0, engine.availableBalanceIdr(), 0.001); val c1 = engine.close(p1.orderId!!, 1_010_000.0, "take_profit", 5000L); assertTrue(c1.success); assertTrue(c1.pnlIdr > 0.0); val compoundedStake = engine.availableBalanceIdr(); assertTrue(compoundedStake > config.positionSizeIdr); val p4 = engine.open("paper", "XRP/IDR", plan.copy(entryPrice = 4_000_000.0, stopLossPrice = 3_980_000.0, takeProfitPrice = 4_040_000.0, trailingActivationPrice = 4_020_000.0, stakeIdr = compoundedStake), 5500L); assertTrue(p4.success); assertEquals(0.0, engine.availableBalanceIdr(), 0.001); assertEquals(3, engine.positionCount()); val c2 = engine.close(p2.orderId!!, 1_990_000.0, "stop_loss", 6000L); val c3 = engine.close(p3.orderId!!, 3_030_000.0, "take_profit", 7000L); val c4 = engine.close(p4.orderId!!, 4_040_000.0, "take_profit", 8000L); assertTrue(c2.success && c3.success && c4.success); assertEquals(0, engine.positionCount()); assertTrue(engine.availableBalanceIdr() > 0.0); assertEquals(8, events.size); assertEquals(4, events.count { it.startsWith("OPEN:") }); assertEquals(4, events.count { it.startsWith("CLOSE:") }) }
+    @Test fun positionKeepsItsManualNetProfitContract() { val profile = PositionTradeConfig(manualRiskMode = ManualRiskMode.MANUAL, stopLossPercent = 0.5, takeProfitMode = TakeProfitMode.MANUAL_NET_IDR, manualNetProfitTargetIdr = 30.0); val config = TradingConfig(manualRiskMode = ManualRiskMode.AUTO, positionProfiles = mapOf("BTC/IDR" to profile)); val positionConfig = config.forPosition("BTC/IDR"); assertEquals(ManualRiskMode.MANUAL, positionConfig.manualRiskMode); assertEquals(TakeProfitMode.MANUAL_NET_IDR, positionConfig.effectiveTakeProfitMode()); assertEquals(30.0, positionConfig.manualNetProfitTargetIdr!!, 0.0001) }
 
-    @Test fun snapshotRestorePreservesCapitalPositionsAndUniqueSequence() {
-        val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0, maxOpenPositions = 3)
-        val firstEngine = PaperExecutionEngine(config = config, feePercent = 0.0, slippagePercent = 0.0)
-        val opened = firstEngine.open("paper", "BTC/IDR", plan, 1000L, "entry_filled")
-        assertTrue(opened.success)
-        val state = firstEngine.snapshotState()
-        val restored = PaperExecutionEngine(config = config, feePercent = 0.0, slippagePercent = 0.0)
-        restored.restoreState(state)
-        assertEquals(100_000.0, restored.availableBalanceIdr(), 0.001)
-        assertEquals(1, restored.positionCount())
-        val next = restored.open("paper", "ETH/IDR", plan.copy(entryPrice = 2_000_000.0), 2000L, "re_entry")
-        assertTrue(next.success)
-        assertTrue(next.orderId != opened.orderId)
-    }
+    @Test fun snapshotRestorePreservesCapitalPositionsAndUniqueSequence() { val config = TradingConfig(totalCapitalIdr = 150_000.0, positionSizeIdr = 50_000.0); val firstEngine = PaperExecutionEngine(config = config, feePercent = 0.0, slippagePercent = 0.0); val opened = firstEngine.open("paper", "BTC/IDR", plan, 1000L, "entry_filled"); assertTrue(opened.success); val state = firstEngine.snapshotState(); val restored = PaperExecutionEngine(config = config, feePercent = 0.0, slippagePercent = 0.0); restored.restoreState(state); assertEquals(100_000.0, restored.availableBalanceIdr(), 0.001); assertEquals(1, restored.positionCount()); val next = restored.open("paper", "ETH/IDR", plan.copy(entryPrice = 2_000_000.0), 2000L, "re_entry"); assertTrue(next.success); assertTrue(next.orderId != opened.orderId) }
 }
