@@ -24,6 +24,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.mirei.app.core.PositionTradeConfigStore
 import com.mirei.app.core.RiskReferenceMode
+import com.mirei.app.core.TradingConfig
+import com.mirei.app.core.TradingUniverse
 import com.mirei.app.runtime.MireiForegroundService
 import com.mirei.app.storage.MireiDatabase
 import java.text.NumberFormat
@@ -212,9 +214,18 @@ class MainActivity : Activity() {
         if (rows.isEmpty()) { content.addView(card("Tidak ada posisi aktif.")); return }
         rows.forEach { row ->
             val symbol = row["symbol"].orEmpty()
+            val quantity = row["quantity"].orEmpty().toDoubleOrNull() ?: 0.0
+            val entry = row["entry"].orEmpty().toDoubleOrNull() ?: 0.0
+            val stake = row["stake"].orEmpty().toDoubleOrNull()?.takeIf { it > 0.0 } ?: quantity * entry
             val profile = PositionTradeConfigStore.get(symbol)
             val tpMode = profile?.manualNetProfitTargetIdr?.let { "MANUAL NET Rp${numberFormat.format(it)}" } ?: profile?.manualTakeProfitPercent?.let { "MANUAL ${it}%" } ?: "AUTO/MODE"
-            content.addView(card("$symbol\nModal Rp ${numberFormat.format(row["stake"].orEmpty().toDoubleOrNull() ?: 0.0)}\nEntry Rp ${numberFormat.format(row["entry"].orEmpty().toDoubleOrNull() ?: 0.0)}\nSekarang Rp ${numberFormat.format(row["current"].orEmpty().toDoubleOrNull() ?: 0.0)}\nPnL berjalan Rp ${signedMoney(row["unrealized"].orEmpty().toDoubleOrNull() ?: 0.0)}\n\nTP Rp ${numberFormat.format(row["tp"].orEmpty().toDoubleOrNull() ?: 0.0)} · $tpMode\nSL Rp ${numberFormat.format(row["sl"].orEmpty().toDoubleOrNull() ?: 0.0)}\nDasar: ${riskBasisLabel(row["risk_basis"].orEmpty())}\nAsal: ${row["entry_reason"].orEmpty()}", 13f))
+            val targets = runCatching {
+                val cfg = if (profile != null) TradingConfig().copy(positionProfiles = mapOf(symbol to profile)).forPosition(symbol) else TradingConfig()
+                cfg.calculateRiskTargets(entry, stake, stake, executionCosts = TradingUniverse.bySymbol(symbol)?.executionCosts)
+            }.getOrNull()
+            val tp = row["tp"].orEmpty().toDoubleOrNull() ?: targets?.takeProfitPrice ?: 0.0
+            val sl = row["sl"].orEmpty().toDoubleOrNull() ?: targets?.stopLossPrice ?: 0.0
+            content.addView(card("$symbol\nModal Rp ${numberFormat.format(stake)}\nEntry Rp ${numberFormat.format(entry)}\nSekarang Rp ${numberFormat.format(row["current"].orEmpty().toDoubleOrNull() ?: 0.0)}\nPnL berjalan Rp ${signedMoney(row["unrealized"].orEmpty().toDoubleOrNull() ?: 0.0)}\n\nTP Rp ${numberFormat.format(tp)} · $tpMode\nSL Rp ${numberFormat.format(sl)}\nDasar: ${riskBasisLabel(row["risk_basis"].orEmpty().ifBlank { profile?.riskReferenceMode?.name.orEmpty() })}\nAsal: ${row["entry_reason"].orEmpty().ifBlank { "—" }}", 13f))
         }
     }
 
@@ -256,11 +267,10 @@ class MainActivity : Activity() {
 
     private fun addAuditRow(table: LinearLayout, time: String, symbol: String, event: String, price: String, reason: String) {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.rgb(24, 34, 43)) }
-        listOf(time, symbol, event, price, reason).forEach { value -> row.addView(text(value, 10f), LinearLayout.LayoutParams(dp(118), ViewGroup.LayoutParams.WRAP_CONTENT)) }
+        listOf(time, symbol, event, price, reason).forEach { value -> row.addView(text(value, 9f), LinearLayout.LayoutParams(dp(82), ViewGroup.LayoutParams.WRAP_CONTENT)) }
         table.addView(row, margin(0, 1, 0, 1))
     }
 
-    private fun showStartDialog() = MireiStartSessionDialog.show(this)
     private fun requestRefresh() = send(MireiForegroundService.ACTION_REFRESH)
 
     private fun send(action: String, extras: Intent.() -> Unit = {}) {
@@ -279,8 +289,31 @@ class MainActivity : Activity() {
     private fun signedMoney(value: Double): String = if (value >= 0.0) "+${numberFormat.format(value)}" else "-${numberFormat.format(kotlin.math.abs(value))}"
     private fun signed(value: Double): String = if (value >= 0.0) "+%.3f".format(Locale.US, value) else "%.3f".format(Locale.US, value)
     private fun fmt(value: Double): String = "%.3f".format(Locale.US, value)
-    private fun parsePositions(raw: String): List<Map<String, String>> = raw.lines().filter { it.isNotBlank() }.map { line -> line.split('|').mapNotNull { token -> val p = token.indexOf('='); if (p > 0) token.substring(0, p) to token.substring(p + 1) else null }.toMap() + mapOf("symbol" to line.substringBefore('|')) }
-    private fun sessionClock(i: Intent): String { val start = i.getLongExtra(MireiForegroundService.EXTRA_RUN_STARTED, 0L); if (start <= 0L) return "BELUM DIMULAI"; val active = i.getStringExtra(MireiForegroundService.EXTRA_STATE) == "RUNNING"; val stop = i.getLongExtra(MireiForegroundService.EXTRA_RUN_STOPPED, 0L); val end = if (active) System.currentTimeMillis() else stop.takeIf { it > 0L } ?: System.currentTimeMillis(); val seconds = ((end - start).coerceAtLeast(0L) / 1000L); return "${seconds / 60}m ${seconds % 60}s · ${formatClock(start)} → ${if (active) "BERJALAN" else formatClock(end)}" }
+    private fun parsePositions(raw: String): List<Map<String, String>> = raw.lines().filter { it.isNotBlank() }.map { line ->
+        val tokens = line.split('|')
+        if (tokens.any { it.contains('=') }) {
+            tokens.mapNotNull { token -> val p = token.indexOf('='); if (p > 0) token.substring(0, p) to token.substring(p + 1) else null }.toMap()
+        } else {
+            mapOf(
+                "symbol" to tokens.getOrNull(0).orEmpty(),
+                "quantity" to tokens.getOrNull(1).orEmpty(),
+                "entry" to tokens.getOrNull(2).orEmpty(),
+                "current" to tokens.getOrNull(3).orEmpty(),
+                "unrealized" to tokens.getOrNull(4).orEmpty(),
+            )
+        }
+    }
+    private fun sessionClock(i: Intent): String {
+        val sessionCreated = i.getLongExtra(MireiForegroundService.EXTRA_SESSION_CREATED, 0L)
+        val start = i.getLongExtra(MireiForegroundService.EXTRA_RUN_STARTED, 0L).takeIf { it > 0L } ?: sessionCreated
+        if (start <= 0L) return "BELUM DIMULAI"
+        val state = i.getStringExtra(MireiForegroundService.EXTRA_STATE).orEmpty()
+        val active = state == "RUNNING" || state == "HOLD"
+        val stop = i.getLongExtra(MireiForegroundService.EXTRA_RUN_STOPPED, 0L)
+        val end = if (active) System.currentTimeMillis() else stop.takeIf { it > 0L } ?: System.currentTimeMillis()
+        val seconds = ((end - start).coerceAtLeast(0L) / 1000L)
+        return "${seconds / 60}m ${seconds % 60}s · ${formatClock(start)} → ${if (active) stateLabel(state) else formatClock(end)}"
+    }
     private fun formatClock(epoch: Long): String = SimpleDateFormat("MM/dd/HH:mm", Locale.US).format(Date(epoch))
     private fun formatEpoch(epoch: Long): String = if (epoch <= 0L) "—" else SimpleDateFormat("MM/dd HH:mm:ss", Locale.US).format(Date(epoch))
     private fun addTitle(value: String) { content.addView(text(value, 20f, true), margin(0, 8, 0, 5)) }
