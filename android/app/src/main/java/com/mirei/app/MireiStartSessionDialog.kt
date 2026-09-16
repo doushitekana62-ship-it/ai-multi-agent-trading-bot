@@ -20,8 +20,6 @@ import android.widget.Spinner
 import android.widget.TextView
 import com.mirei.app.core.AssetClass
 import com.mirei.app.core.Exchange
-import com.mirei.app.core.ManualRiskMode
-import com.mirei.app.core.PositionTradeConfig
 import com.mirei.app.core.PositionTradeConfigStore
 import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.core.ScalpingMode
@@ -70,7 +68,6 @@ object MireiStartSessionDialog {
             val supported = TradingUniverse.paperReady().filter { it.providerId == exchange.id }
             val classes = supported.map { it.assetClass }.distinct()
             classSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, classes.map { it.label })
-            classSpinner.setSelection(0)
             fun rebuildInstruments(assetClass: AssetClass) {
                 instrumentList.removeAllViews(); selectedChecks.clear(); amounts.clear()
                 val instruments = supported.filter { it.assetClass == assetClass }
@@ -98,6 +95,7 @@ object MireiStartSessionDialog {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) { classes.getOrNull(position)?.let(::rebuildInstruments) }
             }
+            classSpinner.setSelection(0)
             rebuildInstruments(classes.firstOrNull() ?: AssetClass.CRYPTO)
         }
         exchangeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
@@ -106,12 +104,7 @@ object MireiStartSessionDialog {
         }
         rebuildClasses(Exchange.INDODAX)
 
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle("MULAI SESI PAPER")
-            .setView(scroll)
-            .setNegativeButton("BATAL", null)
-            .setPositiveButton("MULAI", null)
-            .create()
+        val dialog = AlertDialog.Builder(activity).setTitle("MULAI SESI PAPER").setView(scroll).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create()
         dialog.setOnShowListener {
             dialog.window?.setLayout((activity.resources.displayMetrics.widthPixels * 0.96f).toInt(), (activity.resources.displayMetrics.heightPixels * 0.90f).toInt())
             scroll.layoutParams = scroll.layoutParams.apply { height = (activity.resources.displayMetrics.heightPixels * 0.66f).toInt(); width = ViewGroup.LayoutParams.MATCH_PARENT }
@@ -138,8 +131,7 @@ object MireiStartSessionDialog {
 
     private fun configureTrade(activity: Activity, symbol: String, draft: Draft, onSaved: () -> Unit) {
         val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(activity, 12), dp(activity, 4), dp(activity, 12), dp(activity, 4)) }
-        box.addView(label(activity, symbol, 18f, true))
-        box.addView(label(activity, "Kontrak ini hanya berlaku untuk $symbol.", 12.5f))
+        box.addView(label(activity, symbol, 18f, true)); box.addView(label(activity, "Kontrak ini hanya berlaku untuk $symbol.", 12.5f))
         val mode = Spinner(activity).apply { adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, ScalpingMode.values().map { it.name }); setSelection(ScalpingMode.values().indexOf(draft.mode).coerceAtLeast(0)) }
         val manual = CheckBox(activity).apply { text = "MANUAL TP / SL"; isChecked = draft.manual }
         box.addView(label(activity, "MODE TRADE", 14f, true)); box.addView(mode); box.addView(manual)
@@ -155,6 +147,7 @@ object MireiStartSessionDialog {
         box.addView(label(activity, "TAKE PROFIT", 14f, true)); box.addView(tpMode); box.addView(tpPercent); box.addView(netTarget)
         box.addView(label(activity, "DASAR RISIKO", 14f, true)); box.addView(basis)
         fun refresh() {
+            if (manual.isChecked && tpMode.selectedItemPosition == 0) tpMode.setSelection(2)
             val enabled = manual.isChecked
             sl.isEnabled = enabled; tpMode.isEnabled = enabled; tpPercent.isEnabled = enabled && tpMode.selectedItemPosition == 1; netTarget.isEnabled = enabled && tpMode.selectedItemPosition == 2
             mode.isEnabled = !enabled
@@ -166,12 +159,12 @@ object MireiStartSessionDialog {
         refresh()
         AlertDialog.Builder(activity).setTitle("JENIS TRADE · $symbol").setView(box).setNegativeButton("BATAL", null).setPositiveButton("SIMPAN") { _, _ ->
             val slValue = sl.text.toString().toDoubleOrNull(); val tpValue = tpPercent.text.toString().toDoubleOrNull(); val net = netTarget.text.toString().toDoubleOrNull(); val selectedTp = when (tpMode.selectedItemPosition) { 1 -> TakeProfitMode.MANUAL_PERCENT; 2 -> TakeProfitMode.MANUAL_NET_IDR; else -> TakeProfitMode.MODE }
-            if (manual.isChecked && (slValue == null || slValue <= 0.0 || (selectedTp == TakeProfitMode.MANUAL_PERCENT && (tpValue == null || tpValue <= slValue)) || (selectedTp == TakeProfitMode.MANUAL_NET_IDR && (net == null || net <= 0.0)))) return@setPositiveButton
+            if (manual.isChecked && (slValue == null || slValue <= 0.0 || selectedTp == TakeProfitMode.MODE || (selectedTp == TakeProfitMode.MANUAL_PERCENT && (tpValue == null || tpValue <= slValue)) || (selectedTp == TakeProfitMode.MANUAL_NET_IDR && (net == null || net <= 0.0)))) return@setPositiveButton
             draft.mode = runCatching { ScalpingMode.valueOf(mode.selectedItem.toString()) }.getOrDefault(ScalpingMode.BALANCED); draft.manual = manual.isChecked; draft.sl = slValue ?: 0.50; draft.tpMode = selectedTp; draft.tpPercent = tpValue ?: 1.00; draft.netTarget = net ?: 30.0; draft.basis = if (basis.checkedRadioButtonId == capital.id) RiskReferenceMode.INITIAL_CAPITAL else RiskReferenceMode.ENTRY_PRICE; onSaved()
         }.show()
     }
 
-    private fun draftLabel(draft: Draft): String = if (!draft.manual) "AUTO · ${draft.mode.name} · TP/SL mengikuti mode" else when (draft.tpMode) { TakeProfitMode.MANUAL_NET_IDR -> "MANUAL · SL ${draft.sl}% · TP bersih Rp${numberFormat.format(draft.netTarget)} · ${draft.basis.name}"; TakeProfitMode.MANUAL_PERCENT -> "MANUAL · SL ${draft.sl}% · TP ${draft.tpPercent}% · ${draft.basis.name}"; else -> "MANUAL · SL ${draft.sl}% · TP mode · ${draft.basis.name}" }
+    private fun draftLabel(draft: Draft): String = if (!draft.manual) "AUTO · ${draft.mode.name} · TP/SL mengikuti mode" else when (draft.tpMode) { TakeProfitMode.MANUAL_NET_IDR -> "MANUAL · SL ${draft.sl}% · TP bersih Rp${numberFormat.format(draft.netTarget)} · ${draft.basis.name}"; TakeProfitMode.MANUAL_PERCENT -> "MANUAL · SL ${draft.sl}% · TP ${draft.tpPercent}% · ${draft.basis.name}"; else -> "MANUAL · kontrak belum lengkap" }
     private fun encode(d: Draft): String = listOf(d.mode.name, d.manual, d.sl, d.tpMode.name, d.tpPercent, d.netTarget, d.basis.name).joinToString(",")
     private fun label(activity: Activity, value: String, size: Float, bold: Boolean = false): TextView = TextView(activity).apply { text = value; textSize = size; setTextColor(Color.WHITE); setPadding(dp(activity, 4), dp(activity, 4), dp(activity, 4), dp(activity, 4)); if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD) }
     private fun lp(activity: Activity, l: Int, t: Int, r: Int, b: Int): ViewGroup.MarginLayoutParams = ViewGroup.MarginLayoutParams(-1, -2).apply { leftMargin = dp(activity, l); topMargin = dp(activity, t); rightMargin = dp(activity, r); bottomMargin = dp(activity, b) }
