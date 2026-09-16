@@ -101,6 +101,24 @@ class MireiForegroundService : Service() {
     }
 
     private fun startRuntime(intent: Intent) {
+        val hasInitialAllocations = intent.getStringExtra(EXTRA_INITIAL_ALLOCATIONS).orEmpty().isNotBlank()
+        if (sessionStarted && hasInitialAllocations) {
+            if (controller.state != MireiState.STOP) {
+                runCatching { MireiDatabase(this).recordAudit("START_REJECTED", "active_session_requires_stop_or_reset") }
+                publishHealth()
+                return
+            }
+            // MULAI after BERHENTI creates a genuinely new portfolio session. LANJUTKAN sends no allocations and only resumes.
+            worker.removeCallbacksAndMessages(null)
+            sessionStore.clearSession()
+            sessionStarted = false
+            sessionCreatedAtEpochMs = 0L
+            runStartedAtEpochMs = 0L
+            runStoppedAtEpochMs = 0L
+            timestampResetAtEpochMs = 0L
+            config = loadConfig()
+            createRuntime()
+        }
         if (sessionStarted) {
             if (!internetAvailable) { controller.hold(); lastNotificationKey = "SEARCHING:${System.currentTimeMillis()}"; publishHealth(); return }
             worker.removeCallbacksAndMessages(null)
@@ -223,7 +241,9 @@ class MireiForegroundService : Service() {
     private fun applyRisk() {
         val stored = loadConfig()
         config = stored.copy(totalCapitalIdr = config.totalCapitalIdr, positionSizeIdr = config.positionSizeIdr, maxOpenPositions = config.maxOpenPositions)
-        runtime.applyRiskConfig(config); persistSession()
+        runtime.applyRiskConfig(config)
+        persistSession()
+        runCatching { MireiDatabase(this).recordAudit("RISK_APPLIED", "profiles=${config.positionProfiles.keys.joinToString(",")}|basis=${config.riskReferenceMode.name}") }
     }
 
     private val runtimeLoop = object : Runnable {
@@ -293,6 +313,15 @@ class MireiForegroundService : Service() {
             listOf(pair, snapshot.assetClass.label, snapshot.providerId, "%.2f".format(Locale.US, snapshot.price), "%.3f".format(Locale.US, snapshot.change1mPercent), "%.3f".format(Locale.US, snapshot.momentumPercent), "%.3f".format(Locale.US, snapshot.trendScorePercent), "%.2f".format(Locale.US, share), snapshot.sourceAgeMs).joinToString("|")
         }
         runtime.updateScannerSummary(lastScannerSummary)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        runCatching { MireiDatabase(this).recordAudit("FGS_TIMEOUT", "startId=$startId|fgsType=$fgsType") }
+        worker.removeCallbacksAndMessages(null)
+        controller.stop()
+        runStoppedAtEpochMs = System.currentTimeMillis()
+        persistSession()
+        stopSelf(startId)
     }
 
     override fun onDestroy() {
