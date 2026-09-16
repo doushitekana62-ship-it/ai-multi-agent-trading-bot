@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import com.mirei.app.core.DecisionMode
+import com.mirei.app.core.Exchange
 import com.mirei.app.core.MireiState
 import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.core.ScalpingMode
@@ -295,40 +296,21 @@ class MireiForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        runCatching { persistSession() }; runCatching { networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } }
-        if (::workerThread.isInitialized) workerThread.quitSafely(); networkCallback = null; connectivityManager = null; super.onDestroy()
+        runCatching { persistSession() }; runCatching { networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } }; runCatching { workerThread.quitSafely() }; super.onDestroy()
     }
 
     private fun handleRuntimeFailure(message: String, error: Throwable) {
-        controller.onEngineError()
-        runCatching { MireiDatabase(this).recordAudit("RUNTIME_ERROR", "$message|${error.javaClass.simpleName}|${error.message ?: ""}") }
-        runCatching { publish("ERROR · $message · ${error.javaClass.simpleName}", force = true) }; runCatching { publishHealth() }
+        controller.hold(); runCatching { MireiDatabase(this).recordAudit("RUNTIME_ERROR", "$message|${error.message ?: error::class.java.simpleName}") }; publishHealth()
     }
 
+    private fun publishHealth() = publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES)))
+
     private fun publishStatus(status: PaperRuntimeStatus) {
-        val intent = Intent(ACTION_STATUS).setPackage(packageName).apply {
+        val intent = Intent(ACTION_STATUS).apply {
+            setPackage(packageName)
             putExtra(EXTRA_STATE, controller.state.name); putExtra(EXTRA_SYMBOL, status.marketSymbol); putExtra(EXTRA_EXCHANGE, exchangeId)
-            putExtra(EXTRA_PRICE, status.marketPrice); putExtra(EXTRA_BID, status.marketBidPrice); putExtra(EXTRA_ASK, status.marketAskPrice)
-            putExtra(EXTRA_HIGH_24H, status.marketHigh24h); putExtra(EXTRA_LOW_24H, status.marketLow24h); putExtra(EXTRA_VOLUME_24H, status.marketVolume24h)
-            putExtra(EXTRA_EQUITY, status.equityIdr); putExtra(EXTRA_BALANCE, status.availableBalanceIdr); putExtra(EXTRA_PNL, status.dailyPnlIdr)
-            putExtra(EXTRA_POSITIONS, status.activePositions.size); putExtra(EXTRA_CONFIDENCE, status.lastDecision?.confidence ?: 0.0)
-            putExtra(EXTRA_ACTION, status.lastDecision?.action?.name ?: "HOLD"); putExtra(EXTRA_RATIONALE, status.lastDecision?.rationale ?: "no_decision")
-            putExtra(EXTRA_AGENT_SUMMARY, status.decisionsBySymbol.entries.joinToString("\n\n") { (pair, decision) -> "$pair => " + decision.observations.joinToString(" | ") { observation -> "${observation.agent.name}:${observation.action.name} ${(observation.confidence * 100).toInt()}% ${observation.rationale}" } })
-            putExtra(EXTRA_ENTRY_REASONS, status.entryPlanReasons.joinToString(" | ")); putExtra(EXTRA_MOMENTUM, status.marketMomentumPercent)
-            putExtra(EXTRA_VOLATILITY, status.marketVolatilityPercent); putExtra(EXTRA_SENTIMENT, status.marketSentimentScore); putExtra(EXTRA_FORECAST_CONFIDENCE, status.forecastConfidence)
-            putExtra(EXTRA_SPREAD, status.marketSpreadPercent); putExtra(EXTRA_CHANGE_TICK, status.changeSinceLastTickPercent); putExtra(EXTRA_CHANGE_1M, status.change1mPercent)
-            putExtra(EXTRA_CHANGE_5M, status.change5mPercent); putExtra(EXTRA_CHANGE_15M, status.change15mPercent); putExtra(EXTRA_FLOW, status.tradeFlowPercent); putExtra(EXTRA_TREND, status.trendScorePercent)
-            putExtra(EXTRA_TRADE_COUNT, status.tradeCount); putExtra(EXTRA_BUY_VOLUME, status.buyVolume); putExtra(EXTRA_SELL_VOLUME, status.sellVolume)
-            putExtra(EXTRA_LAST_TRADE, status.lastTradeEpochMs); putExtra(EXTRA_SNAPSHOT_TIME, status.snapshotEpochMs); putExtra(EXTRA_SOURCE_AGE, status.sourceAgeMs)
-            putExtra(EXTRA_MARKET_FRESH, status.marketDataFresh); putExtra(EXTRA_INTERNET, status.internetAvailable); putExtra(EXTRA_EXCHANGE_HEALTHY, status.exchangeHealthy)
-            putExtra(EXTRA_ERROR, status.lastError)
-            putExtra(EXTRA_RECENT_EXECUTIONS, status.recentExecutions.joinToString("\n") { execution -> "${execution.reason ?: "execution"} | PnL Rp ${"%.2f".format(Locale.US, execution.pnlIdr)} | Kas Rp ${"%.2f".format(Locale.US, execution.remainingBalanceIdr)} | ${execution.orderId ?: "-"}" })
-            putExtra(EXTRA_POSITIONS_DETAIL, status.activePositions.joinToString("\n") { p ->
-                val snapshot = status.snapshotsBySymbol[p.symbol]; val current = snapshot?.price ?: p.entryPrice; val amount = p.stakeIdr / p.entryPrice; val value = current * amount; val unrealized = value - p.stakeIdr
-                val tpDistance = (p.takeProfitPrice / p.entryPrice - 1.0) * 100.0; val slDistance = if (p.stopLossPrice == 0.0) 0.0 else (1.0 - p.stopLossPrice / p.entryPrice) * 100.0
-                "${p.symbol}|stake=${"%.2f".format(Locale.US, p.stakeIdr)}|entry=${"%.2f".format(Locale.US, p.entryPrice)}|current=${"%.2f".format(Locale.US, current)}|value=${"%.2f".format(Locale.US, value)}|unrealized=${"%.2f".format(Locale.US, unrealized)}|tp=${"%.2f".format(Locale.US, p.takeProfitPrice)}|sl=${"%.2f".format(Locale.US, p.stopLossPrice)}|tp_pct=${"%.3f".format(Locale.US, tpDistance)}|sl_pct=${"%.3f".format(Locale.US, slDistance)}|entry_reason=${p.entryReason}|risk_basis=${p.riskReferenceMode.name}|risk_capital=${"%.2f".format(Locale.US, p.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: p.stakeIdr)}|opened=${p.openedAtEpochMs}"
-            })
-            putExtra(EXTRA_SCANNER, status.scannerSummary); putExtra(EXTRA_TICK, status.lastTickEpochMs); putExtra(EXTRA_BUY_COUNT, status.buyDecisionCount); putExtra(EXTRA_HOLD_COUNT, status.holdDecisionCount); putExtra(EXTRA_SELL_COUNT, status.sellDecisionCount)
+            putExtra(EXTRA_PRICE, status.marketPrice); putExtra(EXTRA_BID, status.bidPrice); putExtra(EXTRA_ASK, status.askPrice); putExtra(EXTRA_HIGH_24H, status.high24h); putExtra(EXTRA_LOW_24H, status.low24h); putExtra(EXTRA_VOLUME_24H, status.volume24h)
+            putExtra(EXTRA_EQUITY, status.equityIdr); putExtra(EXTRA_BALANCE, status.availableBalanceIdr); putExtra(EXTRA_PNL, status.dailyPnlIdr); putExtra(EXTRA_POSITIONS, status.activePositions.size); putExtra(EXTRA_CONFIDENCE, status.decisionConfidence); putExtra(EXTRA_ACTION, status.decisionAction.name); putExtra(EXTRA_RATIONALE, status.decisionRationale); putExtra(EXTRA_AGENT_SUMMARY, status.agentSummary); putExtra(EXTRA_ENTRY_REASONS, status.entryReasons.joinToString("|")); putExtra(EXTRA_MOMENTUM, status.momentumPercent); putExtra(EXTRA_VOLATILITY, status.volatilityPercent); putExtra(EXTRA_SENTIMENT, status.sentimentScore); putExtra(EXTRA_FORECAST_CONFIDENCE, status.forecastConfidence); putExtra(EXTRA_SPREAD, status.spreadPercent); putExtra(EXTRA_CHANGE_TICK, status.changeTickPercent); putExtra(EXTRA_CHANGE_1M, status.change1mPercent); putExtra(EXTRA_CHANGE_5M, status.change5mPercent); putExtra(EXTRA_CHANGE_15M, status.change15mPercent); putExtra(EXTRA_FLOW, status.flowScore); putExtra(EXTRA_TREND, status.trendScorePercent); putExtra(EXTRA_TRADE_COUNT, status.tradeCount); putExtra(EXTRA_BUY_VOLUME, status.buyVolume); putExtra(EXTRA_SELL_VOLUME, status.sellVolume); putExtra(EXTRA_LAST_TRADE, status.lastTradeEpochMs); putExtra(EXTRA_SNAPSHOT_TIME, status.snapshotEpochMs); putExtra(EXTRA_SOURCE_AGE, status.sourceAgeMs); putExtra(EXTRA_MARKET_FRESH, status.marketFresh); putExtra(EXTRA_INTERNET, status.internetAvailable); putExtra(EXTRA_EXCHANGE_HEALTHY, status.exchangeHealthy); putExtra(EXTRA_ERROR, status.lastError ?: ""); putExtra(EXTRA_RECENT_EXECUTIONS, status.recentExecutions.joinToString("\n") { "${it.symbol}|${it.reason}|${it.averagePrice}|${it.pnlIdr}" }); putExtra(EXTRA_POSITIONS_DETAIL, status.activePositions.joinToString("\n") { "${it.symbol}|${it.quantity}|${it.entryPrice}|${it.currentPrice}|${it.unrealizedPnlIdr}" }); putExtra(EXTRA_SCANNER, status.scannerSummary); putExtra(EXTRA_TICK, status.lastTickEpochMs); putExtra(EXTRA_BUY_COUNT, status.buyDecisionCount); putExtra(EXTRA_HOLD_COUNT, status.holdDecisionCount); putExtra(EXTRA_SELL_COUNT, status.sellDecisionCount)
             putExtra(EXTRA_HUMAN_REQUIRED, status.humanVerificationRequired); putExtra(EXTRA_HUMAN_ALLOWED, status.humanAllowedIndicators.joinToString(",")); putExtra(EXTRA_HUMAN_BLOCKED, status.humanBlockedIndicators.joinToString(","))
             putExtra(EXTRA_SESSION_CREATED, sessionCreatedAtEpochMs); putExtra(EXTRA_RUN_STARTED, runStartedAtEpochMs); putExtra(EXTRA_RUN_STOPPED, runStoppedAtEpochMs); putExtra(EXTRA_CLOCK_RESET, timestampResetAtEpochMs)
             putExtra(EXTRA_RISK_BASIS, config.riskReferenceMode.name); putExtra(EXTRA_TOTAL_CAPITAL, config.totalCapitalIdr)
@@ -352,8 +334,6 @@ class MireiForegroundService : Service() {
         val isSell = execution.reason in setOf("stop_loss", "take_profit", "ai_close", "manual_close_all"); val action = if (isSell) "SELL" else "BUY"; val pnl = if (isSell) "PnL ${if (execution.pnlIdr >= 0.0) "+" else "-"}Rp ${"%.2f".format(Locale.US, kotlin.math.abs(execution.pnlIdr))}" else "Harga Rp ${"%.2f".format(Locale.US, execution.averagePrice)}"
         return "$action $symbolText · $pnl · ${execution.reason ?: "execution"}"
     }
-
-    private fun publishHealth() = publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES)))
 
     private fun publish(text: String, force: Boolean) {
         val key = if (force) "force:${System.currentTimeMillis()}" else text; if (!force && key == lastNotificationKey) return; lastNotificationKey = key
@@ -392,7 +372,7 @@ class MireiForegroundService : Service() {
         const val EXTRA_STATE = "state"; const val EXTRA_SYMBOL = "symbol"; const val EXTRA_EXCHANGE = "exchange"; const val EXTRA_INITIAL_ALLOCATIONS = "initial_allocations"; const val EXTRA_HUMAN_SYMBOL = "human_symbol"; const val EXTRA_HUMAN_AGENTS = "human_agents"; const val EXTRA_TOP_UP_AMOUNT = "top_up_amount"; const val EXTRA_TOTAL_CAPITAL = "total_capital"; const val EXTRA_PRICE = "price"; const val EXTRA_BID = "bid"; const val EXTRA_ASK = "ask"; const val EXTRA_HIGH_24H = "high24h"; const val EXTRA_LOW_24H = "low24h"; const val EXTRA_VOLUME_24H = "volume24h"; const val EXTRA_EQUITY = "equity"; const val EXTRA_BALANCE = "balance"; const val EXTRA_PNL = "pnl"; const val EXTRA_POSITIONS = "positions"; const val EXTRA_CONFIDENCE = "confidence"; const val EXTRA_ACTION = "action"; const val EXTRA_RATIONALE = "rationale"; const val EXTRA_AGENT_SUMMARY = "agent_summary"; const val EXTRA_ENTRY_REASONS = "entry_reasons"; const val EXTRA_MOMENTUM = "momentum"; const val EXTRA_VOLATILITY = "volatility"; const val EXTRA_SENTIMENT = "sentiment"; const val EXTRA_FORECAST_CONFIDENCE = "forecast_confidence"; const val EXTRA_SPREAD = "spread"; const val EXTRA_CHANGE_TICK = "change_tick"; const val EXTRA_CHANGE_1M = "change_1m"; const val EXTRA_CHANGE_5M = "change_5m"; const val EXTRA_CHANGE_15M = "change_15m"; const val EXTRA_FLOW = "flow"; const val EXTRA_TREND = "trend"; const val EXTRA_TRADE_COUNT = "trade_count"; const val EXTRA_BUY_VOLUME = "buy_volume"; const val EXTRA_SELL_VOLUME = "sell_volume"; const val EXTRA_LAST_TRADE = "last_trade"; const val EXTRA_SNAPSHOT_TIME = "snapshot_time"; const val EXTRA_SOURCE_AGE = "source_age"; const val EXTRA_MARKET_FRESH = "market_fresh"; const val EXTRA_INTERNET = "internet"; const val EXTRA_EXCHANGE_HEALTHY = "exchange_healthy"; const val EXTRA_ERROR = "error"; const val EXTRA_RECENT_EXECUTIONS = "recent_executions"; const val EXTRA_POSITIONS_DETAIL = "positions_detail"; const val EXTRA_SCANNER = "scanner"; const val EXTRA_TICK = "tick"; const val EXTRA_BUY_COUNT = "buy_count"; const val EXTRA_HOLD_COUNT = "hold_count"; const val EXTRA_SELL_COUNT = "sell_count"; const val EXTRA_HUMAN_REQUIRED = "human_required"; const val EXTRA_HUMAN_ALLOWED = "human_allowed"; const val EXTRA_HUMAN_BLOCKED = "human_blocked"; const val EXTRA_SESSION_CREATED = "session_created"; const val EXTRA_RUN_STARTED = "run_started"; const val EXTRA_RUN_STOPPED = "run_stopped"; const val EXTRA_CLOCK_RESET = "clock_reset"; const val EXTRA_RISK_BASIS = "risk_basis"
         const val DEFAULT_SYMBOL = "BTC/IDR"; const val DEFAULT_EXCHANGE = "indodax"
         val SUPPORTED_MARKETS: List<String> get() = TradingUniverse.paperReady().map { it.symbol }
-        val SUPPORTED_EXCHANGES = listOf("indodax", "yahoo_finance", "binance", "bingx", "bitget", "bybit", "gate", "htx", "hyperliquid", "kraken", "okx")
+        val SUPPORTED_EXCHANGES: List<String> get() = Exchange.values().map { it.id }
         private const val CHANNEL_ID = "mirei_runtime"; private const val NOTIFICATION_ID = 1001; private const val TICK_MS = 5_000L; private const val SCAN_INTERVAL_MS = 60_000L; private const val PREFS_NAME = "mirei_settings"; private const val KEY_MODE = "mode"; private const val KEY_MANUAL = "manual_risk"; private const val KEY_MANUAL_SL = "manual_sl"; private const val KEY_MANUAL_TP = "manual_tp"; private const val KEY_MANUAL_NET_TARGET = "manual_net_target"; private const val KEY_RISK_BASIS = "risk_basis"; private const val KEY_TOTAL_CAPITAL = "total_capital"
     }
 }
