@@ -1,0 +1,56 @@
+name: Apply Mirei runtime UI fixes
+
+on:
+  push:
+    branches: [fix/runtime-ui-persistence-per-trade]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: "!contains(github.event.head_commit.message, '[auto-patch]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch sources
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          main = Path('android/app/src/main/java/com/mirei/app/MainActivity.kt')
+          s = main.read_text()
+          pattern = r'    private fun showStartDialog\(\) \{.*?\n    private fun showRiskDialog\(\)'
+          replacement = '''    private fun showStartDialog() {
+          MireiStartSessionDialog.show(this)
+      }
+
+      private fun showRiskDialog()'''
+          s2, n = re.subn(pattern, replacement, s, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'MainActivity showStartDialog replacement count={n}')
+          main.write_text(s2)
+
+          app = Path('android/app/src/main/java/com/mirei/app/MireiDashboardApplicationV2.kt')
+          app.write_text('''package com.mirei.app\n\nimport android.app.Application\n\n/**\n * Dashboard rendering is owned by MainActivity. This application class intentionally\n * does not attach a second overlay tree, which previously caused PASAR/UI overlap.\n */\nclass MireiDashboardApplicationV2 : Application()\n''')
+
+          service = Path('android/app/src/main/java/com/mirei/app/runtime/MireiForegroundService.kt')
+          s = service.read_text()
+          s = s.replace('''            if (saved != null && saved.active) restoreSessionMetadata(saved)\n            createRuntime()\n            if (saved != null && saved.active) restoreRuntimeState(saved)''', '''            if (saved != null && saved.active) {\n                restoreSessionMetadata(saved)\n                config = config.copy(positionProfiles = saved.positionProfiles)\n            }\n            createRuntime()\n            if (saved != null && saved.active) restoreRuntimeState(saved)''')
+          s = s.replace('''            publishHealth()\n        } catch (error: Exception) {''', '''            publishHealth()\n            if (saved != null && saved.active && saved.runStoppedAtEpochMs == 0L) {\n                controller.start()\n                worker.post(runtimeLoop)\n            }\n        } catch (error: Exception) {''', 1)
+          s = s.replace('''        return START_NOT_STICKY\n    }''', '''        return START_STICKY\n    }''', 1)
+          s = s.replace('''            sellDecisionCount = state.sellDecisionCount, initialCapitalBySymbol = state.initialCapitalBySymbol,\n        ))''', '''            sellDecisionCount = state.sellDecisionCount, initialCapitalBySymbol = state.initialCapitalBySymbol,\n            positionProfiles = config.positionProfiles,\n        ))''', 1)
+          s = s.replace('''        val referenceMode = runCatching { RiskReferenceMode.valueOf(prefs.getString(KEY_RISK_BASIS, RiskReferenceMode.ENTRY_PRICE.name)!!) }.getOrDefault(RiskReferenceMode.ENTRY_PRICE)\n        return if (manual && sl != null && (tp != null || netTarget != null)) {''', '''        val referenceMode = runCatching { RiskReferenceMode.valueOf(prefs.getString(KEY_RISK_BASIS, RiskReferenceMode.ENTRY_PRICE.name)!!) }.getOrDefault(RiskReferenceMode.ENTRY_PRICE)\n        val profiles = parsePositionProfiles(prefs.getString(KEY_POSITION_PROFILES, "").orEmpty())\n        return if (manual && sl != null && (tp != null || netTarget != null)) {''', 1)
+          s = s.replace('''TradingConfig(totalCapitalIdr = totalCapital, mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = com.mirei.app.core.ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp ?: 1.0, manualNetProfitTargetIdr = netTarget, riskReferenceMode = referenceMode)\n        } else TradingConfig(totalCapitalIdr = totalCapital, mode = mode, decisionMode = DecisionMode.SUGGESTION, riskReferenceMode = referenceMode)''', '''TradingConfig(totalCapitalIdr = totalCapital, mode = mode, decisionMode = DecisionMode.SUGGESTION, manualRiskMode = com.mirei.app.core.ManualRiskMode.MANUAL, manualStopLossPercent = sl, manualTakeProfitPercent = tp ?: 1.0, manualNetProfitTargetIdr = netTarget, riskReferenceMode = referenceMode, positionProfiles = profiles)\n        } else TradingConfig(totalCapitalIdr = totalCapital, mode = mode, decisionMode = DecisionMode.SUGGESTION, riskReferenceMode = referenceMode, positionProfiles = profiles)''', 1)
+          s = s.replace('''    override fun onBind(intent: Intent?): IBinder? = null\n\n    companion object {''', '''    private fun parsePositionProfiles(raw: String): Map<String, com.mirei.app.core.PositionTradeConfig> = linkedMapOf<String, com.mirei.app.core.PositionTradeConfig>().apply {\n        raw.split(';').forEach { entry ->\n            val parts = entry.split('|')\n            if (parts.size < 2) return@forEach\n            val fields = parts[1].split(',')\n            runCatching {\n                val mode = ScalpingMode.valueOf(fields[0])\n                val manual = fields[1].toBoolean()\n                val sl = fields[2].toDouble()\n                val tpMode = com.mirei.app.core.TakeProfitMode.valueOf(fields[3])\n                val tpPercent = fields[4].toDouble()\n                val netTarget = fields[5].toDouble()\n                val basis = RiskReferenceMode.valueOf(fields[6])\n                put(parts[0], com.mirei.app.core.PositionTradeConfig(mode, if (manual) com.mirei.app.core.ManualRiskMode.MANUAL else com.mirei.app.core.ManualRiskMode.AUTO, if (manual) sl else null, if (manual) tpMode else com.mirei.app.core.TakeProfitMode.MODE, if (manual && tpMode == com.mirei.app.core.TakeProfitMode.MANUAL_PERCENT) tpPercent else null, if (manual && tpMode == com.mirei.app.core.TakeProfitMode.MANUAL_NET_IDR) netTarget else null, basis))\n            }.getOrNull()\n        }\n    }\n\n    override fun onTimeout(startId: Int, fgsType: Int) {\n        runCatching { MireiDatabase(this).recordAudit("FGS_TIMEOUT", "start_id=$startId|fgs_type=$fgsType") }\n        runCatching { persistSession() }\n        stopSelf()\n    }\n\n    private fun onTimeoutCompat() {\n        runCatching { persistSession() }\n        stopSelf()\n    }\n\n    override fun onBind(intent: Intent?): IBinder? = null\n\n    companion object {''', 1)
+          s = s.replace('''private const val KEY_RISK_BASIS = "risk_basis"; private const val KEY_TOTAL_CAPITAL = "total_capital"''', '''private const val KEY_RISK_BASIS = "risk_basis"; private const val KEY_TOTAL_CAPITAL = "total_capital"; private const val KEY_POSITION_PROFILES = "position_profiles"''', 1)
+          service.write_text(s)
+          PY
+      - name: Commit patched sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android/app/src/main/java/com/mirei/app/MainActivity.kt android/app/src/main/java/com/mirei/app/MireiDashboardApplicationV2.kt android/app/src/main/java/com/mirei/app/runtime/MireiForegroundService.kt
+          git commit -m "[auto-patch] Merge UI and persist runtime state" || exit 0
+          git push
