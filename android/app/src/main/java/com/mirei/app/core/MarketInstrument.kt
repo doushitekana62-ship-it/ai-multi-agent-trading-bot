@@ -1,5 +1,11 @@
 package com.mirei.app.core
 
+enum class Exchange(val id: String, val label: String, val enabledForSixHourTest: Boolean) {
+    INDODAX("indodax", "Indodax", true),
+    BYBIT("bybit", "Bybit", false),
+    STOCKBIT("stockbit", "Stockbit", false),
+}
+
 enum class AssetClass(val label: String) { CRYPTO("Crypto"), STOCKS("Saham"), FOREX("Forex"), COMMODITIES("Komoditas") }
 
 data class ExecutionCostProfile(
