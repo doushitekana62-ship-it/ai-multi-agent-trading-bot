@@ -2,6 +2,7 @@ package com.mirei.app.core
 
 enum class ManualRiskMode { AUTO, MANUAL }
 enum class RiskReferenceMode { ENTRY_PRICE, INITIAL_CAPITAL }
+enum class TakeProfitMode { MODE, MANUAL_PERCENT, MANUAL_NET_IDR }
 
 data class RiskTargets(
     val stopLossPrice: Double,
@@ -65,11 +66,12 @@ data class TradingConfig(
         }
     }
 
-    /**
-     * Calculates exit thresholds only. Entry/exit decisions remain outside this
-     * function. A manual IDR target, when configured, solves the TP price from
-     * the expected buy/sell fee and slippage so the target represents net PnL.
-     */
+    fun effectiveTakeProfitMode(): TakeProfitMode = when {
+        manualRiskMode != ManualRiskMode.MANUAL -> TakeProfitMode.MODE
+        manualNetProfitTargetIdr != null -> TakeProfitMode.MANUAL_NET_IDR
+        else -> TakeProfitMode.MANUAL_PERCENT
+    }
+
     fun calculateRiskTargets(
         entryPrice: Double,
         stakeIdr: Double,
@@ -94,13 +96,13 @@ data class TradingConfig(
         val stopLossPrice = (entryPrice - (stopLossAmountIdr / quantity)).coerceAtLeast(entryPrice * 0.000001)
 
         val netTarget = manualNetProfitTargetIdr
-        val takeProfitPrice = if (manualRiskMode == ManualRiskMode.MANUAL && netTarget != null && executionCosts != null) {
+        val takeProfitPrice = if (effectiveTakeProfitMode() == TakeProfitMode.MANUAL_NET_IDR && executionCosts != null) {
             val buyFeeIdr = stakeIdr * executionCosts.buyFeePercent / (100.0 + executionCosts.buyFeePercent)
             val entryNotional = stakeIdr - buyFeeIdr
             val executionEntryPrice = entryPrice * (1.0 + (executionCosts.spreadPercent / 2.0 + executionCosts.slippagePercent) / 100.0)
             val executedQuantity = entryNotional / executionEntryPrice
             val exitMultiplier = (1.0 - (executionCosts.spreadPercent / 2.0 + executionCosts.slippagePercent) / 100.0) * (1.0 - executionCosts.sellFeePercent / 100.0)
-            ((stakeIdr + netTarget) / (executedQuantity * exitMultiplier)).coerceAtLeast(entryPrice * 1.000001)
+            ((stakeIdr + netTarget!!) / (executedQuantity * exitMultiplier)).coerceAtLeast(entryPrice * 1.000001)
         } else {
             entryPrice + (configuredTakeProfitAmountIdr / quantity)
         }
