@@ -27,7 +27,7 @@ data class TradingConfig(
         require(totalCapitalIdr > 0.0)
         require(positionSizeIdr > 0.0)
         require(maxOpenPositions in 1..10)
-        require(manualStopLossPercent > 0.0)
+        require(manualStopLossPercent >= 0.0)
         require(manualNetProfitTargetIdr > 0.0)
         require(reentryPriceTolerancePercent >= 0.0)
     }
@@ -61,12 +61,12 @@ data class TradingConfig(
         require(entryPrice > 0.0)
         require(stakeIdr > 0.0)
         require(initialCapitalIdr > 0.0)
-        require(stopLossPercent > 0.0)
+        require(stopLossPercent >= 0.0)
 
         val quantity = stakeIdr / entryPrice
         val referenceCapital = if (riskReferenceMode == RiskReferenceMode.ENTRY_PRICE) stakeIdr else initialCapitalIdr
         val stopLossAmountIdr = referenceCapital * stopLossPercent / 100.0
-        val stopLossPrice = (entryPrice - stopLossAmountIdr / quantity).coerceAtLeast(entryPrice * 0.000001)
+        val stopLossPrice = if (stopLossPercent == 0.0) 0.0 else (entryPrice - stopLossAmountIdr / quantity).coerceAtLeast(entryPrice * 0.000001)
 
         val netTarget = manualNetProfitTargetIdr
         val takeProfitPrice = if (executionCosts != null) {
