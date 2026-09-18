@@ -1,5 +1,20 @@
 package com.mirei.app.core
 
+enum class MireiCycleState { IDLE, INITIAL_BUY_PENDING, HOLDING, REENTRY_WAIT, REENTRY_PENDING, CLOSED }
+
+data class MireiCycle(
+    val cycleId: String,
+    val symbol: String,
+    val initialCapitalIdr: Double,
+    val initialBuyPrice: Double,
+    val reentryCount: Int = 0,
+    val sequence: Int = 1,
+    val state: MireiCycleState = MireiCycleState.HOLDING,
+    val lastDecision: MireiDecisionAction = MireiDecisionAction.INITIAL_BUY,
+    val lastDecisionReason: String = "",
+    val lastTransitionAtEpochMs: Long = 0L,
+)
+
 enum class MireiDecisionAction {
     INITIAL_BUY,
     HOLD,
