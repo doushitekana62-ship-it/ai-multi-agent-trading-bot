@@ -25,44 +25,53 @@ object MireiStartSessionDialog {
         form.addView(label(activity, "PAPER MARKET", 18f, true))
         form.addView(label(activity, "Pilih saham, forex, kripto, atau komoditas/emas. Broker tidak dikunci pada dashboard.", 12.5f))
 
-        val classSpinner = Spinner(activity)
-        classSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, AssetClass.values().map { it.label })
-        form.addView(classSpinner)
+        val exchangeSpinner = Spinner(activity)
+        val exchangeOptions = com.mirei.app.core.Exchange.values()
+        exchangeSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, exchangeOptions.map { it.label })
+        form.addView(label(activity, "EXCHANGE", 12f, true))
+        form.addView(exchangeSpinner)
 
+        val classSpinner = Spinner(activity)
+        form.addView(label(activity, "JENIS TRADE", 12f, true))
+        form.addView(classSpinner)
         val instruments = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         form.addView(instruments)
 
         fun rebuild(assetClass: AssetClass) {
             instruments.removeAllViews()
-            TradingUniverse.paperReady().filter { it.assetClass == assetClass }.forEachIndexed { index, instrument ->
-                val check = CheckBox(activity).apply {
-                    text = "${instrument.symbol} · ${instrument.name}"
-                    textSize = 13.5f
-                    isChecked = index == 0
-                }
-                val amount = EditText(activity).apply {
-                    hint = "Modal IDR"
-                    inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                    setSingleLine(true)
-                    setText(if (index == 0) "50000" else "")
-                    isEnabled = check.isChecked
-                }
+            val exchange = exchangeOptions.getOrElse(exchangeSpinner.selectedItemPosition) { exchangeOptions.first() }
+            TradingUniverse.paperReady().filter { it.assetClass == assetClass && it.providerId == exchange.id }.forEachIndexed { index, instrument ->
+                val check = CheckBox(activity).apply { text = "${instrument.symbol} · ${instrument.name}"; textSize = 13.5f; isChecked = index == 0 }
+                val amount = EditText(activity).apply { hint = "Nominal beli"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true); setText(if (index == 0) "50000" else ""); isEnabled = check.isChecked }
                 check.setOnCheckedChangeListener { _, checked -> amount.isEnabled = checked }
-                val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-                row.addView(check, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                row.addView(amount, LinearLayout.LayoutParams(130, ViewGroup.LayoutParams.WRAP_CONTENT))
+                val row = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(4, 3, 4, 3) }
+                row.addView(check)
+                row.addView(label(activity, "${instrument.symbol} · harga akan divalidasi saat MULAI", 10.5f))
+                row.addView(amount)
                 row.tag = instrument.symbol
                 instruments.addView(row)
             }
+            if (instruments.childCount == 0) instruments.addView(label(activity, "Belum ada instrument paper untuk exchange ini.", 12f))
         }
 
+        fun rebuildClasses(exchange: com.mirei.app.core.Exchange) {
+            val classes = AssetClass.values().filter { asset -> TradingUniverse.paperReady().any { it.assetClass == asset && it.providerId == exchange.id } }
+            classSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, classes.map { it.label })
+            rebuild(classes.firstOrNull() ?: AssetClass.CRYPTO)
+        }
         classSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                rebuild(AssetClass.values().getOrElse(position) { AssetClass.CRYPTO })
+                val classes = AssetClass.values().filter { asset -> TradingUniverse.paperReady().any { it.assetClass == asset && it.providerId == exchangeOptions.getOrElse(exchangeSpinner.selectedItemPosition) { exchangeOptions.first() }.id } }
+                rebuild(classes.getOrElse(position) { AssetClass.CRYPTO })
             }
         }
-        rebuild(AssetClass.CRYPTO)
+        exchangeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) { rebuildClasses(exchangeOptions.getOrElse(position) { exchangeOptions.first() }) }
+        }
+        rebuildClasses(exchangeOptions.first())
+
 
         val dialog = AlertDialog.Builder(activity).setTitle("MULAI PAPER").setView(scroll).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create()
         dialog.setOnShowListener {
