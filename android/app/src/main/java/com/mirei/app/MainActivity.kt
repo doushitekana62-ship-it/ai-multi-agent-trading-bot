@@ -34,6 +34,7 @@ import java.util.Locale
 class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
+    private var activeSymbols: List<String> = emptyList()
     private val number = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 0 }
 
     private val receiver = object : BroadcastReceiver() {
@@ -111,6 +112,7 @@ class MainActivity : Activity() {
         }
 
         val positionRows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty().lines().filter { it.isNotBlank() }
+        activeSymbols = positionRows.mapNotNull { it.split("|").firstOrNull()?.takeIf { symbol -> symbol.isNotBlank() } }
         val equityLines = positionRows.mapIndexed { index, row ->
             val p = row.split("|")
             "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(8)?.toDoubleOrNull() ?: 0.0)}"
@@ -223,7 +225,7 @@ class MainActivity : Activity() {
         dialog.show()
     }
     private fun showStopDialog() {
-        val active = com.mirei.app.runtime.MireiForegroundServiceSnapshot.activeSymbols(this)
+        val active = activeSymbols
         if (active.isEmpty()) { AlertDialog.Builder(this).setTitle("STOP POSISI").setMessage("Tidak ada posisi aktif.").setPositiveButton("OK", null).show(); return }
         val labels = active.toTypedArray()
         val checked = BooleanArray(labels.size)
@@ -273,13 +275,13 @@ class MainActivity : Activity() {
 
     private fun requestStatus() = send(MireiForegroundService.ACTION_STATUS)
 
-    private fun send(action: String) {
-        val intent = Intent(this, MireiForegroundService::class.java).apply { this.action = action }
-        runCatching {
-            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+    private fun send(action: String, symbols: List<String> = emptyList()) {
+        val intent = Intent(this, MireiForegroundService::class.java).apply {
+            this.action = action
+            if (symbols.isNotEmpty()) putStringArrayListExtra(MireiForegroundService.EXTRA_SELECTED_SYMBOLS, ArrayList(symbols))
         }
+        runCatching { if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent) }
     }
-
     private fun addSection(title: String) { content.addView(text(title, 16f, true), margin(0, 10, 0, 6)) }
 
     private fun tableRow(values: List<String>, header: Boolean): View {
