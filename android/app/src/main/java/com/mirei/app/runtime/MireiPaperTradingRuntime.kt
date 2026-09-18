@@ -42,6 +42,8 @@ data class PaperRuntimeStatus(
     val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
     val mireiDecisions: List<MireiDecision> = emptyList(),
     val mireiCycles: Map<String, MireiCycle> = emptyMap(),
+    val activePositionPnlIdr: Map<String, Double> = emptyMap(),
+    val activePositionMarkPrice: Map<String, Double> = emptyMap(),
 )
 
 data class PaperRuntimePersistence(
@@ -301,6 +303,8 @@ class MireiPaperTradingRuntime(
             initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
             mireiDecisions = tickDecisions.toList(),
             mireiCycles = cycles.toMap(),
+            activePositionPnlIdr = engine.positions().associate { it.symbol to (lastSnapshots[it.symbol]?.price?.let { price -> engine.unrealizedNetPnl(it.id, price) } ?: 0.0) },
+            activePositionMarkPrice = engine.positions().associate { it.symbol to (lastSnapshots[it.symbol]?.price ?: it.entryPrice) },
         )
     }
 
