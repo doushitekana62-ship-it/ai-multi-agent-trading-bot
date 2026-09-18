@@ -1,62 +1,58 @@
-# Compound Scalping
+# Mirei
 
-Architecture:
+Mirei is an Android-first paper-trading runtime.
 
-GitHub Pages (static dashboard) -> FastAPI -> embedded Freqtrade Worker -> CCXT -> Indodax
-                                      -> local SQLite runtime state
+The application is intentionally reduced to one decision owner: Mirei. There are no secondary analysis agents, suggestion panels, strategy modes, web dashboards, FastAPI runtime, Freqtrade runtime, or broker-specific live execution in this build.
 
-The repository contains the Freqtrade source under `vendor/freqtrade`. FastAPI starts the Freqtrade Worker directly in a child process. There is no separate Freqtrade HTTP/API service and the application does not call `FREQTRADE_URL`.
+## Runtime contract
 
-## Static website
+- Paper trading only.
+- Maximum 10 simultaneous positions.
+- Session capital defaults to Rp150,000.
+- Default allocation is Rp50,000 per position.
+- Mirei opens the initial paper holdings selected by the user.
+- After a position closes at SL or TP, Mirei may re-enter using the original cycle capital for that instrument.
+- HOLD means keep the position open until SL/TP or an explicit close-all command.
+- SELL is automatic when the configured SL or TP threshold is reached.
+- Manual TP is a net Rupiah target. The target is not converted into a percentage mode.
+- Risk reference can be either HARGA ENTRY or MODAL BELI PERTAMA.
+- Paper instruments include saham, forex, kripto, and komoditas/emas.
+- The dashboard has one screen only.
 
-The frontend lives in `public/` and is compatible with GitHub Pages. Configure `public/config.js` with only the public FastAPI HTTPS base URL.
+## Dashboard
 
-The dashboard token is entered in the browser and stored in localStorage. No Indodax secret, database password, or dashboard token belongs in `public/`.
+The only dashboard controls are:
 
-## FastAPI / Docker
+1. MULAI
+2. STOP
+3. LANJUTKAN
+4. TUTUP SEMUA POSISI
+5. ATUR SL/TP
+6. RESET
 
-Copy `.env.example` to `.env` on the server that runs FastAPI. Run:
+History is rendered as a table from the local trade ledger.
 
-`docker compose up --build`
+The dashboard does not expose live market charts, market scanners, suggestion feeds, agent votes, or secondary dashboards.
 
-The container installs Freqtrade from `vendor/freqtrade` and exposes FastAPI on port 8000. Use one Uvicorn worker because the embedded trading runtime is process-owned by the FastAPI instance.
+## Android architecture
 
-Health: `http://localhost:8000/api/health`
-Dependency health: `GET /api/health/dependencies`
-Engine status: `GET /api/engine/status` (dashboard token required)
-Engine start: `POST /api/engine/start` (dashboard token required)
-Engine stop: `POST /api/engine/stop` (dashboard token required)
+The active runtime is:
 
-## Indodax
+Android Activity -> Mirei Foreground Service -> Mirei Paper Trading Runtime -> Paper Execution Engine -> Local SQLite ledger.
 
-This project is Indodax-only. The application ignores stale exchange environment values and always configures the supported exchange as `indodax`.
+Market data is used only as the input required to determine whether an existing position has reached SL/TP and whether a re-entry can be executed. It is not rendered as a market-analysis dashboard.
 
-Paper mode is the default. Keep `LIVE_TRADING_ENABLED=false` until compatibility, strategy, reconciliation, and recovery tests are complete.
+## Paper market catalog
 
-## Local SQLite
+The paper catalog is broker-independent at the UI level and currently contains examples across:
 
-The FastAPI Cloud-compatible default is `/tmp/compound-scalping/tradesv3.sqlite`. The runtime and dashboard use the same writable-path resolver.
+- Crypto
+- Stocks
+- Forex
+- Commodities / Gold
 
-The `/tmp` filesystem is not guaranteed to persist across hosting-instance replacement. Use host/platform persistent storage for durable trade history when available.
+Provider-specific market-data adapters remain below the paper runtime boundary.
 
-## Secrets
+## Security and live trading
 
-Keep `.env` only on the FastAPI host. Never commit it.
-
-Server-only secrets:
-
-- `DASHBOARD_TOKEN`
-- `INDODAX_API_KEY`
-- `INDODAX_API_SECRET`
-
-The dashboard token is entered in the browser and stored in localStorage. It is never committed to GitHub.
-
-## Freqtrade source pin
-
-The source vendor workflow pins the project-owned Freqtrade repository to commit:
-
-`29186a9a0e62af7e52a0f0d386c8b02a0d4b2206`
-
-The vendor workflow normalizes Freqtrade package metadata to a static version after copying upstream `pyproject.toml`, preventing the Cloud build from importing the package while generating metadata.
-
-The Freqtrade package itself is GPLv3 licensed. Keep the vendored `LICENSE` file with the source.
+Live order execution is disabled in this build. No live API credential flow is part of the active runtime.
