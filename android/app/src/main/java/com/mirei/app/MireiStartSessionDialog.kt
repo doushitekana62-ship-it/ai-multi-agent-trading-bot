@@ -97,6 +97,7 @@ object MireiStartSessionDialog {
             }
         }
         dialog.show()
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
     }
 
     private fun label(activity: Activity, value: String, size: Float, bold: Boolean = false): TextView =
