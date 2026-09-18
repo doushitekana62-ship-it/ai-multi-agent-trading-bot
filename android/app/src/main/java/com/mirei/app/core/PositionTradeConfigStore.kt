@@ -25,6 +25,6 @@ object PositionTradeConfigStore {
         profiles = parsed
     }
 
-    fun get(symbol: String): PositionTradeConfig? = profiles[symbol]
+    fun get(symbol: String): PositionTradeConfig? = profiles[symbol] ?: profiles["*"]
     fun snapshot(): Map<String, PositionTradeConfig> = profiles
 }
