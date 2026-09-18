@@ -30,6 +30,7 @@ data class PaperSessionSnapshot(
     val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
     val positionProfiles: Map<String, PositionTradeConfig> = emptyMap(),
     val mireiCycles: Map<String, MireiCycle> = emptyMap(),
+    val pausedSymbols: Set<String> = emptySet(),
 )
 
 class PaperSessionStore(context: Context) {
@@ -113,6 +114,7 @@ class PaperSessionStore(context: Context) {
                 initialCapitalBySymbol = initialCapitalBySymbol,
                 positionProfiles = positionProfiles,
                 mireiCycles = mireiCycles,
+                pausedSymbols = root.optString("pausedSymbols", "").split(',').filter { it.isNotBlank() }.toSet(),
             )
         }.getOrNull()
     }
@@ -137,6 +139,7 @@ class PaperSessionStore(context: Context) {
             put("positionProfiles", JSONObject().apply {
                 snapshot.positionProfiles.forEach { (symbol, profile) -> put(symbol, profileToJson(profile)) }
             })
+            put("pausedSymbols", snapshot.pausedSymbols.joinToString(","))
             put("mireiCycles", JSONObject().apply {
                 snapshot.mireiCycles.forEach { (symbol, cycle) ->
                     put(symbol, JSONObject().apply {
