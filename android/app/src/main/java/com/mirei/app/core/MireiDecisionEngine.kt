@@ -1,5 +1,24 @@
 package com.mirei.app.core
 
+enum class MireiDecisionAction {
+    INITIAL_BUY,
+    HOLD,
+    SELL_STOP_LOSS,
+    SELL_TAKE_PROFIT,
+    REENTRY_WAIT,
+    REENTRY_BUY,
+    ERROR,
+}
+
+data class MireiDecision(
+    val action: MireiDecisionAction,
+    val symbol: String,
+    val reason: String,
+    val cycleId: String = "",
+    val sequence: Int = 0,
+    val referenceCapitalIdr: Double = 0.0,
+)
+
 data class MarketSnapshot(
     val symbol: String,
     val price: Double,
@@ -51,6 +70,56 @@ class MireiDecisionEngine(initialConfig: TradingConfig) {
 
     fun updateConfig(newConfig: TradingConfig) {
         config = newConfig
+    }
+
+    fun decideInitialEntry(
+        snapshot: MarketSnapshot,
+        initialCapitalIdr: Double,
+        stakeOverrideIdr: Double? = null,
+        cycleId: String,
+    ): MireiDecision {
+        if (!snapshot.dataFresh) return MireiDecision(MireiDecisionAction.ERROR, snapshot.symbol, "market_data_unavailable", cycleId)
+        if (snapshot.price <= 0.0) return MireiDecision(MireiDecisionAction.ERROR, snapshot.symbol, "invalid_market_price", cycleId)
+        if (initialCapitalIdr <= 0.0) return MireiDecision(MireiDecisionAction.ERROR, snapshot.symbol, "invalid_initial_capital", cycleId)
+        val plan = buildEntryPlan(snapshot, initialCapitalIdr, stakeOverrideIdr)
+        return if (plan.allowed) {
+            MireiDecision(MireiDecisionAction.INITIAL_BUY, snapshot.symbol, "mirei_initial_buy_ready", cycleId, 1, initialCapitalIdr)
+        } else {
+            MireiDecision(MireiDecisionAction.ERROR, snapshot.symbol, plan.reasons.joinToString(","), cycleId, 1, initialCapitalIdr)
+        }
+    }
+
+    fun decidePosition(snapshot: MarketSnapshot, position: PaperPosition, cycleId: String, sequence: Int): MireiDecision {
+        if (!snapshot.dataFresh) return MireiDecision(MireiDecisionAction.HOLD, snapshot.symbol, "market_data_stale_hold", cycleId, sequence, position.riskReferenceCapitalIdr)
+        if (snapshot.price <= 0.0) return MireiDecision(MireiDecisionAction.HOLD, snapshot.symbol, "invalid_market_price_hold", cycleId, sequence, position.riskReferenceCapitalIdr)
+        return when {
+            position.stopLossPrice > 0.0 && snapshot.price <= position.stopLossPrice ->
+                MireiDecision(MireiDecisionAction.SELL_STOP_LOSS, snapshot.symbol, "stop_loss_reached", cycleId, sequence, position.riskReferenceCapitalIdr)
+            position.takeProfitPrice > 0.0 && snapshot.price >= position.takeProfitPrice ->
+                MireiDecision(MireiDecisionAction.SELL_TAKE_PROFIT, snapshot.symbol, "take_profit_reached", cycleId, sequence, position.riskReferenceCapitalIdr)
+            else ->
+                MireiDecision(MireiDecisionAction.HOLD, snapshot.symbol, "hold_until_sl_tp", cycleId, sequence, position.riskReferenceCapitalIdr)
+        }
+    }
+
+    fun decideReentry(
+        snapshot: MarketSnapshot,
+        cycleId: String,
+        sequence: Int,
+        cycleCapitalIdr: Double,
+        availableBalanceIdr: Double,
+    ): MireiDecision {
+        if (!snapshot.dataFresh) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "market_data_stale_reentry_wait", cycleId, sequence, cycleCapitalIdr)
+        if (snapshot.price <= 0.0) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "invalid_market_price_reentry_wait", cycleId, sequence, cycleCapitalIdr)
+        if (cycleCapitalIdr <= 0.0) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "reentry_capital_unavailable", cycleId, sequence, cycleCapitalIdr)
+        if (availableBalanceIdr <= 0.0) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "reentry_balance_unavailable", cycleId, sequence, cycleCapitalIdr)
+        val stake = cycleCapitalIdr.coerceAtMost(availableBalanceIdr)
+        val plan = buildEntryPlan(snapshot, cycleCapitalIdr, stake)
+        return if (plan.allowed) {
+            MireiDecision(MireiDecisionAction.REENTRY_BUY, snapshot.symbol, "mirei_reentry_ready", cycleId, sequence, cycleCapitalIdr)
+        } else {
+            MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, plan.reasons.joinToString(","), cycleId, sequence, cycleCapitalIdr)
+        }
     }
 
     fun buildEntryPlan(
