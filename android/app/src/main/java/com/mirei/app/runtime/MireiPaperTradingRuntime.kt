@@ -101,6 +101,7 @@ class MireiPaperTradingRuntime(
         engine.updateRiskTargets(newConfig)
     }
 
+    @Synchronized
     fun seedInitialHoldings(allocations: Map<String, Double>, nowMs: Long): List<ExecutionResult> {
         if (holdingsSeeded || allocations.isEmpty()) return emptyList()
         require(allocations.size <= config.maxOpenPositions) { "initial_holding_position_limit" }
@@ -200,6 +201,7 @@ class MireiPaperTradingRuntime(
         mireiCycles = cycles.toMap(),
     )
 
+    @Synchronized
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
         tickExecutions = mutableListOf()
         tickDecisions.clear()
@@ -252,6 +254,7 @@ class MireiPaperTradingRuntime(
         status(environment)
     }
 
+    @Synchronized
     fun closeAll(
         nowMs: Long,
         environment: RuntimeEnvironment = RuntimeEnvironment(),
