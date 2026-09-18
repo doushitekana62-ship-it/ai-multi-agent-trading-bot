@@ -89,6 +89,7 @@ class MireiForegroundService : Service() {
             ACTION_HOLD -> holdRuntime()
             ACTION_STOP -> stopRuntime()
             ACTION_CLOSE_ALL -> closeAll()
+            ACTION_STOP_SELECTED -> stopSelected(intent)
             ACTION_APPLY_RISK -> applyRisk()
             ACTION_RESET_SESSION -> resetSession()
         }
@@ -254,6 +255,18 @@ class MireiForegroundService : Service() {
         }
     }
 
+    private fun stopSelected(intent: Intent) {
+        val symbols = intent.getStringArrayListExtra(EXTRA_SELECTED_SYMBOLS)?.toSet().orEmpty()
+        if (symbols.isEmpty()) return
+        worker.post {
+            val status = runtime.closeSymbols(symbols, System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+            persistExecutions(status)
+            persistMireiDecisions(status)
+            if (status.activePositions.isEmpty()) { state = MireiState.STOP; runStoppedAtEpochMs = System.currentTimeMillis() }
+            persistSession()
+            publishStatus(status)
+        }
+    }
     private fun closeAll() {
         worker.post {
             val status = runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
@@ -380,9 +393,13 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_LAST_TICK, status.lastTickEpochMs)
             putExtra(EXTRA_POSITIONS_DETAIL, status.activePositions.joinToString("\n") { position ->
                 val pnl = status.activePositionPnlIdr[position.symbol] ?: 0.0
+                val gross = status.activePositionGrossPnlIdr[position.symbol] ?: pnl
+                val fee = status.activePositionFeeIdr[position.symbol] ?: 0.0
                 val mark = status.activePositionMarkPrice[position.symbol] ?: position.entryPrice
+                val trend = status.activePositionTrend[position.symbol] ?: "FLAT"
+                val reentry = status.activePositionReentryCount[position.symbol] ?: 0
                 val cycle = status.mireiCycles[position.symbol]
-                "${position.symbol}|${position.stakeIdr}|${position.entryPrice}|${position.stopLossPrice}|${position.takeProfitPrice}|${pnl}|${mark}|${cycle?.state?.name ?: "HOLDING"}|${cycle?.lastDecision?.name ?: "HOLD"}"
+                "${position.symbol}|${position.stakeIdr}|${position.entryPrice}|${position.stopLossPrice}|${position.takeProfitPrice}|${pnl}|${gross}|${fee}|${mark}|${trend}|${reentry}|${cycle?.state?.name ?: "HOLDING"}|${cycle?.lastDecision?.name ?: "HOLD"}"
             })
         }
         sendBroadcast(intent)
@@ -454,6 +471,7 @@ class MireiForegroundService : Service() {
         const val ACTION_HOLD = "com.mirei.app.action.HOLD"
         const val ACTION_STOP = "com.mirei.app.action.STOP"
         const val ACTION_CLOSE_ALL = "com.mirei.app.action.CLOSE_ALL"
+        const val ACTION_STOP_SELECTED = "com.mirei.app.action.STOP_SELECTED"
         const val ACTION_APPLY_RISK = "com.mirei.app.action.APPLY_RISK"
         const val ACTION_RESET_SESSION = "com.mirei.app.action.RESET_SESSION"
         const val ACTION_STATUS = "com.mirei.app.action.STATUS"
@@ -473,6 +491,7 @@ class MireiForegroundService : Service() {
         const val EXTRA_POSITIONS_DETAIL = "positions_detail"
         const val EXTRA_SESSION_CREATED = "session_created"
         const val EXTRA_LAST_TICK = "last_tick"
+        const val EXTRA_SELECTED_SYMBOLS = "selected_symbols"
 
         const val DEFAULT_SYMBOL = "BTC/IDR"
         const val DEFAULT_EXCHANGE = "indodax"
