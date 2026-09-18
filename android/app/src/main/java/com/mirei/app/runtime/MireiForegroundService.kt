@@ -96,6 +96,12 @@ class MireiForegroundService : Service() {
     }
 
     private fun startRuntime(intent: Intent) {
+        if (!isRiskConfigured()) {
+            audit("START_REJECTED", "sl_tp_setup_required")
+            state = MireiState.STOP
+            publishHealth()
+            return
+        }
         val allocationsRaw = intent.getStringExtra(EXTRA_INITIAL_ALLOCATIONS).orEmpty()
         val hasAllocations = allocationsRaw.isNotBlank()
 
@@ -144,7 +150,8 @@ class MireiForegroundService : Service() {
         worker.post {
             runCatching {
                 val seeded = runtime.seedInitialHoldings(allocations, System.currentTimeMillis())
-                require(seeded.size == allocations.size && seeded.all { it.success }) { "initial_holdings_not_seeded" }
+                require(seeded.size == allocations.size && seeded.all { it.success }) { "initial_position_not_created" }
+                require(runtime.paperEngine().positionCount() > 0) { "initial_position_not_created" }
                 val now = System.currentTimeMillis()
                 sessionStarted = true
                 sessionCreatedAtEpochMs = now
@@ -194,6 +201,9 @@ class MireiForegroundService : Service() {
         audit("SESSION_RESET", "portfolio_reset")
         publishHealth()
     }
+
+    private fun isRiskConfigured(): Boolean =
+        prefs.getBoolean("sl_tp_configured", false) && PositionTradeConfigStore.snapshot()["*"] != null
 
     private fun applyRisk() {
         PositionTradeConfigStore.reload(this)
