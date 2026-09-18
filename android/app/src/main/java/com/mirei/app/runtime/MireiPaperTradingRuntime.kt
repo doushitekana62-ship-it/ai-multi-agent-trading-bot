@@ -60,6 +60,7 @@ data class PaperRuntimePersistence(
     val sellDecisionCount: Int = 0,
     val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
     val mireiCycles: Map<String, MireiCycle> = emptyMap(),
+    val pausedSymbols: Set<String> = emptySet(),
 )
 
 private data class PendingReentry(
@@ -96,6 +97,7 @@ class MireiPaperTradingRuntime(
     private var initialCapitalBySymbol: MutableMap<String, Double> = linkedMapOf()
     private val pendingReentries = linkedMapOf<String, PendingReentry>()
     private val cycles = linkedMapOf<String, MireiCycle>()
+    private val pausedSymbols = linkedSetOf<String>()
     private var lastDecision: MireiDecision? = null
     private val tickDecisions = mutableListOf<MireiDecision>()
 
@@ -178,6 +180,8 @@ class MireiPaperTradingRuntime(
         initialCapitalBySymbol = state.initialCapitalBySymbol.toMutableMap()
         pendingReentries.clear()
         cycles.clear()
+        pausedSymbols.clear()
+        pausedSymbols.addAll(state.pausedSymbols)
         cycles.putAll(state.mireiCycles)
         engine.positions().forEach { position ->
             if (!cycles.containsKey(position.symbol)) {
@@ -205,6 +209,7 @@ class MireiPaperTradingRuntime(
         holdingsSeeded = holdingsSeeded,
         initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
         mireiCycles = cycles.toMap(),
+        pausedSymbols = pausedSymbols.toSet(),
     )
 
     @Synchronized
@@ -232,6 +237,7 @@ class MireiPaperTradingRuntime(
         if (snapshots.isEmpty()) { lastError = "market_data_unavailable"; return status(environment) }
 
         snapshots.forEach { (managedSymbol, snapshot) ->
+            if (managedSymbol in pausedSymbols) return@forEach
             val position = engine.positions().firstOrNull { it.symbol == managedSymbol } ?: return@forEach
             val cycle = cycles[managedSymbol]
             val decision = decisionEngine.decidePosition(
@@ -250,6 +256,7 @@ class MireiPaperTradingRuntime(
         }
 
         snapshots.forEach { (managedSymbol, snapshot) ->
+            if (managedSymbol in pausedSymbols) return@forEach
             if (!snapshot.dataFresh || !marketSessionOpen(TradingUniverse.bySymbol(managedSymbol))) return@forEach
             tryReentry(managedSymbol, snapshot, nowMs)
         }
@@ -452,6 +459,22 @@ class MireiPaperTradingRuntime(
     }
 
     @Synchronized
+    @Synchronized
+    fun pauseSymbols(symbols: Set<String>): PaperRuntimeStatus {
+        pausedSymbols.addAll(symbols.filter { it in managedSymbols })
+        lastError = null
+        return status()
+    }
+
+    @Synchronized
+    fun resumeAll(): PaperRuntimeStatus {
+        pausedSymbols.clear()
+        lastError = null
+        return status()
+    }
+
+    fun pausedSymbols(): Set<String> = pausedSymbols.toSet()
+
     fun closeSymbols(symbols: Set<String>, nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus {
         tickExecutions = mutableListOf()
         if (!environment.internetAvailable || !environment.exchangeHealthy) { lastError = "close_selected_exchange_unavailable"; return status(environment) }
