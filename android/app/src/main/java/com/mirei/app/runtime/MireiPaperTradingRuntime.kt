@@ -91,7 +91,7 @@ class MireiPaperTradingRuntime(
     fun seedInitialHoldings(allocations: Map<String, Double>, nowMs: Long): List<ExecutionResult> {
         if (holdingsSeeded || allocations.isEmpty()) return emptyList()
         require(allocations.size <= config.maxOpenPositions) { "initial_holding_position_limit" }
-        require(allocations.sumOf { it.value } <= config.totalCapitalIdr + 1e-6) { "initial_holding_exceeds_capital" }
+        require(allocations.values.fold(0.0) { acc, value -> acc + value } <= config.totalCapitalIdr + 1e-6) { "initial_holding_exceeds_capital" }
         initialCapitalBySymbol.clear()
         initialCapitalBySymbol.putAll(allocations)
         val results = mutableListOf<ExecutionResult>()
