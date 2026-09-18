@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
@@ -93,11 +94,17 @@ class MainActivity : Activity() {
         val pnl = intent.getDoubleExtra(MireiForegroundService.EXTRA_PNL, 0.0)
         val positions = intent.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)
         val error = intent.getStringExtra(MireiForegroundService.EXTRA_ERROR).orEmpty()
+        val lastTick = intent.getLongExtra(MireiForegroundService.EXTRA_LAST_TICK, 0L)
+        val tickAgeSec = if (lastTick > 0L) ((System.currentTimeMillis() - lastTick).coerceAtLeast(0L) / 1000L) else -1L
+        val heartbeat = when {
+            state == "RUNNING" && tickAgeSec in 0..15 -> "AKTIF · TICK " + tickAgeSec + "d lalu"
+            state == "RUNNING" -> "RUNNING · TICK TERLAMBAT " + tickAgeSec + "d"
+            else -> state
+        }
 
-        status.text = "STATUS: " + state +
+        status.text = "STATUS: " + heartbeat +
             "\nKAS: Rp " + number.format(balance) +
-            "\nEQUITY: Rp " + number.format(equity) +
-            "\nPnL: Rp " + number.format(pnl) +
+            "\nPnL REALIZED: Rp " + number.format(pnl) +
             "\nPOSISI: " + positions + "/10" +
             if (error.isNotBlank()) "\nERROR: " + error else ""
 
