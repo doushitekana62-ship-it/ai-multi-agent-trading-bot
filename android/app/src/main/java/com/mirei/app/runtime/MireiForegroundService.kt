@@ -377,8 +377,12 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_INTERNET, status.internetAvailable)
             putExtra(EXTRA_ERROR, status.lastError ?: "")
             putExtra(EXTRA_SESSION_CREATED, sessionCreatedAtEpochMs)
+            putExtra(EXTRA_LAST_TICK, status.lastTickEpochMs)
             putExtra(EXTRA_POSITIONS_DETAIL, status.activePositions.joinToString("\n") { position ->
-                "${position.symbol}|${position.stakeIdr}|${position.entryPrice}|${position.stopLossPrice}|${position.takeProfitPrice}"
+                val pnl = status.activePositionPnlIdr[position.symbol] ?: 0.0
+                val mark = status.activePositionMarkPrice[position.symbol] ?: position.entryPrice
+                val cycle = status.mireiCycles[position.symbol]
+                "${position.symbol}|${position.stakeIdr}|${position.entryPrice}|${position.stopLossPrice}|${position.takeProfitPrice}|${pnl}|${mark}|${cycle?.state?.name ?: "HOLDING"}|${cycle?.lastDecision?.name ?: "HOLD"}"
             })
         }
         sendBroadcast(intent)
@@ -468,6 +472,7 @@ class MireiForegroundService : Service() {
         const val EXTRA_ERROR = "error"
         const val EXTRA_POSITIONS_DETAIL = "positions_detail"
         const val EXTRA_SESSION_CREATED = "session_created"
+        const val EXTRA_LAST_TICK = "last_tick"
 
         const val DEFAULT_SYMBOL = "BTC/IDR"
         const val DEFAULT_EXCHANGE = "indodax"
