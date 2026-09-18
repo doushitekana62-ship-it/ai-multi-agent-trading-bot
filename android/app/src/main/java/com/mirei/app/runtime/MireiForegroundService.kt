@@ -43,6 +43,7 @@ class MireiForegroundService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var internetAvailable = false
     private var lastNotificationKey = ""
+    private var pausedSymbols: Set<String> = emptySet()
 
     override fun onCreate() {
         super.onCreate()
@@ -259,14 +260,40 @@ class MireiForegroundService : Service() {
         val symbols = intent.getStringArrayListExtra(EXTRA_SELECTED_SYMBOLS)?.toSet().orEmpty()
         if (symbols.isEmpty()) return
         worker.post {
-            val status = runtime.closeSymbols(symbols, System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
-            persistExecutions(status)
-            persistMireiDecisions(status)
-            if (status.activePositions.isEmpty()) { state = MireiState.STOP; runStoppedAtEpochMs = System.currentTimeMillis() }
+            pausedSymbols = pausedSymbols + symbols
+            runtime.pauseSymbols(symbols)
+            state = MireiState.STOP
+            runStoppedAtEpochMs = System.currentTimeMillis()
             persistSession()
-            publishStatus(status)
+            audit("POSITIONS_STOPPED", "symbols=${symbols.joinToString(",")}")
+            publishHealth()
         }
     }
+    private fun resumeRuntime() {
+        if (!sessionStarted) {
+            audit("RESUME_REJECTED", "no_session")
+            publishHealth()
+            return
+        }
+        worker.post {
+            pausedSymbols = emptySet()
+            runtime.resumeAll()
+            if (!internetAvailable) {
+                state = MireiState.HOLD
+                publishHealth()
+                return@post
+            }
+            state = MireiState.RUNNING
+            runStartedAtEpochMs = System.currentTimeMillis()
+            runStoppedAtEpochMs = 0L
+            worker.removeCallbacksAndMessages(null)
+            persistSession()
+            audit("POSITIONS_RESUMED", "all")
+            publishHealth()
+            worker.post(runtimeLoop)
+        }
+    }
+
     private fun closeAll() {
         worker.post {
             val status = runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
@@ -313,6 +340,7 @@ class MireiForegroundService : Service() {
                 holdingsSeeded = saved.holdingsSeeded,
                 initialCapitalBySymbol = saved.initialCapitalBySymbol,
                 mireiCycles = saved.mireiCycles,
+                pausedSymbols = saved.pausedSymbols,
             )
         )
     }
@@ -341,6 +369,7 @@ class MireiForegroundService : Service() {
                 initialCapitalBySymbol = stateSnapshot.initialCapitalBySymbol,
                 positionProfiles = PositionTradeConfigStore.snapshot(),
                 mireiCycles = stateSnapshot.mireiCycles,
+                pausedSymbols = stateSnapshot.pausedSymbols,
             )
         )
     }
