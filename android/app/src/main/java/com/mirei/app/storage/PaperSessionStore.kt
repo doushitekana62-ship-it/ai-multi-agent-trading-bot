@@ -1,6 +1,9 @@
 package com.mirei.app.storage
 
 import android.content.Context
+import com.mirei.app.core.MireiCycle
+import com.mirei.app.core.MireiCycleState
+import com.mirei.app.core.MireiDecisionAction
 import com.mirei.app.core.PositionTradeConfig
 import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.execution.PaperPosition
@@ -26,6 +29,7 @@ data class PaperSessionSnapshot(
     val sellDecisionCount: Int = 0,
     val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
     val positionProfiles: Map<String, PositionTradeConfig> = emptyMap(),
+    val mireiCycles: Map<String, MireiCycle> = emptyMap(),
 )
 
 class PaperSessionStore(context: Context) {
@@ -67,6 +71,26 @@ class PaperSessionStore(context: Context) {
                 initialCapitalBySymbol[key] = root.optJSONObject("initialCapitalBySymbol")?.optDouble(key, 0.0) ?: 0.0
             }
 
+            val mireiCycles = linkedMapOf<String, MireiCycle>()
+            root.optJSONObject("mireiCycles")?.keys()?.forEach { key ->
+                root.optJSONObject("mireiCycles")?.optJSONObject(key)?.let { item ->
+                    runCatching {
+                        mireiCycles[key] = MireiCycle(
+                            cycleId = item.optString("cycleId", key),
+                            symbol = item.optString("symbol", key),
+                            initialCapitalIdr = item.optDouble("initialCapitalIdr", 0.0),
+                            initialBuyPrice = item.optDouble("initialBuyPrice", 0.0),
+                            reentryCount = item.optInt("reentryCount", 0),
+                            sequence = item.optInt("sequence", 1),
+                            state = MireiCycleState.valueOf(item.optString("state", MireiCycleState.HOLDING.name)),
+                            lastDecision = MireiDecisionAction.valueOf(item.optString("lastDecision", MireiDecisionAction.HOLD.name)),
+                            lastDecisionReason = item.optString("lastDecisionReason", ""),
+                            lastTransitionAtEpochMs = item.optLong("lastTransitionAtEpochMs", 0L),
+                        )
+                    }
+                }
+            }
+
             val positionProfiles = linkedMapOf<String, PositionTradeConfig>()
             root.optJSONObject("positionProfiles")?.keys()?.forEach { key ->
                 profileFromJson(root.optJSONObject("positionProfiles")?.optJSONObject(key))?.let { positionProfiles[key] = it }
@@ -88,6 +112,7 @@ class PaperSessionStore(context: Context) {
                 positions = positions,
                 initialCapitalBySymbol = initialCapitalBySymbol,
                 positionProfiles = positionProfiles,
+                mireiCycles = mireiCycles,
             )
         }.getOrNull()
     }
@@ -111,6 +136,22 @@ class PaperSessionStore(context: Context) {
             })
             put("positionProfiles", JSONObject().apply {
                 snapshot.positionProfiles.forEach { (symbol, profile) -> put(symbol, profileToJson(profile)) }
+            })
+            put("mireiCycles", JSONObject().apply {
+                snapshot.mireiCycles.forEach { (symbol, cycle) ->
+                    put(symbol, JSONObject().apply {
+                        put("cycleId", cycle.cycleId)
+                        put("symbol", cycle.symbol)
+                        put("initialCapitalIdr", cycle.initialCapitalIdr)
+                        put("initialBuyPrice", cycle.initialBuyPrice)
+                        put("reentryCount", cycle.reentryCount)
+                        put("sequence", cycle.sequence)
+                        put("state", cycle.state.name)
+                        put("lastDecision", cycle.lastDecision.name)
+                        put("lastDecisionReason", cycle.lastDecisionReason)
+                        put("lastTransitionAtEpochMs", cycle.lastTransitionAtEpochMs)
+                    })
+                }
             })
             put("positions", JSONArray().apply {
                 snapshot.positions.forEach { position ->
