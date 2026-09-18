@@ -117,7 +117,9 @@ class MireiForegroundService : Service() {
         }
 
         if (sessionStarted) {
-            if (runtime.paperEngine().positionCount() <= 0) {
+            val resumeStatus = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+            val hasRecoveryCycle = resumeStatus.mireiCycles.values.any { it.state == com.mirei.app.core.MireiCycleState.REENTRY_WAIT }
+            if (runtime.paperEngine().positionCount() <= 0 && !hasRecoveryCycle) {
                 audit("START_REJECTED", "no_active_positions")
                 state = MireiState.STOP
                 publishHealth()
@@ -141,14 +143,34 @@ class MireiForegroundService : Service() {
         }
 
         val allocations = parseAllocations(allocationsRaw)
-        require(allocations.isNotEmpty()) { "initial_holdings_required" }
-        require(allocations.size <= config.maxOpenPositions) { "too_many_positions" }
-        require(allocations.values.sum() <= config.totalCapitalIdr + 1e-6) { "allocation_exceeds_session_capital" }
+        if (allocations.isEmpty()) {
+            audit("START_FAILED", "initial_holdings_required")
+            state = MireiState.STOP
+            publishHealth()
+            return
+        }
+        if (allocations.size > config.maxOpenPositions) {
+            audit("START_FAILED", "too_many_positions")
+            state = MireiState.STOP
+            publishHealth()
+            return
+        }
+        if (allocations.values.sum() > config.totalCapitalIdr + 1e-6) {
+            audit("START_FAILED", "allocation_exceeds_session_capital")
+            state = MireiState.STOP
+            publishHealth()
+            return
+        }
 
         symbol = intent.getStringExtra(EXTRA_SYMBOL)?.takeIf { it in SUPPORTED_MARKETS } ?: allocations.keys.first()
         managedSymbols = allocations.keys.take(config.maxOpenPositions)
         exchangeId = TradingUniverse.bySymbol(symbol)?.providerId ?: DEFAULT_EXCHANGE
-        require(exchangeId in SUPPORTED_EXCHANGES) { "exchange_not_supported" }
+        if (exchangeId !in SUPPORTED_EXCHANGES) {
+            audit("START_FAILED", "exchange_not_supported")
+            state = MireiState.STOP
+            publishHealth()
+            return
+        }
 
         config = loadConfig()
         createRuntime()
