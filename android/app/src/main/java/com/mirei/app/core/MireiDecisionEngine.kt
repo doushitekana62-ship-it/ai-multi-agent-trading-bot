@@ -148,7 +148,7 @@ class MireiDecisionEngine(initialConfig: TradingConfig) {
         }
 
         val configuredStake = stakeOverrideIdr?.takeIf { it > 0.0 } ?: activeConfig.positionSizeIdr
-        val stake = configuredStake.coerceAtMost(activeConfig.totalCapitalIdr / activeConfig.maxOpenPositions)
+        val stake = configuredStake.coerceAtMost(activeConfig.totalCapitalIdr)
         if (stake <= 0.0) return EntryPlan(false, snapshot.price, 0.0, 0.0, 0.0, 0.0, listOf("invalid_stake"))
 
         val referenceCapital = initialCapitalIdr?.takeIf { it > 0.0 } ?: stake
