@@ -117,6 +117,12 @@ class MireiForegroundService : Service() {
         }
 
         if (sessionStarted) {
+            if (runtime.paperEngine().positionCount() <= 0) {
+                audit("START_REJECTED", "no_active_positions")
+                state = MireiState.STOP
+                publishHealth()
+                return
+            }
             if (!internetAvailable) {
                 state = MireiState.HOLD
                 publishHealth()
@@ -219,6 +225,7 @@ class MireiForegroundService : Service() {
             val now = System.currentTimeMillis()
             val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
             persistExecutions(status)
+            persistMireiDecisions(status)
             persistSession()
             publishStatus(status)
             if (state == MireiState.RUNNING && sessionStarted) worker.postDelayed(this, TICK_MS)
@@ -229,6 +236,7 @@ class MireiForegroundService : Service() {
         worker.post {
             val status = runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
             persistExecutions(status)
+            persistMireiDecisions(status)
             if (status.activePositions.isEmpty()) {
                 state = MireiState.STOP
                 runStoppedAtEpochMs = System.currentTimeMillis()
@@ -269,6 +277,7 @@ class MireiForegroundService : Service() {
                 consecutiveLosses = saved.consecutiveLosses,
                 holdingsSeeded = saved.holdingsSeeded,
                 initialCapitalBySymbol = saved.initialCapitalBySymbol,
+                mireiCycles = saved.mireiCycles,
             )
         )
     }
@@ -296,8 +305,23 @@ class MireiForegroundService : Service() {
                 sellDecisionCount = 0,
                 initialCapitalBySymbol = stateSnapshot.initialCapitalBySymbol,
                 positionProfiles = PositionTradeConfigStore.snapshot(),
+                mireiCycles = stateSnapshot.mireiCycles,
             )
         )
+    }
+
+    private fun persistMireiDecisions(status: PaperRuntimeStatus) {
+        status.mireiDecisions.forEach { decision ->
+            audit(
+                "MIREI_" + decision.action.name,
+                "symbol=" + decision.symbol +
+                    "|cycle=" + decision.cycleId +
+                    "|seq=" + decision.sequence +
+                    "|reason=" + decision.reason +
+                    "|reference=" + decision.referenceCapitalIdr,
+                status.lastTickEpochMs
+            )
+        }
     }
 
     private fun persistExecutions(status: PaperRuntimeStatus) {
