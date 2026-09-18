@@ -104,9 +104,19 @@ class MainActivity : Activity() {
             else -> state
         }
 
-        val equityLines = positionRows.mapIndexed { index, row -> val p = row.split("|"); "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(8)?.toDoubleOrNull() ?: 0.0)}" }
-        val pnlLines = positionRows.mapIndexed { index, row -> val p = row.split("|"); "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(5)?.toDoubleOrNull() ?: 0.0)}" }
-        val positionLines = positionRows.mapIndexed { index, row -> val p = row.split("|"); "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(1)?.toDoubleOrNull() ?: 0.0)}" }
+        val positionRows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty().lines().filter { it.isNotBlank() }
+        val equityLines = positionRows.mapIndexed { index, row ->
+            val p = row.split("|")
+            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(8)?.toDoubleOrNull() ?: 0.0)}"
+        }
+        val pnlLines = positionRows.mapIndexed { index, row ->
+            val p = row.split("|")
+            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(5)?.toDoubleOrNull() ?: 0.0)}"
+        }
+        val positionLines = positionRows.mapIndexed { index, row ->
+            val p = row.split("|")
+            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(1)?.toDoubleOrNull() ?: 0.0)}"
+        }
         status.text = "Status : " + heartbeat +
             "\nKas : Rp " + number.format(balance) +
             "\nEquity :" + if (equityLines.isEmpty()) " -" else "\n" + equityLines.joinToString("\n") +
@@ -114,7 +124,6 @@ class MainActivity : Activity() {
             "\nPosisi : " + positions + "/10" +
             if (positionLines.isNotEmpty()) "\n" + positionLines.joinToString("\n") else "" +
             if (error.isNotBlank()) "\nERROR: " + error else ""
-
         content.removeAllViews()
         addSection("POSISI AKTIF")
         val rows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty().lines().filter { it.isNotBlank() }
@@ -125,17 +134,24 @@ class MainActivity : Activity() {
                 val p = row.split('|')
                 if (p.size >= 5) {
                     val unrealizedPnl = p.getOrNull(5)?.toDoubleOrNull() ?: 0.0
-                    val mark = p.getOrNull(6)?.toDoubleOrNull() ?: 0.0
-                    val cycleState = p.getOrNull(7) ?: "HOLDING"
-                    val decision = p.getOrNull(8) ?: "HOLD"
-                    val value = p[0] + " · " + cycleState + " · " + decision +
-                        "\nMODAL: Rp " + number.format(p[1].toDoubleOrNull() ?: 0.0) +
-                        "\nENTRY: Rp " + number.format(p[2].toDoubleOrNull() ?: 0.0) +
-                        "\nHARGA SEKARANG: Rp " + number.format(mark) +
-                        "\nSL: " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) "Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) else "NONAKTIF") +
-                        "\nTP: Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0) +
-                        "\nPnL BERJALAN: Rp " + number.format(unrealizedPnl)
-                    content.addView(card(value, 13f))
+                    val gross = p.getOrNull(6)?.toDoubleOrNull() ?: unrealizedPnl
+                    val fee = p.getOrNull(7)?.toDoubleOrNull() ?: 0.0
+                    val mark = p.getOrNull(8)?.toDoubleOrNull() ?: 0.0
+                    val trend = p.getOrNull(9) ?: "FLAT"
+                    val reentry = p.getOrNull(10) ?: "0"
+                    val cycleState = p.getOrNull(11) ?: "HOLDING"
+                    val value = "Jenis trade : " + (PositionTradeConfigStore.snapshot()["*"]?.let { "Crypto" } ?: "Trade") + " (" + p[0] + ")" +
+                        "\nModal awal masuk : Rp " + number.format(p[1].toDoubleOrNull() ?: 0.0) +
+                        "\nEntry : Rp " + number.format(p[2].toDoubleOrNull() ?: 0.0) + " per 1 coin" +
+                        "\nSL Modal awal : " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) "Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) else "OFF") +
+                        "\nTP modal awal : Rp " + number.format((p[1].toDoubleOrNull() ?: 0.0) + (PositionTradeConfigStore.snapshot()["*"]?.manualNetProfitTargetIdr ?: 0.0)) +
+                        "\nTP SL sett : SL " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) number.format((PositionTradeConfigStore.snapshot()["*"]?.stopLossPercent ?: 0.0)) + "%" else "OFF") + " · TP Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0)
+                        "\nPnL bersih : Rp " + number.format(unrealizedPnl) +
+                        "\nPnL kotor : Rp " + number.format(gross) +
+                        "\nFee : Rp " + number.format(fee) +
+                        "\nTotal re entry : " + reentry +
+                        "\nStatus : " + trend + " · " + cycleState
+                    content.addView(card(value, 12.5f))
                 }
             }
         }
