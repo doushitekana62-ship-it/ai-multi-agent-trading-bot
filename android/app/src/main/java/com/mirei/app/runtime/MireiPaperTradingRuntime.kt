@@ -172,6 +172,15 @@ class MireiPaperTradingRuntime(
         pendingReentries.clear()
         cycles.clear()
         cycles.putAll(state.mireiCycles)
+        engine.positions().forEach { position ->
+            if (!cycles.containsKey(position.symbol)) {
+                cycles[position.symbol] = MireiCycle(
+                    cycleId(position.symbol, position.openedAtEpochMs), position.symbol,
+                    initialCapitalBySymbol[position.symbol] ?: position.stakeIdr, position.entryPrice,
+                    0, 1, MireiCycleState.HOLDING, MireiDecisionAction.HOLD, "restored_legacy_position", position.openedAtEpochMs
+                )
+            }
+        }
         cycles.values.filter { it.state == MireiCycleState.REENTRY_WAIT }.forEach { cycle ->
             pendingReentries[cycle.symbol] = PendingReentry(cycle.cycleId, cycle.initialCapitalIdr, cycle.initialBuyPrice, null, cycle.sequence)
         }
@@ -198,8 +207,8 @@ class MireiPaperTradingRuntime(
         lastTickEpochMs = nowMs
         if (!environment.internetAvailable) { lastError = "internet_unavailable"; return status(environment) }
         if (!environment.exchangeHealthy) { lastError = "exchange_unavailable"; return status(environment) }
-        if (engine.positionCount() == 0) {
-            lastError = if (pendingReentries.isNotEmpty()) "reentry_pending" else "no_active_positions"
+        if (engine.positionCount() == 0 && pendingReentries.isEmpty()) {
+            lastError = "no_active_positions"
             return status(environment)
         }
 
