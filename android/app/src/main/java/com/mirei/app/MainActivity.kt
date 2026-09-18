@@ -71,14 +71,16 @@ class MainActivity : Activity() {
         shell.addView(status, margin(0, 8, 0, 8))
 
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        controls.addView(button("ATUR SL/TP") { showRiskDialog() })
-        controls.addView(button("MULAI") {
-            if (isRiskConfigured()) MireiStartSessionDialog.show(this@MainActivity) else showRiskRequired()
-        })
-        controls.addView(button("STOP") { send(MireiForegroundService.ACTION_STOP) })
-        controls.addView(button("LANJUTKAN") { send(MireiForegroundService.ACTION_START) })
-        controls.addView(button("TUTUP SEMUA POSISI") { send(MireiForegroundService.ACTION_CLOSE_ALL) })
-        controls.addView(button("RESET") { confirmReset() })
+        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row1.addView(button("ATUR SL/TP") { showRiskDialog() }, gridParams())
+        row1.addView(button("MULAI") { if (isRiskConfigured()) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..."; MireiStartSessionDialog.show(this@MainActivity) } else showRiskRequired() }, gridParams())
+        row1.addView(button("STOP") { showStopDialog() }, gridParams())
+        row2.addView(button("LANJUTKAN") { send(MireiForegroundService.ACTION_START) }, gridParams())
+        row2.addView(button("TUTUP SEMUA") { send(MireiForegroundService.ACTION_CLOSE_ALL) }, gridParams())
+        row2.addView(button("RESET") { confirmReset() }, gridParams())
+        controls.addView(row1)
+        controls.addView(row2)
         shell.addView(controls)
 
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 0) }
@@ -102,10 +104,15 @@ class MainActivity : Activity() {
             else -> state
         }
 
-        status.text = "STATUS: " + heartbeat +
-            "\nKAS: Rp " + number.format(balance) +
-            "\nPnL REALIZED: Rp " + number.format(pnl) +
-            "\nPOSISI: " + positions + "/10" +
+        val equityLines = positionRows.mapIndexed { index, row -> val p = row.split("|"); "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(8)?.toDoubleOrNull() ?: 0.0)}" }
+        val pnlLines = positionRows.mapIndexed { index, row -> val p = row.split("|"); "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(5)?.toDoubleOrNull() ?: 0.0)}" }
+        val positionLines = positionRows.mapIndexed { index, row -> val p = row.split("|"); "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(1)?.toDoubleOrNull() ?: 0.0)}" }
+        status.text = "Status : " + heartbeat +
+            "\nKas : Rp " + number.format(balance) +
+            "\nEquity :" + if (equityLines.isEmpty()) " -" else "\n" + equityLines.joinToString("\n") +
+            "\nPnl :" + if (pnlLines.isEmpty()) " -" else "\n" + pnlLines.joinToString("\n") +
+            "\nPosisi : " + positions + "/10" +
+            if (positionLines.isNotEmpty()) "\n" + positionLines.joinToString("\n") else "" +
             if (error.isNotBlank()) "\nERROR: " + error else ""
 
         content.removeAllViews()
