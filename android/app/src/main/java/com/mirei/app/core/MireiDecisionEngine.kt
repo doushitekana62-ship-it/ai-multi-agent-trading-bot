@@ -1,5 +1,7 @@
 package com.mirei.app.core
 
+import com.mirei.app.execution.PaperPosition
+
 enum class MireiCycleState { IDLE, INITIAL_BUY_PENDING, HOLDING, REENTRY_WAIT, REENTRY_PENDING, CLOSED }
 
 data class MireiCycle(
