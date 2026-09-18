@@ -17,7 +17,7 @@ object PositionTradeConfigStore {
                 val sl = fields.getOrNull(0)?.toDoubleOrNull()
                 val target = fields.getOrNull(1)?.toDoubleOrNull()
                 val basis = fields.getOrNull(2)?.let { RiskReferenceMode.valueOf(it) } ?: RiskReferenceMode.ENTRY_PRICE
-                if (sl != null && target != null && sl > 0.0 && target > 0.0) {
+                if (sl != null && target != null && sl >= 0.0 && target > 0.0) {
                     parsed[parts[0]] = PositionTradeConfig(sl, target, basis)
                 }
             }
