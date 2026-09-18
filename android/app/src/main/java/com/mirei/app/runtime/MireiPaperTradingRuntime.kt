@@ -104,55 +104,65 @@ class MireiPaperTradingRuntime(
     fun seedInitialHoldings(allocations: Map<String, Double>, nowMs: Long): List<ExecutionResult> {
         if (holdingsSeeded || allocations.isEmpty()) return emptyList()
         require(allocations.size <= config.maxOpenPositions) { "initial_holding_position_limit" }
-        require(allocations.values.fold(0.0) { acc, value -> acc + value } <= config.totalCapitalIdr + 1e-6) {
-            "allocation_exceeds_session_capital"
-        }
+        require(allocations.values.fold(0.0) { acc, value -> acc + value } <= config.totalCapitalIdr + 1e-6) { "allocation_exceeds_session_capital" }
 
         val snapshots = linkedMapOf<String, MarketSnapshot>()
         allocations.forEach { (managedSymbol, amount) ->
-            val instrument = TradingUniverse.bySymbol(managedSymbol)
-                ?: throw IllegalStateException("instrument_not_supported:" + managedSymbol)
-            if (amount < instrument.executionCosts.minimumOrderIdr - 1e-6) {
-                throw IllegalStateException("initial_buy_below_minimum:" + managedSymbol + ":" + instrument.executionCosts.minimumOrderIdr)
-            }
-            val snapshot = runCatching { marketData.snapshot(managedSymbol) }.getOrNull()
-                ?: throw IllegalStateException("market_data_unavailable:" + managedSymbol)
-            if (snapshot.price <= 0.0) {
-                throw IllegalStateException("invalid_market_price:" + managedSymbol)
-            }
-            if (!snapshot.dataFresh) {
-                throw IllegalStateException("market_data_stale:" + managedSymbol + ":" + snapshot.sourceAgeMs + "ms")
-            }
+            val instrument = TradingUniverse.bySymbol(managedSymbol) ?: throw IllegalStateException("instrument_not_supported:" + managedSymbol)
+            if (amount < instrument.executionCosts.minimumOrderIdr - 1e-6) throw IllegalStateException("initial_buy_below_minimum:" + managedSymbol + ":" + instrument.executionCosts.minimumOrderIdr)
+            if (!marketSessionOpen(instrument)) throw IllegalStateException("market_session_closed:" + managedSymbol)
+            val snapshot = runCatching { marketData.snapshot(managedSymbol) }.getOrNull() ?: throw IllegalStateException("market_data_unavailable:" + managedSymbol)
+            if (snapshot.price <= 0.0) throw IllegalStateException("invalid_market_price:" + managedSymbol)
+            if (!snapshot.dataFresh) throw IllegalStateException("market_data_stale:" + managedSymbol + ":" + snapshot.sourceAgeMs + "ms")
+            val decision = decisionEngine.decideInitialEntry(snapshot, amount, amount, cycleId(managedSymbol, nowMs))
+            recordDecision(decision)
+            if (decision.action != MireiDecisionAction.INITIAL_BUY) throw IllegalStateException("initial_buy_decision_rejected:" + managedSymbol + ":" + decision.reason)
             snapshots[managedSymbol] = snapshot
         }
 
-        initialCapitalBySymbol.clear()
-        initialCapitalBySymbol.putAll(allocations)
+        val beforeState = engine.snapshotState()
         val results = mutableListOf<ExecutionResult>()
-        allocations.forEach { (managedSymbol, amount) ->
-            val snapshot = snapshots.getValue(managedSymbol)
-            val pc = config.forPosition(managedSymbol)
-            val result = engine.seedExistingHolding(
-                exchangeId,
-                managedSymbol,
-                amount,
-                snapshot.price,
-                pc.effectiveStopLossPercent(),
-                pc.effectiveTakeProfitPercent(),
-                nowMs,
-                pc.riskReferenceMode,
-                amount,
-            )
-            if (!result.success) {
-                throw IllegalStateException("initial_buy_failed:" + managedSymbol + ":" + (result.error ?: result.reason ?: "unknown"))
+        val created = mutableListOf<PaperPosition>()
+        try {
+            allocations.forEach { (managedSymbol, amount) ->
+                val snapshot = snapshots.getValue(managedSymbol)
+                val pc = config.forPosition(managedSymbol)
+                val plan = decisionEngine.buildEntryPlan(snapshot, amount, amount)
+                require(plan.allowed) { "initial_buy_plan_invalid:" + managedSymbol }
+                val result = engine.seedExistingHolding(
+                    exchangeId, managedSymbol, amount, snapshot.price,
+                    pc.effectiveStopLossPercent(), pc.effectiveTakeProfitPercent(),
+                    nowMs, pc.riskReferenceMode, amount, recordLedger = false
+                )
+                if (!result.success) throw IllegalStateException("initial_buy_failed:" + managedSymbol + ":" + (result.error ?: result.reason ?: "unknown"))
+                results += result
+                result.orderId?.let { engine.position(it)?.let(created::add) }
             }
-            results += result
+        } catch (failure: Throwable) {
+            engine.restoreState(beforeState)
+            pendingReentries.clear()
+            cycles.clear()
+            initialCapitalBySymbol.clear()
+            throw failure
         }
 
-        holdingsSeeded = results.size == allocations.size && results.all { it.success }
+        created.forEach { position -> engine.recordOpenedPosition(position.id) }
+        initialCapitalBySymbol.clear()
+        initialCapitalBySymbol.putAll(allocations)
+        created.forEach { position ->
+            val id = cycleId(position.symbol, nowMs)
+            cycles[position.symbol] = MireiCycle(
+                id, position.symbol, allocations[position.symbol] ?: position.stakeIdr,
+                position.entryPrice, 0, 1, MireiCycleState.HOLDING,
+                MireiDecisionAction.INITIAL_BUY, "initial_buy_filled", nowMs
+            )
+            recordDecision(MireiDecision(MireiDecisionAction.HOLD, position.symbol, "hold_until_sl_tp", id, 1, position.riskReferenceCapitalIdr))
+        }
+        holdingsSeeded = results.size == allocations.size && results.all { it.success } && engine.positionCount() > 0
         if (!holdingsSeeded) throw IllegalStateException("initial_position_not_created")
         return results
     }
+
     fun restoreState(state: PaperRuntimePersistence) {
         engine.restoreState(state.engineState)
         dailyPnlIdr = state.dailyPnlIdr
@@ -160,9 +170,16 @@ class MireiPaperTradingRuntime(
         holdingsSeeded = state.holdingsSeeded
         initialCapitalBySymbol = state.initialCapitalBySymbol.toMutableMap()
         pendingReentries.clear()
+        cycles.clear()
+        cycles.putAll(state.mireiCycles)
+        cycles.values.filter { it.state == MireiCycleState.REENTRY_WAIT }.forEach { cycle ->
+            pendingReentries[cycle.symbol] = PendingReentry(cycle.cycleId, cycle.initialCapitalIdr, cycle.initialBuyPrice, null, cycle.sequence)
+        }
         lastExecution = null
         tickExecutions = mutableListOf()
         lastError = null
+        lastDecision = null
+        tickDecisions.clear()
     }
 
     fun persistenceState() = PaperRuntimePersistence(
@@ -171,6 +188,7 @@ class MireiPaperTradingRuntime(
         consecutiveLosses = consecutiveLosses,
         holdingsSeeded = holdingsSeeded,
         initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
+        mireiCycles = cycles.toMap(),
     )
 
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
