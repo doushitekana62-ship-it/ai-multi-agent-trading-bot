@@ -164,7 +164,7 @@ class MainActivity : Activity() {
             .setPositiveButton("SIMPAN") { _, _ ->
                 val slValue = sl.text.toString().toDoubleOrNull()
                 val tpValue = tp.text.toString().toDoubleOrNull()
-                if (slValue == null || slValue <= 0.0 || tpValue == null || tpValue <= 0.0) return@setPositiveButton
+                if (slValue == null || slValue < 0.0 || tpValue == null || tpValue <= 0.0) return@setPositiveButton
                 val ref = if (basis.checkedRadioButtonId == initial.id) RiskReferenceMode.INITIAL_CAPITAL else RiskReferenceMode.ENTRY_PRICE
                 getSharedPreferences("mirei_settings", MODE_PRIVATE).edit()
                     .putString("position_profiles", "*|" + slValue + "," + tpValue + "," + ref.name)
@@ -184,7 +184,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun requestStatus() = send(MireiForegroundService.ACTION_STOP)
+    private fun requestStatus() = send(MireiForegroundService.ACTION_STATUS)
 
     private fun send(action: String) {
         val intent = Intent(this, MireiForegroundService::class.java).apply { this.action = action }
