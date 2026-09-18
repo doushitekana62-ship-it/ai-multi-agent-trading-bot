@@ -84,6 +84,7 @@ class MireiForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification(stateLabel()))
         when (intent?.action) {
+            ACTION_STATUS -> publishHealth()
             ACTION_START -> startRuntime(intent)
             ACTION_HOLD -> holdRuntime()
             ACTION_STOP -> stopRuntime()
