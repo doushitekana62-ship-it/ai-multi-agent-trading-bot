@@ -19,7 +19,7 @@ import com.mirei.app.core.TradingUniverse
 import com.mirei.app.runtime.MireiForegroundService
 
 object MireiStartSessionDialog {
-    fun show(activity: Activity) {
+    fun show(activity: Activity, onStarting: () -> Unit = {}) {
         val form = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 8, 12, 8) }
         val scroll = ScrollView(activity).apply { addView(form, ViewGroup.LayoutParams(-1, -2)) }
         form.addView(label(activity, "PAPER MARKET", 18f, true))
@@ -87,6 +87,7 @@ object MireiStartSessionDialog {
                     putExtra(MireiForegroundService.EXTRA_INITIAL_ALLOCATIONS, raw)
                     putExtra(MireiForegroundService.EXTRA_SYMBOL, first)
                 }
+                onStarting()
                 runCatching {
                     if (android.os.Build.VERSION.SDK_INT >= 26) activity.startForegroundService(intent) else activity.startService(intent)
                 }.onFailure {
