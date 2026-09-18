@@ -14,22 +14,12 @@ object PositionTradeConfigStore {
             if (parts.size < 2) return@forEach
             val fields = parts[1].split(',')
             runCatching {
-                val mode = ScalpingMode.valueOf(fields[0])
-                val manual = fields[1].toBoolean()
-                val sl = fields[2].toDouble()
-                val tpMode = TakeProfitMode.valueOf(fields[3])
-                val tpPercent = fields[4].toDouble()
-                val netTarget = fields[5].toDouble()
-                val basis = RiskReferenceMode.valueOf(fields[6])
-                parsed[parts[0]] = PositionTradeConfig(
-                    mode = mode,
-                    manualRiskMode = if (manual) ManualRiskMode.MANUAL else ManualRiskMode.AUTO,
-                    stopLossPercent = if (manual) sl else null,
-                    takeProfitMode = if (manual) tpMode else TakeProfitMode.MODE,
-                    manualTakeProfitPercent = if (manual && tpMode == TakeProfitMode.MANUAL_PERCENT) tpPercent else null,
-                    manualNetProfitTargetIdr = if (manual && tpMode == TakeProfitMode.MANUAL_NET_IDR) netTarget else null,
-                    riskReferenceMode = basis,
-                )
+                val sl = fields.getOrNull(0)?.toDoubleOrNull()
+                val target = fields.getOrNull(1)?.toDoubleOrNull()
+                val basis = fields.getOrNull(2)?.let { RiskReferenceMode.valueOf(it) } ?: RiskReferenceMode.ENTRY_PRICE
+                if (sl != null && target != null && sl > 0.0 && target > 0.0) {
+                    parsed[parts[0]] = PositionTradeConfig(sl, target, basis)
+                }
             }
         }
         profiles = parsed
