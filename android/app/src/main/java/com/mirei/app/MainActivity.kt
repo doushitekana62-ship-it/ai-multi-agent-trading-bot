@@ -117,10 +117,17 @@ class MainActivity : Activity() {
             rows.forEach { row ->
                 val p = row.split('|')
                 if (p.size >= 5) {
-                    val value = p[0] + "\nMODAL: Rp " + number.format(p[1].toDoubleOrNull() ?: 0.0) +
+                    val unrealizedPnl = p.getOrNull(5)?.toDoubleOrNull() ?: 0.0
+                    val mark = p.getOrNull(6)?.toDoubleOrNull() ?: 0.0
+                    val cycleState = p.getOrNull(7) ?: "HOLDING"
+                    val decision = p.getOrNull(8) ?: "HOLD"
+                    val value = p[0] + " · " + cycleState + " · " + decision +
+                        "\nMODAL: Rp " + number.format(p[1].toDoubleOrNull() ?: 0.0) +
                         "\nENTRY: Rp " + number.format(p[2].toDoubleOrNull() ?: 0.0) +
-                        "\nSL: Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) +
-                        "\nTP: Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0)
+                        "\nHARGA SEKARANG: Rp " + number.format(mark) +
+                        "\nSL: " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) "Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) else "NONAKTIF") +
+                        "\nTP: Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0) +
+                        "\nPnL BERJALAN: Rp " + number.format(unrealizedPnl)
                     content.addView(card(value, 13f))
                 }
             }
