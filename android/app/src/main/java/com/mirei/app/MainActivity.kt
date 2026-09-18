@@ -148,7 +148,10 @@ class MainActivity : Activity() {
                     val trend = p.getOrNull(9) ?: "FLAT"
                     val reentry = p.getOrNull(10) ?: "0"
                     val cycleState = p.getOrNull(11) ?: "HOLDING"
-                    val value = "Jenis trade : " + (PositionTradeConfigStore.snapshot()["*"]?.let { "Crypto" } ?: "Trade") + " (" + p[0] + ")" +
+                    val instrument = com.mirei.app.core.TradingUniverse.bySymbol(p[0])
+                    val tradeType = instrument?.assetClass?.label ?: "Trade"
+                    val feeRate = instrument?.executionCosts?.let { it.buyFeePercent + it.sellFeePercent } ?: 0.0
+                    val value = "Jenis trade : " + tradeType + " (" + p[0] + ")" +
                         "\nModal awal masuk : Rp " + number.format(p[1].toDoubleOrNull() ?: 0.0) +
                         "\nEntry : Rp " + number.format(p[2].toDoubleOrNull() ?: 0.0) + " per 1 coin" +
                         "\nSL Modal awal : " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) "Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) else "OFF") +
@@ -156,7 +159,7 @@ class MainActivity : Activity() {
                         "\nTP SL sett : SL " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) number.format((PositionTradeConfigStore.snapshot()["*"]?.stopLossPercent ?: 0.0)) + "%" else "OFF") + " · TP Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0) +
                         "\nPnL bersih : Rp " + number.format(unrealizedPnl) +
                         "\nPnL kotor : Rp " + number.format(gross) +
-                        "\nFee : Rp " + number.format(fee) +
+                        "\nFee : " + feeRate + "% · Rp " + number.format(fee) +
                         "\nTotal re entry : " + reentry +
                         "\nStatus : " + trend + " · " + cycleState
                     content.addView(card(value, 12.5f))
