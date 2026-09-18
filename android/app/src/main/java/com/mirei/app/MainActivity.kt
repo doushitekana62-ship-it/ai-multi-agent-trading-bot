@@ -65,7 +65,7 @@ class MainActivity : Activity() {
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(12, 12, 12, 16)
-            setBackgroundColor(Color.rgb(40, 40, 40))
+            setBackgroundColor(Color.rgb(30, 70, 82))
         }
         shell.addView(text("MIREI", 28f, true))
         shell.addView(text("Paper trading · satu dashboard · SL/TP manual", 13f))
@@ -93,6 +93,7 @@ class MainActivity : Activity() {
     }
 
     private fun addLinkButton(shell: LinearLayout) {
+        shell.addView(card("TAUTKAN\nExchange : INDODAX, BYBIT, STOCKBIT, BINANCE, ETC.\nAPI KEYS : -\nStatus Broker ter taut : belum ada\nMode Live : dipersiapkan, trading live tetap terkunci sampai API pairing + adapter siap.", 11.5f))
         val link = Button(this).apply { text = "TAUTKAN EXCHANGE"; isAllCaps = false; setTextColor(Color.rgb(35,35,35)); background = GradientDrawable().apply { setColor(Color.rgb(252,229,154)); cornerRadius = 12f }; setOnClickListener { linkExchanges() } }
         shell.addView(link, LinearLayout.LayoutParams(-1, 48).apply { setMargins(3, 3, 3, 3) })
     }
@@ -129,6 +130,7 @@ class MainActivity : Activity() {
             "\nKas : Rp " + number.format(balance) +
             "\nEquity :" + if (equityLines.isEmpty()) " -" else "\n" + equityLines.joinToString("\n") +
             "\nPnl :" + if (pnlLines.isEmpty()) " -" else "\n" + pnlLines.joinToString("\n") +
+            "\nEquity total : Rp " + number.format(equity) +
             "\nPosisi : " + positions + "/10" +
             if (positionLines.isNotEmpty()) "\n" + positionLines.joinToString("\n") else "" +
             if (error.isNotBlank()) "\nERROR: " + error else ""
