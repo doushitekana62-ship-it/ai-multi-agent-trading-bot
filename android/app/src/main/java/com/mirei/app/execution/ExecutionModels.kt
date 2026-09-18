@@ -45,13 +45,30 @@ class PaperExecutionEngine(
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         if (quoteAmount > availableBalanceIdr + 1e-9) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "initial_holding_exceeds_capital")
         val positionConfig = config.forPosition(symbol)
-        require(stopLossPercent >= 0.0); require(takeProfitPercent > stopLossPercent || positionConfig.manualNetProfitTargetIdr != null); require(initialCapitalIdr > 0.0)
+        require(stopLossPercent >= 0.0)
+        require(takeProfitPercent > stopLossPercent || positionConfig.manualNetProfitTargetIdr != null)
+        require(initialCapitalIdr > 0.0)
+
         val referenceCapital = if (riskReferenceMode == RiskReferenceMode.ENTRY_PRICE) quoteAmount else initialCapitalIdr
-        val costs = costsFor(symbol); val targetCosts = costs
-        val targets = positionConfig.calculateRiskTargets(marketPrice, quoteAmount, referenceCapital, stopLossPercent, takeProfitPercent, targetCosts)
-        val position = PaperPosition(nextPositionId("paper-initial", nowMs), exchangeId, symbol, quoteAmount, marketPrice, targets.stopLossPrice, targets.takeProfitPrice, if (targets.stopLossPrice == 0.0) 0.0 else marketPrice + (marketPrice - targets.stopLossPrice), nowMs, "initial_holding", riskReferenceMode, targets.referenceCapitalIdr, TakeProfitMode.MANUAL_NET_IDR, positionConfig.manualNetProfitTargetIdr, positionConfig.profileFor(symbol))
-        if (recordLedger) if (recordLedger) tradeLedger?.recordOpened(position, entryFee); availableBalanceIdr -= quoteAmount; positions[position.id] = position
-        return ExecutionResult(true, position.id, quoteAmount / marketPrice, marketPrice, 0.0, entryFee = 0.0, remainingBalanceIdr = availableBalanceIdr, reason = "initial_holding_seeded", balanceBeforeIdr = availableBalanceIdr + quoteAmount)
+        val costs = costsFor(symbol)
+        val targets = positionConfig.calculateRiskTargets(marketPrice, quoteAmount, referenceCapital, stopLossPercent, takeProfitPercent, costs)
+        val entryFee = quoteAmount * costs.buyFeePercent / (100.0 + costs.buyFeePercent)
+        val entryNotional = quoteAmount - entryFee
+        val position = PaperPosition(
+            nextPositionId("paper-initial", nowMs), exchangeId, symbol, quoteAmount, marketPrice,
+            targets.stopLossPrice, targets.takeProfitPrice,
+            if (targets.stopLossPrice == 0.0) 0.0 else marketPrice + (marketPrice - targets.stopLossPrice),
+            nowMs, "initial_holding", riskReferenceMode, targets.referenceCapitalIdr,
+            TakeProfitMode.MANUAL_NET_IDR, positionConfig.manualNetProfitTargetIdr, positionConfig.profileFor(symbol)
+        )
+        if (recordLedger) tradeLedger?.recordOpened(position, entryFee)
+        availableBalanceIdr -= quoteAmount
+        positions[position.id] = position
+        return ExecutionResult(
+            true, position.id, entryNotional / marketPrice, marketPrice, entryFee,
+            entryFee = entryFee, remainingBalanceIdr = availableBalanceIdr,
+            reason = "initial_holding_seeded", balanceBeforeIdr = availableBalanceIdr + quoteAmount
+        )
     }
 
     fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, entryReason: String = "entry_filled"): ExecutionResult = openInternal(exchangeId, symbol, plan, nowMs, 0.0, entryReason)
