@@ -79,7 +79,7 @@ object MireiStartSessionDialog {
                 }
                 if (allocations.isEmpty()) { dialog.setTitle("Pilih minimal 1 posisi"); return@setOnClickListener }
                 if (allocations.size > 10) { dialog.setTitle("Maksimal 10 posisi"); return@setOnClickListener }
-                if (allocations.sumOf { it.value } > 150_000.0 + 1e-6) { dialog.setTitle("Total modal maksimal Rp150.000"); return@setOnClickListener }
+                if (allocations.values.fold(0.0) { acc, value -> acc + value } > 150_000.0 + 1e-6) { dialog.setTitle("Total modal maksimal Rp150.000"); return@setOnClickListener }
                 val first = allocations.keys.first()
                 val raw = allocations.entries.joinToString(";") { "${it.key}=${it.value}" }
                 val intent = Intent(activity, MireiForegroundService::class.java).apply {
