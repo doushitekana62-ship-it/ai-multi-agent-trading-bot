@@ -17,6 +17,7 @@ import android.widget.TextView
 import com.mirei.app.core.AssetClass
 import com.mirei.app.core.TradingUniverse
 import com.mirei.app.runtime.MireiForegroundService
+import com.mirei.app.runtime.MultiMarketDataSource
 
 object MireiStartSessionDialog {
     fun show(activity: Activity, onStarting: () -> Unit = {}) {
@@ -46,10 +47,18 @@ object MireiStartSessionDialog {
                 check.setOnCheckedChangeListener { _, checked -> amount.isEnabled = checked }
                 val row = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(4, 3, 4, 3) }
                 row.addView(check)
-                row.addView(label(activity, "${instrument.symbol} · harga akan divalidasi saat MULAI", 10.5f))
+                val price = label(activity, "${instrument.symbol} · memuat harga...", 10.5f)
+                row.addView(price)
                 row.addView(amount)
                 row.tag = instrument.symbol
                 instruments.addView(row)
+                Thread {
+                    val snapshot = runCatching { MultiMarketDataSource().snapshot(instrument.symbol) }.getOrNull()
+                    activity.runOnUiThread {
+                        val nf = java.text.NumberFormat.getNumberInstance(java.util.Locale("id", "ID"))
+                        price.text = if (snapshot != null && snapshot.price > 0.0) "${instrument.symbol} · Rp ${nf.format(snapshot.price)} / 1 coin" else "${instrument.symbol} · harga belum tersedia"
+                    }
+                }.start()
             }
             if (instruments.childCount == 0) instruments.addView(label(activity, "Belum ada instrument paper untuk exchange ini.", 12f))
         }
@@ -80,7 +89,7 @@ object MireiStartSessionDialog {
                 for (i in 0 until instruments.childCount) {
                     val row = instruments.getChildAt(i) as? LinearLayout ?: continue
                     val check = row.getChildAt(0) as? CheckBox ?: continue
-                    val amount = row.getChildAt(1) as? EditText ?: continue
+                    val amount = row.getChildAt(2) as? EditText ?: continue
                     if (!check.isChecked) continue
                     val symbol = row.tag as? String ?: continue
                     val value = amount.text.toString().toDoubleOrNull() ?: 0.0
