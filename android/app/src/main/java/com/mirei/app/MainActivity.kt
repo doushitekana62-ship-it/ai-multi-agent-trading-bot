@@ -78,7 +78,7 @@ class MainActivity : Activity() {
         row1.addView(button("ATUR SL/TP") { showRiskDialog() }, gridParams())
         row1.addView(button("MULAI") { if (isRiskConfigured()) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..."; MireiStartSessionDialog.show(this@MainActivity) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..." } } else showRiskRequired() }, gridParams())
         row1.addView(button("STOP") { showStopDialog() }, gridParams())
-        row2.addView(button("LANJUTKAN") { send(MireiForegroundService.ACTION_START) }, gridParams())
+        row2.addView(button("LANJUTKAN") { send(MireiForegroundService.ACTION_RESUME) }, gridParams())
         row2.addView(button("TUTUP SEMUA") { send(MireiForegroundService.ACTION_CLOSE_ALL) }, gridParams())
         row2.addView(button("RESET") { confirmReset() }, gridParams())
         controls.addView(row1)
