@@ -246,7 +246,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("STOP POSISI")
             .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
             .setNegativeButton("BATAL", null)
-            .setNeutralButton("STOP SEMUA") { _, _ -> send(MireiForegroundService.ACTION_CLOSE_ALL) }
+            .setNeutralButton("STOP SEMUA") { _, _ -> send(MireiForegroundService.ACTION_STOP_SELECTED, labels.toList()) }
             .setPositiveButton("STOP TERPILIH") { _, _ ->
                 val selected = labels.filterIndexed { index, _ -> checked[index] }
                 if (selected.isNotEmpty()) send(MireiForegroundService.ACTION_STOP_SELECTED, selected)
@@ -299,9 +299,15 @@ class MainActivity : Activity() {
     private fun addSection(title: String) { content.addView(text(title, 16f, true), margin(0, 10, 0, 6)) }
 
     private fun tableRow(values: List<String>, header: Boolean): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(2, 4, 2, 4) }
-        values.forEach { value ->
-            row.addView(text(value, if (header) 10f else 9f, header), LinearLayout.LayoutParams(120, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val widths = intArrayOf(126, 154, 82, 116, 116, 86)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        values.forEachIndexed { index, value ->
+            val cell = text(value, if (header) 10f else 9.5f, header).apply {
+                setTextColor(if (header) Color.rgb(35, 35, 35) else Color.WHITE)
+                setPadding(8, 5, 8, 5)
+                setBackgroundColor(if (header) Color.rgb(248, 249, 250) else Color.rgb(30, 70, 82))
+            }
+            row.addView(cell, LinearLayout.LayoutParams(widths.getOrElse(index) { 100 }, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         return row
     }
