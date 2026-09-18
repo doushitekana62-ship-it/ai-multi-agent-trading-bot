@@ -87,6 +87,7 @@ class MireiForegroundService : Service() {
         when (intent?.action) {
             ACTION_STATUS -> publishHealth()
             ACTION_START -> startRuntime(intent)
+            ACTION_RESUME -> resumeRuntime()
             ACTION_HOLD -> holdRuntime()
             ACTION_STOP -> stopRuntime()
             ACTION_CLOSE_ALL -> closeAll()
@@ -497,6 +498,7 @@ class MireiForegroundService : Service() {
 
     companion object {
         const val ACTION_START = "com.mirei.app.action.START"
+        const val ACTION_RESUME = "com.mirei.app.action.RESUME"
         const val ACTION_HOLD = "com.mirei.app.action.HOLD"
         const val ACTION_STOP = "com.mirei.app.action.STOP"
         const val ACTION_CLOSE_ALL = "com.mirei.app.action.CLOSE_ALL"
