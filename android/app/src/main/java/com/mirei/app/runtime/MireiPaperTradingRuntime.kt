@@ -44,6 +44,10 @@ data class PaperRuntimeStatus(
     val mireiCycles: Map<String, MireiCycle> = emptyMap(),
     val activePositionPnlIdr: Map<String, Double> = emptyMap(),
     val activePositionMarkPrice: Map<String, Double> = emptyMap(),
+    val activePositionGrossPnlIdr: Map<String, Double> = emptyMap(),
+    val activePositionFeeIdr: Map<String, Double> = emptyMap(),
+    val activePositionTrend: Map<String, String> = emptyMap(),
+    val activePositionReentryCount: Map<String, Int> = emptyMap(),
 )
 
 data class PaperRuntimePersistence(
@@ -305,6 +309,20 @@ class MireiPaperTradingRuntime(
             mireiCycles = cycles.toMap(),
             activePositionPnlIdr = engine.positions().associate { it.symbol to (lastSnapshots[it.symbol]?.price?.let { price -> engine.unrealizedNetPnl(it.id, price) } ?: 0.0) },
             activePositionMarkPrice = engine.positions().associate { it.symbol to (lastSnapshots[it.symbol]?.price ?: it.entryPrice) },
+            activePositionGrossPnlIdr = engine.positions().associate { position ->
+                val price = lastSnapshots[position.symbol]?.price ?: position.entryPrice
+                position.symbol to grossPnl(position, price)
+            },
+            activePositionFeeIdr = engine.positions().associate { position ->
+                position.symbol to estimatedRoundTripFee(position)
+            },
+            activePositionTrend = engine.positions().associate { position ->
+                val price = lastSnapshots[position.symbol]?.price ?: position.entryPrice
+                position.symbol to when { price > position.entryPrice -> "UP"; price < position.entryPrice -> "DOWN"; else -> "FLAT" }
+            },
+            activePositionReentryCount = engine.positions().associate { position ->
+                position.symbol to (cycles[position.symbol]?.reentryCount ?: 0)
+            },
         )
     }
 
@@ -411,6 +429,45 @@ class MireiPaperTradingRuntime(
         }
     }
 
+    private fun grossPnl(position: PaperPosition, marketPrice: Double): Double {
+        if (marketPrice <= 0.0) return 0.0
+        val costs = TradingUniverse.bySymbol(position.symbol)?.executionCosts
+            ?: return (marketPrice - position.entryPrice) * (position.stakeIdr / position.entryPrice)
+        val entryFee = position.stakeIdr * costs.buyFeePercent / (100.0 + costs.buyFeePercent)
+        val quantity = (position.stakeIdr - entryFee) / position.entryPrice
+        val adjustment = costs.spreadPercent / 2.0 + costs.slippagePercent
+        val executionPrice = marketPrice * (1.0 - adjustment / 100.0)
+        return executionPrice * quantity - position.stakeIdr
+    }
+
+    private fun estimatedRoundTripFee(position: PaperPosition): Double {
+        val costs = TradingUniverse.bySymbol(position.symbol)?.executionCosts ?: return 0.0
+        val entryFee = position.stakeIdr * costs.buyFeePercent / (100.0 + costs.buyFeePercent)
+        val quantity = (position.stakeIdr - entryFee) / position.entryPrice
+        val mark = lastSnapshots[position.symbol]?.price ?: position.entryPrice
+        val adjustment = costs.spreadPercent / 2.0 + costs.slippagePercent
+        val exitPrice = mark * (1.0 - adjustment / 100.0)
+        val exitFee = exitPrice * quantity * costs.sellFeePercent / 100.0
+        return entryFee + exitFee
+    }
+
+    @Synchronized
+    fun closeSymbols(symbols: Set<String>, nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus {
+        tickExecutions = mutableListOf()
+        if (!environment.internetAvailable || !environment.exchangeHealthy) { lastError = "close_selected_exchange_unavailable"; return status(environment) }
+        symbols.forEach { selected ->
+            val position = engine.positions().firstOrNull { it.symbol == selected } ?: return@forEach
+            val snapshot = runCatching { marketData.snapshot(selected) }.getOrNull()
+            if (snapshot == null || !snapshot.dataFresh || snapshot.price <= 0.0) return@forEach
+            val result = engine.close(position.id, snapshot.price, "manual_stop", nowMs)
+            if (result.success) {
+                tickExecutions += result; lastExecution = result; dailyPnlIdr += result.pnlIdr
+                cycles[selected]?.let { cycle -> cycles[selected] = cycle.copy(state = MireiCycleState.CLOSED, lastDecisionReason = "manual_stop", lastTransitionAtEpochMs = nowMs) }
+                pendingReentries.remove(selected)
+            }
+        }
+        return status(environment)
+    }
     private fun recordDecision(decision: MireiDecision) {
         lastDecision = decision
         tickDecisions += decision
