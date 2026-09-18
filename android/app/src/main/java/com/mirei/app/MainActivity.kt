@@ -87,9 +87,14 @@ class MainActivity : Activity() {
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 0) }
         val scroll = ScrollView(this).apply { isFillViewport = true; addView(content, ViewGroup.LayoutParams(-1, -2)) }
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        addLinkButton(shell)
         setContentView(shell)
     }
 
+    private fun addLinkButton(shell: LinearLayout) {
+        val link = Button(this).apply { text = "TAUTKAN EXCHANGE"; isAllCaps = false; setTextColor(Color.rgb(35,35,35)); background = GradientDrawable().apply { setColor(Color.rgb(252,229,154)); cornerRadius = 12f }; setOnClickListener { linkExchanges() } }
+        shell.addView(link, LinearLayout.LayoutParams(-1, 48).apply { setMargins(3, 3, 3, 3) })
+    }
     private fun render(intent: Intent) {
         val state = intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP"
         val balance = intent.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0)
@@ -217,6 +222,33 @@ class MainActivity : Activity() {
         }
         dialog.show()
     }
+    private fun showStopDialog() {
+        val active = com.mirei.app.runtime.MireiForegroundServiceSnapshot.activeSymbols(this)
+        if (active.isEmpty()) { AlertDialog.Builder(this).setTitle("STOP POSISI").setMessage("Tidak ada posisi aktif.").setPositiveButton("OK", null).show(); return }
+        val labels = active.toTypedArray()
+        val checked = BooleanArray(labels.size)
+        AlertDialog.Builder(this).setTitle("STOP POSISI")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+            .setNegativeButton("BATAL", null)
+            .setNeutralButton("STOP SEMUA") { _, _ -> send(MireiForegroundService.ACTION_CLOSE_ALL) }
+            .setPositiveButton("STOP TERPILIH") { _, _ ->
+                val selected = labels.filterIndexed { index, _ -> checked[index] }
+                if (selected.isNotEmpty()) send(MireiForegroundService.ACTION_STOP_SELECTED, selected)
+            }.show()
+    }
+
+    private fun linkExchanges() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 4, 12, 4) }
+        val key = EditText(this).apply { hint = "API KEY"; setSingleLine(true) }
+        val secret = EditText(this).apply { hint = "API SECRET"; setSingleLine(true); inputType = 0x00000081 }
+        box.addView(text("Exchange: INDODAX, BYBIT, STOCKBIT, BINANCE, ETC.", 12f))
+        box.addView(key); box.addView(secret)
+        box.addView(text("Status Broker ter taut: belum terhubung", 12f))
+        box.addView(text("Mode Live: dikunci sampai adapter + API pairing siap.", 11f))
+        AlertDialog.Builder(this).setTitle("TAUTKAN EXCHANGE").setView(box).setNegativeButton("BATAL", null).setPositiveButton("SIMPAN", null).show()
+    }
+
+    private fun gridParams(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(0, 48).apply { weight = 1f; setMargins(3, 3, 3, 3) }
     private fun confirmReset() {
         AlertDialog.Builder(this)
             .setTitle("RESET")
@@ -260,13 +292,17 @@ class MainActivity : Activity() {
 
     private fun button(label: String, action: () -> Unit): Button = Button(this).apply {
         text = label
+        textSize = 11f
         isAllCaps = false
+        setTextColor(Color.rgb(35, 35, 35))
+        background = GradientDrawable().apply { setColor(if (label == "MULAI") Color.rgb(255, 215, 88) else Color.rgb(43, 187, 215)); cornerRadius = 12f }
         setOnClickListener { action() }
     }
 
     private fun card(value: String, size: Float = 14f): TextView = text(value, size).apply {
         setPadding(12, 12, 12, 12)
-        setBackgroundColor(Color.rgb(55, 55, 55))
+        setTextColor(Color.rgb(252, 229, 154))
+        setBackgroundColor(Color.rgb(33, 141, 174))
     }
 
     private fun text(value: String, size: Float, bold: Boolean = false): TextView = TextView(this).apply {
