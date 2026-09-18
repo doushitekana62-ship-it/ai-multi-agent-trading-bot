@@ -459,7 +459,6 @@ class MireiPaperTradingRuntime(
     }
 
     @Synchronized
-    @Synchronized
     fun pauseSymbols(symbols: Set<String>): PaperRuntimeStatus {
         pausedSymbols.addAll(symbols.filter { it in managedSymbols })
         lastError = null
