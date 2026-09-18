@@ -193,39 +193,49 @@ class MireiPaperTradingRuntime(
 
     fun tick(nowMs: Long, environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus = runCatching {
         tickExecutions = mutableListOf()
+        tickDecisions.clear()
         lastError = null
         lastTickEpochMs = nowMs
-
-        if (!environment.internetAvailable) {
-            lastError = "internet_unavailable"
-            return status(environment)
-        }
-        if (!environment.exchangeHealthy) {
-            lastError = "exchange_unavailable"
+        if (!environment.internetAvailable) { lastError = "internet_unavailable"; return status(environment) }
+        if (!environment.exchangeHealthy) { lastError = "exchange_unavailable"; return status(environment) }
+        if (engine.positionCount() == 0) {
+            lastError = if (pendingReentries.isNotEmpty()) "reentry_pending" else "no_active_positions"
             return status(environment)
         }
 
-        val snapshots = managedSymbols.distinct().take(config.maxOpenPositions).mapNotNull { managedSymbol ->
-            marketData.snapshot(managedSymbol)?.let { managedSymbol to it }
-        }.toMap()
+        val snapshots = linkedMapOf<String, MarketSnapshot>()
+        managedSymbols.distinct().take(config.maxOpenPositions).forEach { managedSymbol ->
+            val snapshot = runCatching { marketData.snapshot(managedSymbol) }.getOrNull()
+            if (snapshot != null) snapshots[managedSymbol] = snapshot
+            else lastError = "market_data_unavailable:" + managedSymbol
+        }
         lastSnapshots = snapshots
         lastSnapshot = snapshots[symbol] ?: snapshots.values.firstOrNull()
         lastExchangeHealthy = snapshots.isNotEmpty()
+        if (snapshots.isEmpty()) { lastError = "market_data_unavailable"; return status(environment) }
 
-        if (snapshots.isEmpty()) {
-            lastError = "market_data_unavailable"
-            return status(environment)
+        snapshots.forEach { (managedSymbol, snapshot) ->
+            val position = engine.positions().firstOrNull { it.symbol == managedSymbol } ?: return@forEach
+            val cycle = cycles[managedSymbol]
+            val decision = decisionEngine.decidePosition(
+                snapshot, position,
+                cycle?.cycleId ?: cycleId(managedSymbol, position.openedAtEpochMs),
+                cycle?.sequence ?: 1
+            )
+            recordDecision(decision)
+            if (snapshot.dataFresh && marketSessionOpen(TradingUniverse.bySymbol(managedSymbol))) {
+                executeExitDecision(managedSymbol, snapshot.price, nowMs, position, decision)
+            } else if (!snapshot.dataFresh) {
+                lastError = "market_data_stale:" + managedSymbol + ":" + snapshot.sourceAgeMs + "ms"
+            } else {
+                lastError = "market_session_closed:" + managedSymbol
+            }
         }
 
         snapshots.forEach { (managedSymbol, snapshot) ->
-            if (snapshot.dataFresh) closeTriggeredPositions(managedSymbol, snapshot.price, nowMs)
-        }
-
-        snapshots.forEach { (managedSymbol, snapshot) ->
-            if (!snapshot.dataFresh) return@forEach
+            if (!snapshot.dataFresh || !marketSessionOpen(TradingUniverse.bySymbol(managedSymbol))) return@forEach
             tryReentry(managedSymbol, snapshot, nowMs)
         }
-
         status(environment)
     }.getOrElse {
         lastError = it.message ?: it.javaClass.simpleName
@@ -277,6 +287,8 @@ class MireiPaperTradingRuntime(
             lastTickEpochMs = lastTickEpochMs,
             lastError = lastError,
             initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
+            mireiDecisions = tickDecisions.toList(),
+            mireiCycles = cycles.toMap(),
         )
     }
 
@@ -290,45 +302,116 @@ class MireiPaperTradingRuntime(
 
     fun paperEngine(): PaperExecutionEngine = engine
 
-    private fun closeTriggeredPositions(managedSymbol: String, marketPrice: Double, nowMs: Long) {
-        engine.positions().filter { it.symbol == managedSymbol }.toList().forEach { position ->
-            val reason = when {
-                position.stopLossPrice > 0.0 && marketPrice <= position.stopLossPrice -> "stop_loss"
-                position.takeProfitPrice > 0.0 && marketPrice >= position.takeProfitPrice -> "take_profit"
-                else -> null
-            } ?: return@forEach
-
-            val result = engine.close(position.id, marketPrice, reason, nowMs)
-            if (!result.success) return@forEach
-            tickExecutions += result
-            lastExecution = result
-            dailyPnlIdr += result.pnlIdr
-            consecutiveLosses = if (result.pnlIdr < 0.0) consecutiveLosses + 1 else 0
-            pendingReentries[managedSymbol] = PendingReentry(
-                cycleCapitalIdr = initialCapitalBySymbol[managedSymbol]?.takeIf { it > 0.0 } ?: position.riskReferenceCapitalIdr.takeIf { it > 0.0 } ?: position.stakeIdr,
-                positionProfile = position.positionProfile,
+    private fun executeExitDecision(symbol: String, marketPrice: Double, nowMs: Long, position: PaperPosition, decision: MireiDecision) {
+        if (decision.action != MireiDecisionAction.SELL_STOP_LOSS && decision.action != MireiDecisionAction.SELL_TAKE_PROFIT) return
+        val reason = if (decision.action == MireiDecisionAction.SELL_STOP_LOSS) "stop_loss" else "take_profit"
+        val result = engine.close(position.id, marketPrice, reason, nowMs)
+        if (!result.success) {
+            lastError = "sell_failed:" + symbol + ":" + (result.error ?: "unknown")
+            return
+        }
+        tickExecutions += result
+        lastExecution = result
+        dailyPnlIdr += result.pnlIdr
+        consecutiveLosses = if (result.pnlIdr < 0.0) consecutiveLosses + 1 else 0
+        cycles[symbol]?.let { cycle ->
+            val nextSequence = cycle.sequence + 1
+            cycles[symbol] = cycle.copy(
+                state = MireiCycleState.REENTRY_WAIT,
+                lastDecision = decision.action,
+                lastDecisionReason = decision.reason,
+                sequence = nextSequence,
+                lastTransitionAtEpochMs = nowMs
+            )
+            pendingReentries[symbol] = PendingReentry(
+                cycle.cycleId, cycle.initialCapitalIdr, cycle.initialBuyPrice, position.positionProfile, nextSequence
             )
         }
     }
 
     private fun tryReentry(managedSymbol: String, snapshot: MarketSnapshot, nowMs: Long) {
         val pending = pendingReentries[managedSymbol] ?: return
+        val cycle = cycles[managedSymbol] ?: return
+        if (cycle.state != MireiCycleState.REENTRY_WAIT) return
         if (engine.positionCount() >= config.maxOpenPositions) return
-        val cycleCapital = pending.cycleCapitalIdr.coerceAtMost(engine.availableBalanceIdr())
-        if (cycleCapital <= 0.0) return
-
-        val plan = decisionEngine.buildEntryPlan(
-            snapshot = snapshot,
-            initialCapitalIdr = pending.cycleCapitalIdr,
-            stakeOverrideIdr = cycleCapital,
+        val available = engine.availableBalanceIdr()
+        val decision = decisionEngine.decideReentry(
+            snapshot, pending.cycleId, pending.sequence, pending.cycleCapitalIdr, available
         )
-        if (!plan.allowed) return
-
+        recordDecision(decision)
+        if (decision.action != MireiDecisionAction.REENTRY_BUY) {
+            lastError = "reentry_wait:" + managedSymbol + ":" + decision.reason
+            cycles[managedSymbol] = cycle.copy(
+                state = MireiCycleState.REENTRY_WAIT,
+                lastDecision = decision.action,
+                lastDecisionReason = decision.reason,
+                lastTransitionAtEpochMs = nowMs
+            )
+            return
+        }
+        val cycleCapital = pending.cycleCapitalIdr.coerceAtMost(available)
+        val plan = decisionEngine.buildEntryPlan(snapshot, pending.cycleCapitalIdr, cycleCapital)
+        if (!plan.allowed) {
+            lastError = "reentry_plan_rejected:" + managedSymbol
+            return
+        }
+        cycles[managedSymbol] = cycle.copy(
+            state = MireiCycleState.REENTRY_PENDING,
+            lastDecision = MireiDecisionAction.REENTRY_BUY,
+            lastDecisionReason = "reentry_execution_pending",
+            lastTransitionAtEpochMs = nowMs
+        )
         val result = engine.open(exchangeId, managedSymbol, plan, nowMs, "re_entry")
         lastExecution = result
         if (result.success) {
             tickExecutions += result
             pendingReentries.remove(managedSymbol)
+            cycles[managedSymbol] = cycle.copy(
+                state = MireiCycleState.HOLDING,
+                reentryCount = cycle.reentryCount + 1,
+                sequence = pending.sequence + 1,
+                lastDecision = MireiDecisionAction.REENTRY_BUY,
+                lastDecisionReason = "reentry_buy_filled",
+                lastTransitionAtEpochMs = nowMs
+            )
+            recordDecision(
+                MireiDecision(
+                    MireiDecisionAction.HOLD,
+                    managedSymbol,
+                    "hold_until_sl_tp_after_reentry",
+                    cycle.cycleId,
+                    pending.sequence + 1,
+                    pending.cycleCapitalIdr
+                )
+            )
+        } else {
+            cycles[managedSymbol] = cycle.copy(
+                state = MireiCycleState.REENTRY_WAIT,
+                lastDecision = MireiDecisionAction.REENTRY_WAIT,
+                lastDecisionReason = result.error ?: result.reason ?: "reentry_failed",
+                lastTransitionAtEpochMs = nowMs
+            )
+            lastError = "reentry_failed:" + managedSymbol + ":" + (result.error ?: result.reason ?: "unknown")
+        }
+    }
+
+    private fun recordDecision(decision: MireiDecision) {
+        lastDecision = decision
+        tickDecisions += decision
+    }
+
+    private fun cycleId(symbol: String, atMs: Long): String =
+        "cycle-" + symbol.replace('/', '_').replace('=', '_') + "-" + atMs
+
+    private fun marketSessionOpen(instrument: com.mirei.app.core.MarketInstrument?): Boolean {
+        if (instrument == null) return false
+        if (instrument.assetClass == com.mirei.app.core.AssetClass.CRYPTO) return true
+        val now = java.time.ZonedDateTime.now(java.time.ZoneId.of("America/New_York"))
+        if (now.dayOfWeek == java.time.DayOfWeek.SATURDAY || now.dayOfWeek == java.time.DayOfWeek.SUNDAY) return false
+        return when (instrument.tradingHours) {
+            "US session" -> !now.toLocalTime().isBefore(java.time.LocalTime.of(9, 30)) &&
+                now.toLocalTime().isBefore(java.time.LocalTime.of(16, 0))
+            else -> true
         }
     }
 }
