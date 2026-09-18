@@ -1,6 +1,10 @@
 package com.mirei.app.runtime
 
 import com.mirei.app.core.EntryPlan
+import com.mirei.app.core.MireiCycle
+import com.mirei.app.core.MireiCycleState
+import com.mirei.app.core.MireiDecision
+import com.mirei.app.core.MireiDecisionAction
 import com.mirei.app.core.MireiDecisionEngine
 import com.mirei.app.core.MarketSnapshot
 import com.mirei.app.core.PositionTradeConfig
@@ -36,6 +40,8 @@ data class PaperRuntimeStatus(
     val lastTickEpochMs: Long = 0L,
     val lastError: String? = null,
     val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
+    val mireiDecisions: List<MireiDecision> = emptyList(),
+    val mireiCycles: Map<String, MireiCycle> = emptyMap(),
 )
 
 data class PaperRuntimePersistence(
@@ -47,11 +53,15 @@ data class PaperRuntimePersistence(
     val holdDecisionCount: Int = 0,
     val sellDecisionCount: Int = 0,
     val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
+    val mireiCycles: Map<String, MireiCycle> = emptyMap(),
 )
 
 private data class PendingReentry(
+    val cycleId: String,
     val cycleCapitalIdr: Double,
+    val initialBuyPrice: Double,
     val positionProfile: PositionTradeConfig?,
+    val sequence: Int,
 )
 
 class MireiPaperTradingRuntime(
@@ -79,6 +89,9 @@ class MireiPaperTradingRuntime(
     private var holdingsSeeded = false
     private var initialCapitalBySymbol: MutableMap<String, Double> = linkedMapOf()
     private val pendingReentries = linkedMapOf<String, PendingReentry>()
+    private val cycles = linkedMapOf<String, MireiCycle>()
+    private var lastDecision: MireiDecision? = null
+    private val tickDecisions = mutableListOf<MireiDecision>()
 
     fun applyRiskConfig(newConfig: TradingConfig) {
         require(newConfig.totalCapitalIdr == config.totalCapitalIdr) { "paper_capital_immutable_while_running" }
