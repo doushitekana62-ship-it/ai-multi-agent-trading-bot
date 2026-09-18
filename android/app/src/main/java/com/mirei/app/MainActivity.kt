@@ -153,7 +153,7 @@ class MainActivity : Activity() {
                         "\nEntry : Rp " + number.format(p[2].toDoubleOrNull() ?: 0.0) + " per 1 coin" +
                         "\nSL Modal awal : " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) "Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) else "OFF") +
                         "\nTP modal awal : Rp " + number.format((p[1].toDoubleOrNull() ?: 0.0) + (PositionTradeConfigStore.snapshot()["*"]?.manualNetProfitTargetIdr ?: 0.0)) +
-                        "\nTP SL sett : SL " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) number.format((PositionTradeConfigStore.snapshot()["*"]?.stopLossPercent ?: 0.0)) + "%" else "OFF") + " · TP Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0)
+                        "\nTP SL sett : SL " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) number.format((PositionTradeConfigStore.snapshot()["*"]?.stopLossPercent ?: 0.0)) + "%" else "OFF") + " · TP Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0) +
                         "\nPnL bersih : Rp " + number.format(unrealizedPnl) +
                         "\nPnL kotor : Rp " + number.format(gross) +
                         "\nFee : Rp " + number.format(fee) +
