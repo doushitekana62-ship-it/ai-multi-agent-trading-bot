@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.graphics.drawable.GradientDrawable
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
@@ -74,7 +75,7 @@ class MainActivity : Activity() {
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row1.addView(button("ATUR SL/TP") { showRiskDialog() }, gridParams())
-        row1.addView(button("MULAI") { if (isRiskConfigured()) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..."; MireiStartSessionDialog.show(this@MainActivity) } else showRiskRequired() }, gridParams())
+        row1.addView(button("MULAI") { if (isRiskConfigured()) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..."; MireiStartSessionDialog.show(this@MainActivity) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..." } } else showRiskRequired() }, gridParams())
         row1.addView(button("STOP") { showStopDialog() }, gridParams())
         row2.addView(button("LANJUTKAN") { send(MireiForegroundService.ACTION_START) }, gridParams())
         row2.addView(button("TUTUP SEMUA") { send(MireiForegroundService.ACTION_CLOSE_ALL) }, gridParams())
@@ -163,58 +164,59 @@ class MainActivity : Activity() {
     private fun renderHistoryTable() {
         val rows = MireiDatabase(this).recentTrades(100)
         val table = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        table.addView(tableRow(listOf("WAKTU", "SYMBOL", "SIDE", "STATUS", "ENTRY", "EXIT", "PnL", "ALASAN"), true))
+        table.addView(tableRow(listOf("WAKTU", "JENIS TRADE", "STATUS", "ENTRY", "MODAL AWAL", "PnL"), true))
         rows.forEach { row ->
+            val asset = com.mirei.app.core.TradingUniverse.bySymbol(row.symbol)?.assetClass?.label ?: row.symbol
             table.addView(tableRow(listOf(
                 formatTime(row.closedAtEpochMs ?: row.openedAtEpochMs),
-                row.symbol,
-                row.side,
+                asset + " (" + row.symbol + ")",
                 row.status,
                 row.entryPrice?.let { number.format(it) } ?: "-",
-                row.exitPrice?.let { number.format(it) } ?: "-",
+                number.format(row.stakeIdr),
                 number.format(row.pnlIdr),
-                row.exitReason ?: row.entryReason,
             ), false))
         }
         if (rows.isEmpty()) table.addView(text("Belum ada history.", 12f))
         content.addView(HorizontalScrollView(this).apply { addView(table) })
     }
-
     private fun showRiskDialog() {
         val current = PositionTradeConfigStore.snapshot()["*"]
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 4, 12, 4) }
         val sl = EditText(this).apply { hint = "SL %"; setSingleLine(true); setText((current?.stopLossPercent ?: 0.50).toString()) }
-        val tp = EditText(this).apply { hint = "Target TP bersih Rp"; setSingleLine(true); setText((current?.manualNetProfitTargetIdr ?: 30.0).toString()) }
+        val tp = EditText(this).apply { hint = "TP bersih Rp"; setSingleLine(true); setText((current?.manualNetProfitTargetIdr ?: 30.0).toString()) }
         val basis = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val entry = RadioButton(this).apply { id = View.generateViewId(); text = "Harga ENTRY" }
-        val initial = RadioButton(this).apply { id = View.generateViewId(); text = "MODAL BELI PERTAMA" }
-        basis.addView(entry)
-        basis.addView(initial)
+        val entry = RadioButton(this).apply { id = View.generateViewId(); text = "Harga entry" }
+        val initial = RadioButton(this).apply { id = View.generateViewId(); text = "Modal pertama" }
+        basis.addView(entry); basis.addView(initial)
         basis.check(if (current?.riskReferenceMode == RiskReferenceMode.INITIAL_CAPITAL) initial.id else entry.id)
-        box.addView(text("SL dan TP manual berlaku untuk semua instrument yang belum memiliki profil khusus.", 12f))
-        box.addView(sl)
-        box.addView(tp)
-        box.addView(basis)
-
-        AlertDialog.Builder(this)
+        box.addView(text("SL / TP manual", 15f, true))
+        box.addView(text("SL = persen atau OFF. TP = target bersih setelah biaya.", 12f))
+        box.addView(sl); box.addView(tp); box.addView(basis)
+        box.addView(text("Fee calc = target TP bersih setelah fee; fee mengikuti exchange/instrument.", 11f))
+        val dialog = AlertDialog.Builder(this)
             .setTitle("ATUR SL/TP")
             .setView(box)
             .setNegativeButton("BATAL", null)
-            .setPositiveButton("SIMPAN") { _, _ ->
+            .setNeutralButton("ATUR DEFAULT", null)
+            .setPositiveButton("SIMPAN", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                sl.setText("0.50"); tp.setText("30"); basis.check(entry.id)
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val slValue = sl.text.toString().toDoubleOrNull()
                 val tpValue = tp.text.toString().toDoubleOrNull()
-                if (slValue == null || slValue < 0.0 || tpValue == null || tpValue <= 0.0) return@setPositiveButton
+                if (slValue == null || slValue < 0.0 || tpValue == null || tpValue <= 0.0) { box.addView(text("SL/TP tidak valid", 11f)); return@setOnClickListener }
                 val ref = if (basis.checkedRadioButtonId == initial.id) RiskReferenceMode.INITIAL_CAPITAL else RiskReferenceMode.ENTRY_PRICE
-                getSharedPreferences("mirei_settings", MODE_PRIVATE).edit()
-                    .putString("position_profiles", "*|" + slValue + "," + tpValue + "," + ref.name)
-                    .putBoolean("sl_tp_configured", true)
-                    .apply()
+                getSharedPreferences("mirei_settings", MODE_PRIVATE).edit().putString("position_profiles", "*|" + slValue + "," + tpValue + "," + ref.name).putBoolean("sl_tp_configured", true).apply()
                 PositionTradeConfigStore.reload(this)
                 send(MireiForegroundService.ACTION_APPLY_RISK)
+                dialog.dismiss()
             }
-            .show()
+        }
+        dialog.show()
     }
-
     private fun confirmReset() {
         AlertDialog.Builder(this)
             .setTitle("RESET")
