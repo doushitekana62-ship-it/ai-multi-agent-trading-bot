@@ -70,11 +70,13 @@ class MainActivity : Activity() {
         shell.addView(status, margin(0, 8, 0, 8))
 
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        controls.addView(button("MULAI") { MireiStartSessionDialog.show(this@MainActivity) })
+        controls.addView(button("ATUR SL/TP") { showRiskDialog() })
+        controls.addView(button("MULAI") {
+            if (isRiskConfigured()) MireiStartSessionDialog.show(this@MainActivity) else showRiskRequired()
+        })
         controls.addView(button("STOP") { send(MireiForegroundService.ACTION_STOP) })
         controls.addView(button("LANJUTKAN") { send(MireiForegroundService.ACTION_START) })
         controls.addView(button("TUTUP SEMUA POSISI") { send(MireiForegroundService.ACTION_CLOSE_ALL) })
-        controls.addView(button("ATUR SL/TP") { showRiskDialog() })
         controls.addView(button("RESET") { confirmReset() })
         shell.addView(controls)
 
@@ -168,6 +170,7 @@ class MainActivity : Activity() {
                 val ref = if (basis.checkedRadioButtonId == initial.id) RiskReferenceMode.INITIAL_CAPITAL else RiskReferenceMode.ENTRY_PRICE
                 getSharedPreferences("mirei_settings", MODE_PRIVATE).edit()
                     .putString("position_profiles", "*|" + slValue + "," + tpValue + "," + ref.name)
+                    .putBoolean("sl_tp_configured", true)
                     .apply()
                 PositionTradeConfigStore.reload(this)
                 send(MireiForegroundService.ACTION_APPLY_RISK)
@@ -181,6 +184,19 @@ class MainActivity : Activity() {
             .setMessage("Reset sesi. History tetap tersimpan.")
             .setNegativeButton("BATAL", null)
             .setPositiveButton("RESET") { _, _ -> send(MireiForegroundService.ACTION_RESET_SESSION) }
+            .show()
+    }
+
+    private fun isRiskConfigured(): Boolean =
+        getSharedPreferences("mirei_settings", MODE_PRIVATE).getBoolean("sl_tp_configured", false) &&
+            PositionTradeConfigStore.snapshot()["*"] != null
+
+    private fun showRiskRequired() {
+        AlertDialog.Builder(this)
+            .setTitle("ATUR SL/TP WAJIB")
+            .setMessage("Sebelum MULAI, tetapkan SL dan TP terlebih dahulu. Setelah disimpan, baru pilih instrument dan modal.")
+            .setPositiveButton("ATUR SL/TP") { _, _ -> showRiskDialog() }
+            .setNegativeButton("BATAL", null)
             .show()
     }
 
