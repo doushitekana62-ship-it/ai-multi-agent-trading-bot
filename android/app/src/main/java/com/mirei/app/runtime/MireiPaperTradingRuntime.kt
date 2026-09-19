@@ -61,6 +61,7 @@ data class PaperRuntimePersistence(
     val initialCapitalBySymbol: Map<String, Double> = emptyMap(),
     val mireiCycles: Map<String, MireiCycle> = emptyMap(),
     val pausedSymbols: Set<String> = emptySet(),
+    val sessionOpeningCapitalIdr: Double = 0.0,
 )
 
 private data class PendingReentry(
@@ -99,6 +100,7 @@ class MireiPaperTradingRuntime(
     private val cycles = linkedMapOf<String, MireiCycle>()
     private val pausedSymbols = linkedSetOf<String>()
     private var lastDecision: MireiDecision? = null
+    private var sessionOpeningCapitalIdr = 0.0
     private val tickDecisions = mutableListOf<MireiDecision>()
 
     fun applyRiskConfig(newConfig: TradingConfig) {
@@ -158,6 +160,7 @@ class MireiPaperTradingRuntime(
         created.forEach { position -> engine.recordOpenedPosition(position.id) }
         initialCapitalBySymbol.clear()
         initialCapitalBySymbol.putAll(allocations)
+        sessionOpeningCapitalIdr = config.totalCapitalIdr
         created.forEach { position ->
             val id = cycleId(position.symbol, nowMs)
             cycles[position.symbol] = MireiCycle(
@@ -177,6 +180,7 @@ class MireiPaperTradingRuntime(
         dailyPnlIdr = state.dailyPnlIdr
         consecutiveLosses = state.consecutiveLosses
         holdingsSeeded = state.holdingsSeeded
+        sessionOpeningCapitalIdr = state.sessionOpeningCapitalIdr.takeIf { it > 0.0 } ?: config.totalCapitalIdr
         initialCapitalBySymbol = state.initialCapitalBySymbol.toMutableMap()
         pendingReentries.clear()
         cycles.clear()
@@ -210,6 +214,7 @@ class MireiPaperTradingRuntime(
         initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
         mireiCycles = cycles.toMap(),
         pausedSymbols = pausedSymbols.toSet(),
+        sessionOpeningCapitalIdr = sessionOpeningCapitalIdr,
     )
 
     @Synchronized
@@ -342,6 +347,9 @@ class MireiPaperTradingRuntime(
     }
 
     fun paperEngine(): PaperExecutionEngine = engine
+
+    fun capitalContinuityDeltaIdr(): Double =
+        engine.availableBalanceIdr() + engine.positions().sumOf { it.stakeIdr } - (sessionOpeningCapitalIdr + dailyPnlIdr)
 
     private fun executeExitDecision(symbol: String, marketPrice: Double, nowMs: Long, position: PaperPosition, decision: MireiDecision) {
         if (decision.action != MireiDecisionAction.SELL_STOP_LOSS && decision.action != MireiDecisionAction.SELL_TAKE_PROFIT) return
