@@ -69,9 +69,6 @@ class MainActivity : Activity() {
         }
         shell.addView(text("MIREI", 28f, true))
         shell.addView(text("Paper trading · satu dashboard · SL/TP manual", 13f))
-        status = card("STOP")
-        shell.addView(status, margin(0, 8, 0, 8))
-
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -85,8 +82,10 @@ class MainActivity : Activity() {
         controls.addView(row2)
         shell.addView(controls)
 
-        content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 0) }
-        val scroll = ScrollView(this).apply { isFillViewport = true; addView(content, ViewGroup.LayoutParams(-1, -2)) }
+        content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 8, 0, 0) }
+        status = card("STOP")
+        content.addView(status, margin(0, 0, 0, 8))
+        val scroll = ScrollView(this).apply { isFillViewport = false; addView(content, ViewGroup.LayoutParams(-1, -2)) }
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         addLinkButton(shell)
         setContentView(shell)
@@ -113,6 +112,10 @@ class MainActivity : Activity() {
         val pnl = intent.getDoubleExtra(MireiForegroundService.EXTRA_PNL, 0.0)
         val positions = intent.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)
         val error = intent.getStringExtra(MireiForegroundService.EXTRA_ERROR).orEmpty()
+        val winRate = intent.getDoubleExtra(MireiForegroundService.EXTRA_WIN_RATE, 0.0)
+        val tpWins = intent.getIntExtra(MireiForegroundService.EXTRA_TP_WINS, 0)
+        val closedTrades = intent.getIntExtra(MireiForegroundService.EXTRA_CLOSED_TRADES, 0)
+        val totalReentries = intent.getIntExtra(MireiForegroundService.EXTRA_TOTAL_REENTRIES, 0)
         val lastTick = intent.getLongExtra(MireiForegroundService.EXTRA_LAST_TICK, 0L)
         val tickAgeSec = if (lastTick > 0L) ((System.currentTimeMillis() - lastTick).coerceAtLeast(0L) / 1000L) else -1L
         val heartbeat = when {
@@ -140,6 +143,8 @@ class MainActivity : Activity() {
             "\nEquity :" + if (equityLines.isEmpty()) " -" else "\n" + equityLines.joinToString("\n") +
             "\nPnl :" + if (pnlLines.isEmpty()) " -" else "\n" + pnlLines.joinToString("\n") +
             "\nEquity total : Rp " + number.format(equity) +
+            "\nWin Rate : " + String.format(Locale.US, "%.1f%%", winRate) + " (" + tpWins + "/" + closedTrades + " TP)" +
+            "\nCounter re-entry : " + totalReentries +
             "\nPosisi : " + positions + "/10" +
             if (positionLines.isNotEmpty()) "\n" + positionLines.joinToString("\n") else "" +
             if (error.isNotBlank()) "\nERROR: " + error else ""
@@ -183,22 +188,50 @@ class MainActivity : Activity() {
     }
 
     private fun renderHistoryTable() {
-        val rows = MireiDatabase(this).recentTrades(100)
-        val table = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        table.addView(tableRow(listOf("WAKTU", "JENIS TRADE", "STATUS", "ENTRY", "MODAL AWAL", "PnL"), true))
+        val database = MireiDatabase(this)
+        val rows = database.recentTrades(100)
+        val metrics = database.performanceMetrics()
+        addSection("STATISTIK")
+        content.addView(card(
+            "Win Rate TP : " + String.format(Locale.US, "%.1f%%", metrics.winRatePercent) +
+                "  ·  TP berhasil : " + metrics.tpWins +
+                "  ·  Trade selesai : " + metrics.closedTrades +
+                "  ·  Total re-entry : " + metrics.totalReentries,
+            11.5f
+        ))
+        addSection("HISTORY")
+        val table = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            minimumWidth = 760
+        }
+        table.addView(tableRow(listOf("WAKTU", "JENIS TRADE", "SIKLUS / STATUS", "ENTRY", "MODAL AWAL", "PnL"), true))
         rows.forEach { row ->
             val asset = com.mirei.app.core.TradingUniverse.bySymbol(row.symbol)?.assetClass?.label ?: row.symbol
+            val statusLabel = when {
+                row.entryReason == "re_entry" && row.exitReason == "take_profit" -> "RE-ENTRY / TP"
+                row.entryReason == "re_entry" && row.exitReason == "stop_loss" -> "RE-ENTRY / SL"
+                row.entryReason == "re_entry" && row.status == "OPEN" -> "RE-ENTRY / OPEN"
+                row.exitReason == "take_profit" -> "TP"
+                row.exitReason == "stop_loss" -> "SL"
+                row.exitReason == "manual_close_all" -> "CLOSED / MANUAL"
+                row.exitReason == "manual_stop" -> "CLOSED / STOP"
+                row.status == "OPEN" -> "OPEN"
+                else -> "CLOSED"
+            }
             table.addView(tableRow(listOf(
                 formatTime(row.closedAtEpochMs ?: row.openedAtEpochMs),
                 asset + " (" + row.symbol + ")",
-                if (row.entryReason == "re_entry" || row.side == "RE_ENTRY") "RE-ENTRY" else row.status,
+                statusLabel,
                 row.entryPrice?.let { number.format(it) } ?: "-",
                 number.format(row.stakeIdr),
                 number.format(row.pnlIdr),
             ), false))
         }
         if (rows.isEmpty()) table.addView(text("Belum ada history.", 12f))
-        content.addView(HorizontalScrollView(this).apply { addView(table) })
+        content.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = true
+            addView(table, ViewGroup.LayoutParams(760, ViewGroup.LayoutParams.WRAP_CONTENT))
+        })
     }
     private fun showRiskDialog() {
         val current = PositionTradeConfigStore.snapshot()["*"]
@@ -299,13 +332,14 @@ class MainActivity : Activity() {
     private fun addSection(title: String) { content.addView(text(title, 16f, true), margin(0, 10, 0, 6)) }
 
     private fun tableRow(values: List<String>, header: Boolean): View {
-        val widths = intArrayOf(126, 154, 82, 116, 116, 86)
+        val widths = intArrayOf(126, 170, 138, 116, 116, 96)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         values.forEachIndexed { index, value ->
             val cell = text(value, if (header) 10f else 9.5f, header).apply {
                 setTextColor(if (header) Color.rgb(35, 35, 35) else Color.WHITE)
-                setPadding(8, 5, 8, 5)
+                setPadding(8, 6, 8, 6)
                 setBackgroundColor(if (header) Color.rgb(248, 249, 250) else Color.rgb(30, 70, 82))
+                setMinHeight(42)
             }
             row.addView(cell, LinearLayout.LayoutParams(widths.getOrElse(index) { 100 }, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
