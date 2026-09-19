@@ -62,7 +62,14 @@ class MireiForegroundService : Service() {
         val saved = sessionStore.load()
         if (saved?.active == true) restoreSessionMetadata(saved)
         createRuntime()
-        if (saved?.active == true) restoreRuntimeState(saved)
+        if (saved?.active == true) {
+            restoreRuntimeState(saved)
+            if (shouldRecoverInBackground() && runtime.paperEngine().positionCount() > 0) {
+                state = MireiState.RUNNING
+                runStartedAtEpochMs = System.currentTimeMillis()
+                worker.post(runtimeLoop)
+            }
+        }
 
         val connectivity = getSystemService(ConnectivityManager::class.java)
         connectivityManager = connectivity
@@ -96,7 +103,7 @@ class MireiForegroundService : Service() {
             ACTION_APPLY_RISK -> applyRisk()
             ACTION_RESET_SESSION -> resetSession()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun startRuntime(intent: Intent) {
@@ -121,7 +128,7 @@ class MireiForegroundService : Service() {
         }
 
         if (sessionStarted) {
-            val resumeStatus = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+            val resumeStatus = runtime.status(RuntimeEnvironment(internetAvailable, managedSymbols.all { TradingUniverse.bySymbol(it)?.providerId in SUPPORTED_EXCHANGES }))
             val hasRecoveryCycle = resumeStatus.mireiCycles.values.any { it.state == com.mirei.app.core.MireiCycleState.REENTRY_WAIT }
             if (runtime.paperEngine().positionCount() <= 0 && !hasRecoveryCycle) {
                 audit("START_REJECTED", "no_active_positions")
@@ -137,10 +144,12 @@ class MireiForegroundService : Service() {
             worker.removeCallbacksAndMessages(null)
             worker.post {
                 state = MireiState.RUNNING
+                setBackgroundRunDesired(true)
                 runStartedAtEpochMs = System.currentTimeMillis()
                 runStoppedAtEpochMs = 0L
                 persistSession()
                 publishHealth()
+                worker.removeCallbacks(runtimeLoop)
                 worker.post(runtimeLoop)
             }
             return
@@ -205,6 +214,7 @@ class MireiForegroundService : Service() {
     private fun holdRuntime() {
         if (!sessionStarted) return
         state = MireiState.HOLD
+        setBackgroundRunDesired(false)
         worker.removeCallbacksAndMessages(null)
         runStoppedAtEpochMs = System.currentTimeMillis()
         persistSession()
@@ -214,6 +224,7 @@ class MireiForegroundService : Service() {
 
     private fun stopRuntime() {
         state = MireiState.STOP
+        setBackgroundRunDesired(false)
         worker.removeCallbacksAndMessages(null)
         runStoppedAtEpochMs = System.currentTimeMillis()
         persistSession()
@@ -223,6 +234,7 @@ class MireiForegroundService : Service() {
 
     private fun resetSession() {
         state = MireiState.STOP
+        setBackgroundRunDesired(false)
         worker.removeCallbacksAndMessages(null)
         sessionStarted = false
         sessionCreatedAtEpochMs = 0L
@@ -266,6 +278,7 @@ class MireiForegroundService : Service() {
             pausedSymbols = pausedSymbols + symbols
             runtime.pauseSymbols(symbols)
             state = MireiState.STOP
+            setBackgroundRunDesired(false)
             runStoppedAtEpochMs = System.currentTimeMillis()
             persistSession()
             audit("POSITIONS_STOPPED", "symbols=${symbols.joinToString(",")}")
@@ -287,6 +300,7 @@ class MireiForegroundService : Service() {
                 return@post
             }
             state = MireiState.RUNNING
+            setBackgroundRunDesired(true)
             runStartedAtEpochMs = System.currentTimeMillis()
             runStoppedAtEpochMs = 0L
             worker.removeCallbacksAndMessages(null)
@@ -432,6 +446,11 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_ERROR, status.lastError ?: "")
             putExtra(EXTRA_SESSION_CREATED, sessionCreatedAtEpochMs)
             putExtra(EXTRA_LAST_TICK, status.lastTickEpochMs)
+            val metrics = MireiDatabase(this).performanceMetrics()
+            putExtra(EXTRA_WIN_RATE, metrics.winRatePercent)
+            putExtra(EXTRA_TP_WINS, metrics.tpWins)
+            putExtra(EXTRA_CLOSED_TRADES, metrics.closedTrades)
+            putExtra(EXTRA_TOTAL_REENTRIES, metrics.totalReentries)
             putExtra(EXTRA_POSITIONS_DETAIL, status.activePositions.joinToString("\n") { position ->
                 val pnl = status.activePositionPnlIdr[position.symbol] ?: 0.0
                 val gross = status.activePositionGrossPnlIdr[position.symbol] ?: pnl
@@ -498,6 +517,20 @@ class MireiForegroundService : Service() {
         )
     }
 
+    private fun setBackgroundRunDesired(value: Boolean) {
+        prefs.edit().putBoolean(KEY_BACKGROUND_RUN_DESIRED, value).apply()
+    }
+
+    private fun shouldRecoverInBackground(): Boolean =
+        prefs.getBoolean(KEY_BACKGROUND_RUN_DESIRED, false) && sessionStarted
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (shouldRecoverInBackground() && state == MireiState.RUNNING) {
+            worker.removeCallbacks(runtimeLoop)
+            worker.post(runtimeLoop)
+        }
+        super.onTaskRemoved(rootIntent)
+    }
     override fun onDestroy() {
         runCatching { persistSession() }
         runCatching { networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) } }
@@ -533,6 +566,10 @@ class MireiForegroundService : Service() {
         const val EXTRA_POSITIONS_DETAIL = "positions_detail"
         const val EXTRA_SESSION_CREATED = "session_created"
         const val EXTRA_LAST_TICK = "last_tick"
+        const val EXTRA_WIN_RATE = "win_rate"
+        const val EXTRA_TP_WINS = "tp_wins"
+        const val EXTRA_CLOSED_TRADES = "closed_trades"
+        const val EXTRA_TOTAL_REENTRIES = "total_reentries"
         const val EXTRA_SELECTED_SYMBOLS = "selected_symbols"
 
         const val DEFAULT_SYMBOL = "BTC/IDR"
@@ -545,5 +582,6 @@ class MireiForegroundService : Service() {
         private const val TICK_MS = 5_000L
         private const val PREFS_NAME = "mirei_settings"
         private const val KEY_TOTAL_CAPITAL = "total_capital"
+        private const val KEY_BACKGROUND_RUN_DESIRED = "background_run_desired"
     }
 }
