@@ -17,6 +17,7 @@ data class PaperSessionSnapshot(
     val runStoppedAtEpochMs: Long,
     val timestampResetAtEpochMs: Long,
     val sessionOpeningCapitalIdr: Double = 0.0,
+    val lastMarkPriceBySymbol: Map<String, Double> = emptyMap(),
     val symbol: String,
     val exchangeId: String,
     val managedSymbols: List<String>,
@@ -105,6 +106,9 @@ class PaperSessionStore(context: Context) {
                 runStoppedAtEpochMs = root.optLong("runStopped", 0L),
                 timestampResetAtEpochMs = root.optLong("timestampReset", 0L),
                 sessionOpeningCapitalIdr = root.optDouble("sessionOpeningCapitalIdr", 0.0),
+                lastMarkPriceBySymbol = linkedMapOf<String, Double>().also { out ->
+                    root.optJSONObject("lastMarkPriceBySymbol")?.keys()?.forEach { key -> out[key] = root.optJSONObject("lastMarkPriceBySymbol")?.optDouble(key, 0.0) ?: 0.0 }
+                },
                 symbol = root.optString("symbol", "BTC/IDR"),
                 exchangeId = root.optString("exchange", "indodax"),
                 managedSymbols = root.optString("managedSymbols", "BTC/IDR").split(',').filter { it.isNotBlank() },
@@ -129,6 +133,7 @@ class PaperSessionStore(context: Context) {
             put("runStopped", snapshot.runStoppedAtEpochMs)
             put("timestampReset", snapshot.timestampResetAtEpochMs)
             put("sessionOpeningCapitalIdr", snapshot.sessionOpeningCapitalIdr)
+            put("lastMarkPriceBySymbol", JSONObject().apply { snapshot.lastMarkPriceBySymbol.forEach { (symbol, price) -> put(symbol, price) } })
             put("symbol", snapshot.symbol)
             put("exchange", snapshot.exchangeId)
             put("managedSymbols", snapshot.managedSymbols.joinToString(","))
