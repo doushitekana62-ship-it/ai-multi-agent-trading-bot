@@ -446,7 +446,7 @@ class MireiForegroundService : Service() {
             putExtra(EXTRA_ERROR, status.lastError ?: "")
             putExtra(EXTRA_SESSION_CREATED, sessionCreatedAtEpochMs)
             putExtra(EXTRA_LAST_TICK, status.lastTickEpochMs)
-            val metrics = MireiDatabase(this).performanceMetrics()
+            val metrics = MireiDatabase(this@MireiForegroundService).performanceMetrics()
             putExtra(EXTRA_WIN_RATE, metrics.winRatePercent)
             putExtra(EXTRA_TP_WINS, metrics.tpWins)
             putExtra(EXTRA_CLOSED_TRADES, metrics.closedTrades)
