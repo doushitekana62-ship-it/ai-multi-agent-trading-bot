@@ -128,19 +128,16 @@ object MireiStartSessionDialog {
         val dialog = AlertDialog.Builder(activity).setTitle("MULAI PAPER").setView(scroll).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val allocations = linkedMapOf<String, Double>()
-                for (i in 0 until instruments.childCount) {
-                    val row = instruments.getChildAt(i) as? LinearLayout ?: continue
-                    val check = row.getChildAt(0) as? CheckBox ?: continue
-                    val amount = row.getChildAt(2) as? EditText ?: continue
-                    if (!check.isChecked) continue
-                    val symbol = row.tag as? String ?: continue
-                    val value = amount.text.toString().toDoubleOrNull() ?: 0.0
-                    if (value > 0.0) allocations[symbol] = value
-                }
+                captureVisible()
+                val allocations = selectedAllocations.toMap(linkedMapOf())
                 if (allocations.isEmpty()) { dialog.setTitle("Pilih minimal 1 posisi"); return@setOnClickListener }
                 if (allocations.size > 10) { dialog.setTitle("Maksimal 10 posisi"); return@setOnClickListener }
-                if (allocations.values.fold(0.0) { acc, value -> acc + value } > 150_000.0 + 1e-6) { dialog.setTitle("Total modal maksimal Rp150.000"); return@setOnClickListener }
+                if (allocations.values.sum() > 150_000.0 + 1e-6) { dialog.setTitle("Total modal maksimal Rp150.000"); return@setOnClickListener }
+                val invalid = allocations.entries.firstOrNull { (symbol, amount) ->
+                    val minimum = TradingUniverse.bySymbol(symbol)?.executionCosts?.minimumOrderIdr ?: 0.0
+                    amount + 1e-6 < minimum
+                }
+                if (invalid != null) { dialog.setTitle("Modal ${invalid.key} di bawah minimum order"); return@setOnClickListener }
                 val first = allocations.keys.first()
                 val raw = allocations.entries.joinToString(";") { "${it.key}=${it.value}" }
                 val intent = Intent(activity, MireiForegroundService::class.java).apply {
@@ -154,8 +151,7 @@ object MireiStartSessionDialog {
                 }.onFailure {
                     dialog.setTitle("Gagal memulai: ${it.message ?: "error"}")
                     return@setOnClickListener
-                }
-                dialog.dismiss()
+                }                dialog.dismiss()
             }
         }
         dialog.show()
