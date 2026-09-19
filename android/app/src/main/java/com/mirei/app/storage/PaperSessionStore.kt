@@ -16,6 +16,7 @@ data class PaperSessionSnapshot(
     val runStartedAtEpochMs: Long,
     val runStoppedAtEpochMs: Long,
     val timestampResetAtEpochMs: Long,
+    val sessionOpeningCapitalIdr: Double = 0.0,
     val symbol: String,
     val exchangeId: String,
     val managedSymbols: List<String>,
@@ -103,6 +104,7 @@ class PaperSessionStore(context: Context) {
                 runStartedAtEpochMs = root.optLong("runStarted", 0L),
                 runStoppedAtEpochMs = root.optLong("runStopped", 0L),
                 timestampResetAtEpochMs = root.optLong("timestampReset", 0L),
+                sessionOpeningCapitalIdr = root.optDouble("sessionOpeningCapitalIdr", 0.0),
                 symbol = root.optString("symbol", "BTC/IDR"),
                 exchangeId = root.optString("exchange", "indodax"),
                 managedSymbols = root.optString("managedSymbols", "BTC/IDR").split(',').filter { it.isNotBlank() },
@@ -126,6 +128,7 @@ class PaperSessionStore(context: Context) {
             put("runStarted", snapshot.runStartedAtEpochMs)
             put("runStopped", snapshot.runStoppedAtEpochMs)
             put("timestampReset", snapshot.timestampResetAtEpochMs)
+            put("sessionOpeningCapitalIdr", snapshot.sessionOpeningCapitalIdr)
             put("symbol", snapshot.symbol)
             put("exchange", snapshot.exchangeId)
             put("managedSymbols", snapshot.managedSymbols.joinToString(","))
