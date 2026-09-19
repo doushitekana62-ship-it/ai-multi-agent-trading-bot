@@ -452,13 +452,8 @@ class MireiPaperTradingRuntime(
 
     private fun grossPnl(position: PaperPosition, marketPrice: Double): Double {
         if (marketPrice <= 0.0) return 0.0
-        val costs = TradingUniverse.bySymbol(position.symbol)?.executionCosts
-            ?: return (marketPrice - position.entryPrice) * (position.stakeIdr / position.entryPrice)
-        val entryFee = position.stakeIdr * costs.buyFeePercent / (100.0 + costs.buyFeePercent)
-        val quantity = (position.stakeIdr - entryFee) / position.entryPrice
-        val adjustment = costs.spreadPercent / 2.0 + costs.slippagePercent
-        val executionPrice = marketPrice * (1.0 - adjustment / 100.0)
-        return executionPrice * quantity - position.stakeIdr
+        val net = engine.unrealizedNetPnl(position.id, marketPrice) ?: 0.0
+        return net + estimatedRoundTripFee(position)
     }
 
     private fun estimatedRoundTripFee(position: PaperPosition): Double {
