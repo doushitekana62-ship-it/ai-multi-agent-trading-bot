@@ -7,7 +7,7 @@ data class PositionTradeConfig(
     val riskReferenceMode: RiskReferenceMode? = null,
 ) {
     init {
-        if (stopLossPercent != null) require(stopLossPercent > 0.0)
+        if (stopLossPercent != null) require(stopLossPercent >= 0.0)
         if (manualNetProfitTargetIdr != null) require(manualNetProfitTargetIdr > 0.0)
     }
 }
