@@ -38,50 +38,93 @@ object MireiStartSessionDialog {
         val instruments = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         form.addView(instruments)
 
+        val selectedAllocations = linkedMapOf<String, Double>()
+        val numberFormat = java.text.NumberFormat.getNumberInstance(java.util.Locale("id", "ID"))
+        val allClasses = AssetClass.values().filter { asset -> TradingUniverse.paperReady().any { it.assetClass == asset } }
+        classSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, allClasses.map { it.label })
+
+        fun captureVisible() {
+            for (i in 0 until instruments.childCount) {
+                val row = instruments.getChildAt(i) as? LinearLayout ?: continue
+                val check = row.getChildAt(0) as? CheckBox ?: continue
+                val amount = row.getChildAt(2) as? EditText ?: continue
+                val symbol = row.tag as? String ?: continue
+                if (check.isChecked) {
+                    amount.text.toString().toDoubleOrNull()?.takeIf { it > 0.0 }?.let { selectedAllocations[symbol] = it }
+                } else {
+                    selectedAllocations.remove(symbol)
+                }
+            }
+        }
+
+        fun updateSummary() {
+            val total = selectedAllocations.values.sum()
+            form.findViewWithTag<TextView>("selection_summary")?.text = "Terpilih: ${selectedAllocations.size}/10 · Total modal: Rp ${numberFormat.format(total)}"
+        }
+
+        val summary = label(activity, "Terpilih: 0/10 · Total modal: Rp 0", 11.5f, true).apply { tag = "selection_summary" }
+        form.addView(summary)
+
         fun rebuild(assetClass: AssetClass) {
+            captureVisible()
             instruments.removeAllViews()
-            val exchange = exchangeOptions.getOrElse(exchangeSpinner.selectedItemPosition) { exchangeOptions.first() }
-            TradingUniverse.paperReady().filter { it.assetClass == assetClass && it.providerId == exchange.id }.forEachIndexed { index, instrument ->
-                val check = CheckBox(activity).apply { text = "${instrument.symbol} · ${instrument.name}"; textSize = 13.5f; isChecked = index == 0 }
-                val amount = EditText(activity).apply { hint = "Nominal beli"; inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true); setText(if (index == 0) "50000" else ""); isEnabled = check.isChecked }
-                check.setOnCheckedChangeListener { _, checked -> amount.isEnabled = checked }
-                val row = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(4, 3, 4, 3) }
+            TradingUniverse.paperReady().filter { it.assetClass == assetClass }.forEach { instrument ->
+                val existing = selectedAllocations[instrument.symbol]
+                val check = CheckBox(activity).apply {
+                    text = "${instrument.symbol} · ${instrument.name}"
+                    textSize = 13.5f
+                    isChecked = existing != null
+                }
+                val amount = EditText(activity).apply {
+                    hint = "Nominal beli"
+                    inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    setSingleLine(true)
+                    if (existing != null) setText(existing.toString())
+                    isEnabled = existing != null
+                }
+                check.setOnCheckedChangeListener { _, checked ->
+                    amount.isEnabled = checked
+                    if (!checked) selectedAllocations.remove(instrument.symbol)
+                    updateSummary()
+                }
+                amount.setOnFocusChangeListener { _, hasFocus ->
+                    if (!hasFocus && check.isChecked) {
+                        amount.text.toString().toDoubleOrNull()?.takeIf { it > 0.0 }?.let { selectedAllocations[instrument.symbol] = it }
+                        updateSummary()
+                    }
+                }
+                val row = LinearLayout(activity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(4, 3, 4, 3)
+                    tag = instrument.symbol
+                }
                 row.addView(check)
                 val price = label(activity, "${instrument.symbol} · memuat harga...", 10.5f)
                 row.addView(price)
                 row.addView(amount)
-                row.tag = instrument.symbol
                 instruments.addView(row)
                 Thread {
                     val snapshot = runCatching { MultiMarketDataSource().snapshot(instrument.symbol) }.getOrNull()
                     activity.runOnUiThread {
-                        val nf = java.text.NumberFormat.getNumberInstance(java.util.Locale("id", "ID"))
-                        price.text = if (snapshot != null && snapshot.price > 0.0) "${instrument.symbol} · Rp ${nf.format(snapshot.price)} / 1 coin" else "${instrument.symbol} · harga belum tersedia"
+                        price.text = if (snapshot != null && snapshot.price > 0.0) "${instrument.symbol} · Rp ${numberFormat.format(snapshot.price)} / 1 coin" else "${instrument.symbol} · harga belum tersedia"
                     }
                 }.start()
             }
-            if (instruments.childCount == 0) instruments.addView(label(activity, "Belum ada instrument paper untuk exchange ini.", 12f))
+            if (instruments.childCount == 0) instruments.addView(label(activity, "Belum ada instrument paper untuk jenis trade ini.", 12f))
+            updateSummary()
         }
 
-        fun rebuildClasses(exchange: com.mirei.app.core.Exchange) {
-            val classes = AssetClass.values().filter { asset -> TradingUniverse.paperReady().any { it.assetClass == asset && it.providerId == exchange.id } }
-            classSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, classes.map { it.label })
-            rebuild(classes.firstOrNull() ?: AssetClass.CRYPTO)
-        }
         classSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val classes = AssetClass.values().filter { asset -> TradingUniverse.paperReady().any { it.assetClass == asset && it.providerId == exchangeOptions.getOrElse(exchangeSpinner.selectedItemPosition) { exchangeOptions.first() }.id } }
-                rebuild(classes.getOrElse(position) { AssetClass.CRYPTO })
+                rebuild(allClasses.getOrElse(position) { AssetClass.CRYPTO })
             }
         }
         exchangeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) { rebuildClasses(exchangeOptions.getOrElse(position) { exchangeOptions.first() }) }
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) = Unit
         }
-        rebuildClasses(exchangeOptions.first())
-
-
+        rebuild(allClasses.firstOrNull() ?: AssetClass.CRYPTO)
         val dialog = AlertDialog.Builder(activity).setTitle("MULAI PAPER").setView(scroll).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
