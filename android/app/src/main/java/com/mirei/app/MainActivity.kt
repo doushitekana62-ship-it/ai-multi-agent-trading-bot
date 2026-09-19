@@ -191,7 +191,7 @@ class MainActivity : Activity() {
             table.addView(tableRow(listOf(
                 formatTime(row.closedAtEpochMs ?: row.openedAtEpochMs),
                 asset + " (" + row.symbol + ")",
-                row.status,
+                if (row.entryReason == "re_entry" || row.side == "RE_ENTRY") "RE-ENTRY" else row.status,
                 row.entryPrice?.let { number.format(it) } ?: "-",
                 number.format(row.stakeIdr),
                 number.format(row.pnlIdr),
