@@ -125,7 +125,7 @@ class MainActivity : Activity() {
         activeSymbols = positionRows.mapNotNull { it.split("|").firstOrNull()?.takeIf { symbol -> symbol.isNotBlank() } }
         val equityLines = positionRows.mapIndexed { index, row ->
             val p = row.split("|")
-            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(8)?.toDoubleOrNull() ?: 0.0)}"
+            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format((p.getOrNull(1)?.toDoubleOrNull() ?: 0.0) + (p.getOrNull(5)?.toDoubleOrNull() ?: 0.0))}"
         }
         val pnlLines = positionRows.mapIndexed { index, row ->
             val p = row.split("|")
