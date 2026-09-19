@@ -33,6 +33,7 @@ class MireiForegroundService : Service() {
     private var sessionCreatedAtEpochMs = 0L
     private var runStartedAtEpochMs = 0L
     private var runStoppedAtEpochMs = 0L
+    private var sessionOpeningCapitalIdr = 0.0
     private lateinit var workerThread: HandlerThread
     private lateinit var worker: Handler
     private lateinit var runtime: MireiPaperTradingRuntime
@@ -186,6 +187,7 @@ class MireiForegroundService : Service() {
                 val now = System.currentTimeMillis()
                 sessionStarted = true
                 sessionCreatedAtEpochMs = now
+                sessionOpeningCapitalIdr = config.totalCapitalIdr
                 runStartedAtEpochMs = now
                 runStoppedAtEpochMs = 0L
                 state = MireiState.RUNNING
@@ -327,6 +329,7 @@ class MireiForegroundService : Service() {
         sessionCreatedAtEpochMs = saved.sessionCreatedAtEpochMs
         runStartedAtEpochMs = saved.runStartedAtEpochMs
         runStoppedAtEpochMs = saved.runStoppedAtEpochMs
+        sessionOpeningCapitalIdr = saved.sessionOpeningCapitalIdr
         symbol = saved.symbol.ifBlank { DEFAULT_SYMBOL }
         exchangeId = saved.exchangeId.ifBlank { TradingUniverse.bySymbol(symbol)?.providerId ?: DEFAULT_EXCHANGE }
         managedSymbols = saved.managedSymbols.ifEmpty { listOf(symbol) }.take(config.maxOpenPositions)
@@ -342,6 +345,7 @@ class MireiForegroundService : Service() {
                 initialCapitalBySymbol = saved.initialCapitalBySymbol,
                 mireiCycles = saved.mireiCycles,
                 pausedSymbols = saved.pausedSymbols,
+                sessionOpeningCapitalIdr = saved.sessionOpeningCapitalIdr,
             )
         )
     }
@@ -371,8 +375,13 @@ class MireiForegroundService : Service() {
                 positionProfiles = PositionTradeConfigStore.snapshot(),
                 mireiCycles = stateSnapshot.mireiCycles,
                 pausedSymbols = stateSnapshot.pausedSymbols,
+                sessionOpeningCapitalIdr = stateSnapshot.sessionOpeningCapitalIdr,
             )
         )
+        val continuityDelta = runtime.capitalContinuityDeltaIdr()
+        if (kotlin.math.abs(continuityDelta) > 0.5) {
+            audit("CAPITAL_CONTINUITY_MISMATCH", "delta=$continuityDelta|opening=$sessionOpeningCapitalIdr")
+        }
     }
 
     private fun persistMireiDecisions(status: PaperRuntimeStatus) {
