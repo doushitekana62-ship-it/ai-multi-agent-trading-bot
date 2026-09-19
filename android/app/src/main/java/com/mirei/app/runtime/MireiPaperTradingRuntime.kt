@@ -62,6 +62,7 @@ data class PaperRuntimePersistence(
     val mireiCycles: Map<String, MireiCycle> = emptyMap(),
     val pausedSymbols: Set<String> = emptySet(),
     val sessionOpeningCapitalIdr: Double = 0.0,
+    val lastMarkPriceBySymbol: Map<String, Double> = emptyMap(),
 )
 
 private data class PendingReentry(
@@ -101,6 +102,7 @@ class MireiPaperTradingRuntime(
     private val pausedSymbols = linkedSetOf<String>()
     private var lastDecision: MireiDecision? = null
     private var sessionOpeningCapitalIdr = 0.0
+    private val lastMarkPriceBySymbol = linkedMapOf<String, Double>()
     private val tickDecisions = mutableListOf<MireiDecision>()
 
     fun applyRiskConfig(newConfig: TradingConfig) {
@@ -181,6 +183,8 @@ class MireiPaperTradingRuntime(
         consecutiveLosses = state.consecutiveLosses
         holdingsSeeded = state.holdingsSeeded
         sessionOpeningCapitalIdr = state.sessionOpeningCapitalIdr.takeIf { it > 0.0 } ?: config.totalCapitalIdr
+        lastMarkPriceBySymbol.clear()
+        lastMarkPriceBySymbol.putAll(state.lastMarkPriceBySymbol.filterValues { it > 0.0 })
         initialCapitalBySymbol = state.initialCapitalBySymbol.toMutableMap()
         pendingReentries.clear()
         cycles.clear()
@@ -215,6 +219,7 @@ class MireiPaperTradingRuntime(
         mireiCycles = cycles.toMap(),
         pausedSymbols = pausedSymbols.toSet(),
         sessionOpeningCapitalIdr = sessionOpeningCapitalIdr,
+        lastMarkPriceBySymbol = lastMarkPriceBySymbol.toMap(),
     )
 
     @Synchronized
@@ -237,6 +242,7 @@ class MireiPaperTradingRuntime(
             else lastError = "market_data_unavailable:" + managedSymbol
         }
         lastSnapshots = snapshots
+        snapshots.forEach { (managedSymbol, snapshot) -> if (snapshot.price > 0.0) lastMarkPriceBySymbol[managedSymbol] = snapshot.price }
         lastSnapshot = snapshots[symbol] ?: snapshots.values.firstOrNull()
         lastExchangeHealthy = snapshots.isNotEmpty()
         if (snapshots.isEmpty()) { lastError = "market_data_unavailable"; return status(environment) }
@@ -301,7 +307,7 @@ class MireiPaperTradingRuntime(
 
     fun status(environment: RuntimeEnvironment = RuntimeEnvironment()): PaperRuntimeStatus {
         val snapshot = lastSnapshot
-        val prices = lastSnapshots.mapValues { it.value.price }
+        val prices = lastMarkPriceBySymbol.toMutableMap().apply { lastSnapshots.forEach { (symbol, snapshot) -> if (snapshot.price > 0.0) this[symbol] = snapshot.price } }
         return PaperRuntimeStatus(
             availableBalanceIdr = engine.availableBalanceIdr(),
             equityIdr = engine.equityIdr(prices),
@@ -319,10 +325,10 @@ class MireiPaperTradingRuntime(
             initialCapitalBySymbol = initialCapitalBySymbol.toMap(),
             mireiDecisions = tickDecisions.toList(),
             mireiCycles = cycles.toMap(),
-            activePositionPnlIdr = engine.positions().associate { it.symbol to (lastSnapshots[it.symbol]?.price?.let { price -> engine.unrealizedNetPnl(it.id, price) } ?: 0.0) },
-            activePositionMarkPrice = engine.positions().associate { it.symbol to (lastSnapshots[it.symbol]?.price ?: it.entryPrice) },
+            activePositionPnlIdr = engine.positions().associate { position -> position.symbol to (prices[position.symbol]?.let { price -> engine.unrealizedNetPnl(position.id, price) } ?: 0.0) },
+            activePositionMarkPrice = engine.positions().associate { it.symbol to (prices[it.symbol] ?: it.entryPrice) },
             activePositionGrossPnlIdr = engine.positions().associate { position ->
-                val price = lastSnapshots[position.symbol]?.price ?: position.entryPrice
+                val price = prices[position.symbol] ?: position.entryPrice
                 position.symbol to grossPnl(position, price)
             },
             activePositionFeeIdr = engine.positions().associate { position ->
