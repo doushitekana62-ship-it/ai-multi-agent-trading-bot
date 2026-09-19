@@ -105,6 +105,20 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         return rows
     }
 
+    fun performanceMetrics(): PerformanceMetrics {
+        val row = readableDatabase.rawQuery(
+            "SELECT SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END), " +
+                "SUM(CASE WHEN status = 'CLOSED' AND exit_reason = 'take_profit' THEN 1 ELSE 0 END), " +
+                "SUM(CASE WHEN entry_reason = 're_entry' THEN 1 ELSE 0 END) FROM trades",
+            null,
+        ).use { cursor ->
+            if (cursor.moveToFirst()) Triple(cursor.getInt(0), cursor.getInt(1), cursor.getInt(2)) else Triple(0, 0, 0)
+        }
+        val closed = row.first
+        val tpWins = row.second
+        val reentries = row.third
+        return PerformanceMetrics(closed, tpWins, reentries, if (closed > 0) tpWins.toDouble() / closed.toDouble() * 100.0 else 0.0)
+    }
     fun recentAudit(limit: Int = 100): List<AuditRow> {
         val rows = mutableListOf<AuditRow>()
         readableDatabase.rawQuery("SELECT created_at, event_type, details FROM audit_log ORDER BY created_at DESC LIMIT ?", arrayOf(limit.coerceIn(1, 300).toString())).use { cursor ->
@@ -153,6 +167,13 @@ data class TradeRow(
     val closedAtEpochMs: Long?,
     val exitReason: String?,
     val entryReason: String = "entry_filled",
+)
+
+data class PerformanceMetrics(
+    val closedTrades: Int,
+    val tpWins: Int,
+    val totalReentries: Int,
+    val winRatePercent: Double,
 )
 
 data class DecisionRow(val createdAtEpochMs: Long, val symbol: String, val action: String, val confidence: Double, val reason: String)
