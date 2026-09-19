@@ -346,6 +346,7 @@ class MireiForegroundService : Service() {
                 mireiCycles = saved.mireiCycles,
                 pausedSymbols = saved.pausedSymbols,
                 sessionOpeningCapitalIdr = saved.sessionOpeningCapitalIdr,
+                lastMarkPriceBySymbol = saved.lastMarkPriceBySymbol,
             )
         )
     }
@@ -376,6 +377,7 @@ class MireiForegroundService : Service() {
                 mireiCycles = stateSnapshot.mireiCycles,
                 pausedSymbols = stateSnapshot.pausedSymbols,
                 sessionOpeningCapitalIdr = stateSnapshot.sessionOpeningCapitalIdr,
+                lastMarkPriceBySymbol = stateSnapshot.lastMarkPriceBySymbol,
             )
         )
         val continuityDelta = runtime.capitalContinuityDeltaIdr()
