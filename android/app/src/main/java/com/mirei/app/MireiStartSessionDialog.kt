@@ -151,7 +151,8 @@ object MireiStartSessionDialog {
                 }.onFailure {
                     dialog.setTitle("Gagal memulai: ${it.message ?: "error"}")
                     return@setOnClickListener
-                }                dialog.dismiss()
+                }
+                dialog.dismiss()
             }
         }
         dialog.show()
