@@ -16,7 +16,7 @@ data class TradingConfig(
     val totalCapitalIdr: Double = 150_000.0,
     val positionSizeIdr: Double = 50_000.0,
     val maxOpenPositions: Int = 10,
-    val baseStopLossPercent: Double = 0.50,
+    val baseStopLossPercent: Double = 0.0,
     val reentryPriceTolerancePercent: Double = 0.35,
     val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
     val manualStopLossPercent: Double = baseStopLossPercent,
