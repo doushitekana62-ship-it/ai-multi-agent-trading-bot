@@ -41,7 +41,8 @@ object MireiStartSessionDialog {
         val selectedAllocations = linkedMapOf<String, Double>()
         val numberFormat = java.text.NumberFormat.getNumberInstance(java.util.Locale("id", "ID"))
         val allClasses = AssetClass.values().filter { asset -> TradingUniverse.paperReady().any { it.assetClass == asset } }
-        classSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, allClasses.map { it.label })
+        val allClassLabels = listOf("SEMUA JENIS") + allClasses.map { it.label }
+        classSpinner.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, allClassLabels)
 
         fun captureVisible() {
             for (i in 0 until instruments.childCount) {
@@ -65,18 +66,19 @@ object MireiStartSessionDialog {
         val summary = label(activity, "Terpilih: 0/10 · Total modal: Rp 0", 11.5f, true).apply { tag = "selection_summary" }
         form.addView(summary)
 
-        fun rebuild(assetClass: AssetClass) {
+        fun rebuild(assetClass: AssetClass?) {
             captureVisible()
             instruments.removeAllViews()
-            TradingUniverse.paperReady().filter { it.assetClass == assetClass }.forEach { instrument ->
+            val candidates = if (assetClass == null) TradingUniverse.paperReady() else TradingUniverse.paperReady().filter { it.assetClass == assetClass }
+            candidates.forEach { instrument ->
                 val existing = selectedAllocations[instrument.symbol]
                 val check = CheckBox(activity).apply {
-                    text = "${instrument.symbol} · ${instrument.name}"
+                    text = "${instrument.symbol} · ${instrument.name} · ${instrument.assetClass.label}"
                     textSize = 13.5f
                     isChecked = existing != null
                 }
                 val amount = EditText(activity).apply {
-                    hint = "Nominal beli"
+                    hint = "Nominal beli (Rp)"
                     inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
                     setSingleLine(true)
                     if (existing != null) setText(existing.toString())
@@ -106,7 +108,7 @@ object MireiStartSessionDialog {
                 Thread {
                     val snapshot = runCatching { MultiMarketDataSource().snapshot(instrument.symbol) }.getOrNull()
                     activity.runOnUiThread {
-                        price.text = if (snapshot != null && snapshot.price > 0.0) "${instrument.symbol} · Rp ${numberFormat.format(snapshot.price)} / 1 coin" else "${instrument.symbol} · harga belum tersedia"
+                        price.text = if (snapshot != null && snapshot.price > 0.0) "${instrument.symbol} · ${instrument.assetClass.label} · Rp ${numberFormat.format(snapshot.price)} / 1 unit" else "${instrument.symbol} · harga belum tersedia"
                     }
                 }.start()
             }
@@ -117,14 +119,14 @@ object MireiStartSessionDialog {
         classSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                rebuild(allClasses.getOrElse(position) { AssetClass.CRYPTO })
+                rebuild(if (position == 0) null else allClasses.getOrElse(position - 1) { AssetClass.CRYPTO })
             }
         }
         exchangeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) = Unit
         }
-        rebuild(allClasses.firstOrNull() ?: AssetClass.CRYPTO)
+        rebuild(null)
         val dialog = AlertDialog.Builder(activity).setTitle("MULAI PAPER").setView(scroll).setNegativeButton("BATAL", null).setPositiveButton("MULAI", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
