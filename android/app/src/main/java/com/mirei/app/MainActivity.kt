@@ -149,6 +149,7 @@ class MainActivity : Activity() {
             if (positionLines.isNotEmpty()) "\n" + positionLines.joinToString("\n") else "" +
             if (error.isNotBlank()) "\nERROR: " + error else ""
         content.removeAllViews()
+        content.addView(status, margin(0, 0, 0, 8))
         addSection("POSISI AKTIF")
         val rows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty().lines().filter { it.isNotBlank() }
         if (rows.isEmpty()) {
@@ -230,7 +231,7 @@ class MainActivity : Activity() {
         if (rows.isEmpty()) table.addView(text("Belum ada history.", 12f))
         content.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = true
-            addView(table, ViewGroup.LayoutParams(760, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(table, ViewGroup.LayoutParams(dp(880), ViewGroup.LayoutParams.WRAP_CONTENT))
         })
     }
     private fun showRiskDialog() {
@@ -332,19 +333,23 @@ class MainActivity : Activity() {
     private fun addSection(title: String) { content.addView(text(title, 16f, true), margin(0, 10, 0, 6)) }
 
     private fun tableRow(values: List<String>, header: Boolean): View {
-        val widths = intArrayOf(126, 170, 138, 116, 116, 96)
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val widthsDp = intArrayOf(145, 185, 155, 150, 135, 110)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; minimumWidth = dp(widthsDp.sum()) }
         values.forEachIndexed { index, value ->
             val cell = text(value, if (header) 10f else 9.5f, header).apply {
                 setTextColor(if (header) Color.rgb(35, 35, 35) else Color.WHITE)
-                setPadding(8, 6, 8, 6)
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setBackgroundColor(if (header) Color.rgb(248, 249, 250) else Color.rgb(30, 70, 82))
-                setMinHeight(42)
+                setMinHeight(dp(44))
             }
-            row.addView(cell, LinearLayout.LayoutParams(widths.getOrElse(index) { 100 }, ViewGroup.LayoutParams.WRAP_CONTENT))
+            row.addView(cell, LinearLayout.LayoutParams(dp(widthsDp.getOrElse(index) { 100 }), dp(44)))
         }
         return row
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun button(label: String, action: () -> Unit): TextView = TextView(this).apply {
         text = label
