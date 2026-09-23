@@ -92,6 +92,22 @@ class MireiForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification(stateLabel()))
+        if (intent == null && shouldRecoverInBackground() && sessionStarted && state != MireiState.RUNNING) {
+            worker.post {
+                val recoveryStatus = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+                val hasRecoveryCycle = recoveryStatus.mireiCycles.values.any { it.state == com.mirei.app.core.MireiCycleState.REENTRY_WAIT }
+                if (runtime.paperEngine().positionCount() > 0 || hasRecoveryCycle) {
+                    state = MireiState.RUNNING
+                    setBackgroundRunDesired(true)
+                    runStartedAtEpochMs = System.currentTimeMillis()
+                    runStoppedAtEpochMs = 0L
+                    persistSession()
+                    publishHealth()
+                    worker.removeCallbacks(runtimeLoop)
+                    worker.post(runtimeLoop)
+                }
+            }
+        }
         when (intent?.action) {
             ACTION_STATUS -> publishHealth()
             ACTION_START -> startRuntime(intent)
@@ -510,7 +526,7 @@ class MireiForegroundService : Service() {
             totalCapitalIdr = totalCapital,
             positionSizeIdr = 50_000.0,
             maxOpenPositions = 10,
-            manualStopLossPercent = firstProfile?.stopLossPercent ?: 0.50,
+            manualStopLossPercent = firstProfile?.stopLossPercent ?: 0.0,
             manualNetProfitTargetIdr = firstProfile?.manualNetProfitTargetIdr ?: 30.0,
             riskReferenceMode = firstProfile?.riskReferenceMode ?: RiskReferenceMode.ENTRY_PRICE,
             positionProfiles = PositionTradeConfigStore.snapshot(),
