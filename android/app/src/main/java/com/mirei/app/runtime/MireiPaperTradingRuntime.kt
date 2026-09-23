@@ -142,8 +142,9 @@ class MireiPaperTradingRuntime(
                 val pc = config.forPosition(managedSymbol)
                 val plan = decisionEngine.buildEntryPlan(snapshot, amount, amount)
                 require(plan.allowed) { "initial_buy_plan_invalid:" + managedSymbol }
+                val positionExchange = TradingUniverse.bySymbol(managedSymbol)?.providerId ?: exchangeId
                 val result = engine.seedExistingHolding(
-                    exchangeId, managedSymbol, amount, snapshot.price,
+                    positionExchange, managedSymbol, amount, snapshot.price,
                     pc.effectiveStopLossPercent(), pc.effectiveTakeProfitPercent(),
                     nowMs, pc.riskReferenceMode, amount, recordLedger = false
                 )
@@ -416,7 +417,8 @@ class MireiPaperTradingRuntime(
             lastDecisionReason = "reentry_execution_pending",
             lastTransitionAtEpochMs = nowMs
         )
-        val result = engine.open(exchangeId, managedSymbol, plan, nowMs, "re_entry")
+        val positionExchange = TradingUniverse.bySymbol(managedSymbol)?.providerId ?: exchangeId
+        val result = engine.open(positionExchange, managedSymbol, plan, nowMs, "re_entry")
         lastExecution = result
         if (result.success) {
             tickExecutions += result
