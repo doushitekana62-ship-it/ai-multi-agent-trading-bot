@@ -1,5 +1,7 @@
 name: Build Mirei Android
 
+# CI verification branch: build the exact Android runtime changes before release.
+
 on:
   push:
     branches: [main]
