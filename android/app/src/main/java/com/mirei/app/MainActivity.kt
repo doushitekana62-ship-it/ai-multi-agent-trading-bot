@@ -26,6 +26,9 @@ import com.mirei.app.core.PositionTradeConfigStore
 import com.mirei.app.core.RiskReferenceMode
 import com.mirei.app.storage.MireiDatabase
 import com.mirei.app.runtime.MireiForegroundService
+import com.mirei.app.security.ExchangeCredentials
+import com.mirei.app.security.LocalExchangeCredentialStore
+import com.mirei.app.exchange.IndodaxAccountClient
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -237,7 +240,7 @@ class MainActivity : Activity() {
     private fun showRiskDialog() {
         val current = PositionTradeConfigStore.snapshot()["*"]
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 4, 12, 4) }
-        val sl = EditText(this).apply { hint = "SL %"; setSingleLine(true); setText((current?.stopLossPercent ?: 0.50).toString()) }
+        val sl = EditText(this).apply { hint = "SL % (0 = OFF)"; setSingleLine(true); setText((current?.stopLossPercent ?: 0.0).toString()) }
         val tp = EditText(this).apply { hint = "TP bersih Rp"; setSingleLine(true); setText((current?.manualNetProfitTargetIdr ?: 30.0).toString()) }
         val basis = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
         val entry = RadioButton(this).apply { id = View.generateViewId(); text = "Harga entry" }
@@ -257,7 +260,7 @@ class MainActivity : Activity() {
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                sl.setText("0.50"); tp.setText("30"); basis.check(entry.id)
+                sl.setText("0.0"); tp.setText("30"); basis.check(entry.id)
             }
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val slValue = sl.text.toString().toDoubleOrNull()
@@ -288,14 +291,71 @@ class MainActivity : Activity() {
     }
 
     private fun linkExchanges() {
+        val existing = LocalExchangeCredentialStore.load(this)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 4, 12, 4) }
-        val key = EditText(this).apply { hint = "API KEY"; setSingleLine(true) }
-        val secret = EditText(this).apply { hint = "API SECRET"; setSingleLine(true); inputType = 0x00000081 }
-        box.addView(text("Exchange: INDODAX, BYBIT, STOCKBIT, BINANCE, ETC.", 12f))
-        box.addView(key); box.addView(secret)
-        box.addView(text("Status Broker ter taut: belum terhubung", 12f))
-        box.addView(text("Mode Live: dikunci sampai adapter + API pairing siap.", 11f))
-        AlertDialog.Builder(this).setTitle("TAUTKAN EXCHANGE").setView(box).setNegativeButton("BATAL", null).setPositiveButton("SIMPAN", null).show()
+        val key = EditText(this).apply {
+            hint = "INDODAX API KEY"
+            setSingleLine(true)
+            setText(existing?.apiKey.orEmpty())
+        }
+        val secret = EditText(this).apply {
+            hint = "INDODAX API SECRET"
+            setSingleLine(true)
+            inputType = 0x00000081
+        }
+        box.addView(text("INDODAX · credential hanya disimpan lokal di Android.", 12f))
+        box.addView(key)
+        box.addView(secret)
+        box.addView(text(
+            if (existing != null) "Status: credential lokal tersimpan." else "Status: belum terhubung.",
+            12f
+        ))
+        box.addView(text("Tidak ada API key/secret/ENV yang ditanam di repository.", 11f))
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("TAUTKAN INDODAX")
+            .setView(box)
+            .setNegativeButton("BATAL", null)
+            .setNeutralButton("TES BACA KAS", null)
+            .setPositiveButton("SIMPAN LOKAL", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val apiKey = key.text.toString().trim()
+                val apiSecret = secret.text.toString()
+                if (apiKey.isBlank() || apiSecret.isBlank()) {
+                    box.addView(text("API KEY dan API SECRET wajib diisi.", 11f))
+                    return@setOnClickListener
+                }
+                LocalExchangeCredentialStore.save(this, ExchangeCredentials("indodax", apiKey, apiSecret))
+                box.addView(text("Tersimpan lokal di Android. Secret tidak ditampilkan kembali.", 11f))
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val apiKey = key.text.toString().trim()
+                val apiSecret = secret.text.toString()
+                if (apiKey.isBlank() || apiSecret.isBlank()) {
+                    box.addView(text("Isi API KEY dan API SECRET terlebih dahulu.", 11f))
+                    return@setOnClickListener
+                }
+                Thread {
+                    val result = runCatching {
+                        IndodaxAccountClient(ExchangeCredentials("indodax", apiKey, apiSecret)).getInfo()
+                    }
+                    runOnUiThread {
+                        result.onSuccess {
+                            LocalExchangeCredentialStore.save(this, ExchangeCredentials("indodax", apiKey, apiSecret))
+                            box.addView(text(
+                                "TERHUBUNG · Kas IDR aktif: Rp " + number.format(it.idrAvailable) +
+                                    " · Hold: Rp " + number.format(it.idrHold),
+                                11f
+                            ))
+                        }.onFailure {
+                            box.addView(text("GAGAL BACA KAS: " + (it.message ?: "unknown_error"), 11f))
+                        }
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
     }
 
     private fun gridParams(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(0, 48).apply { weight = 1f; setMargins(3, 3, 3, 3) }
