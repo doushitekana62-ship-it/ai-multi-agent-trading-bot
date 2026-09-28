@@ -38,7 +38,7 @@ jobs:
         with:
           gradle-version: '8.7'
       - name: Test and build paper debug APK
-        run: gradle :app:testPaperDebugUnitTest :app:assemblePaperDebug --no-daemon
+        run: gradle :app:testPaperDebugUnitTest :app:testLiveDebugUnitTest :app:assemblePaperDebug :app:assembleLiveDebug --no-daemon
       - name: Fail if no unit-test reports were produced
         run: |
           count=$(find app/build/test-results/testPaperDebugUnitTest -name 'TEST-*.xml' -type f | wc -l)
