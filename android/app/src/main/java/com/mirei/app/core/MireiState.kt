@@ -4,6 +4,7 @@ enum class MireiState {
     STOP,
     RUNNING,
     HOLD,
+    HOLD_OFFLINE,
     CLOSE_ALL,
     ERROR,
     RECOVERY,
