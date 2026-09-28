@@ -10,14 +10,17 @@ import com.mirei.app.execution.PaperPosition
 class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE trades (id TEXT PRIMARY KEY, mode TEXT NOT NULL, exchange_id TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, status TEXT NOT NULL, entry_price REAL, exit_price REAL, stake_idr REAL NOT NULL, fee_idr REAL NOT NULL DEFAULT 0, pnl_idr REAL NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, closed_at INTEGER, exit_reason TEXT, entry_reason TEXT NOT NULL DEFAULT 'entry_filled')""")
-        db.execSQL("""CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, event_type TEXT NOT NULL, details TEXT NOT NULL)""")
+        db.execSQL("""CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT NOT NULL, created_at INTEGER NOT NULL, event_type TEXT NOT NULL, details TEXT NOT NULL)""")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) db.execSQL("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
         if (oldVersion < 3) db.execSQL("ALTER TABLE trades ADD COLUMN entry_reason TEXT NOT NULL DEFAULT 'entry_filled'")
         if (oldVersion < 4) db.execSQL("DROP TABLE IF EXISTS suggestions")
-        if (oldVersion < 5) db.execSQL("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'PAPER'")
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'PAPER'")
+            db.execSQL("ALTER TABLE audit_log ADD COLUMN mode TEXT NOT NULL DEFAULT 'PAPER'")
+        }
     }
 
     fun recordTradeOpened(position: PaperPosition, entryFeeIdr: Double) {
@@ -77,6 +80,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     }
 
     fun recordAudit(eventType: String, details: String, nowMs: Long = System.currentTimeMillis()) = writableDatabase.insertOrThrow("audit_log", null, ContentValues().apply {
+        put("mode", BuildConfig.MIREI_MODE)
         put("created_at", nowMs)
         put("event_type", eventType)
         put("details", details)
