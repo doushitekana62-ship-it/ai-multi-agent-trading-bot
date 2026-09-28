@@ -20,6 +20,9 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.Spinner
+import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.ScrollView
 import android.widget.TextView
 import com.mirei.app.core.PositionTradeConfigStore
@@ -39,6 +42,7 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
     private var activeSymbols: List<String> = emptyList()
+    private var selectedMarket: String = "BTC/IDR"
     private val number = NumberFormat.getNumberInstance(Locale("id", "ID")).apply { maximumFractionDigits = 0 }
 
     private val receiver = object : BroadcastReceiver() {
@@ -112,6 +116,44 @@ class MainActivity : Activity() {
         }
         shell.addView(link, LinearLayout.LayoutParams(-1, 48).apply { setMargins(3, 3, 3, 3) })
     }
+    private fun addMarketSection(intent: Intent) {
+        val markets = com.mirei.app.core.TradingUniverse.byClass(com.mirei.app.core.AssetClass.CRYPTO).map { it.symbol }
+        val saved = getSharedPreferences("mirei_settings", MODE_PRIVATE).getString("selected_market", null)
+        selectedMarket = saved?.takeIf { it in markets } ?: intent.getStringExtra(MireiForegroundService.EXTRA_SELECTED_MARKET)?.takeIf { it in markets } ?: markets.firstOrNull().orEmpty()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(12, 10, 12, 10)
+            setBackgroundColor(Color.rgb(33, 141, 174))
+        }
+        box.addView(text("Coin utama / market yang dipantau", 11.5f))
+        val spinner = Spinner(this)
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, markets)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
+        spinner.setSelection(markets.indexOf(selectedMarket).coerceAtLeast(0), false)
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val chosen = markets.getOrNull(position) ?: return
+                if (chosen == selectedMarket) return
+                selectedMarket = chosen
+                getSharedPreferences("mirei_settings", MODE_PRIVATE).edit().putString("selected_market", chosen).apply()
+                send(MireiForegroundService.ACTION_SELECT_MARKET, listOf(chosen))
+            }
+        }
+        box.addView(spinner, LinearLayout.LayoutParams(-1, 48))
+        val runtimeSymbol = intent.getStringExtra(MireiForegroundService.EXTRA_SYMBOL).orEmpty()
+        val price = intent.getDoubleExtra(MireiForegroundService.EXTRA_PRICE, 0.0)
+        val fresh = intent.getBooleanExtra(MireiForegroundService.EXTRA_MARKET_FRESH, false)
+        val pulse = if (runtimeSymbol == selectedMarket && price > 0.0) {
+            "Market Pulse : $runtimeSymbol · Rp ${number.format(price)} · ${if (fresh) "DATA SEGAR" else "DATA LAMA"}"
+        } else {
+            "Market Pulse : $selectedMarket · belum menjadi market runtime aktif"
+        }
+        box.addView(text(pulse, 12f))
+        box.addView(text("Selector tetap terlihat setelah coin dipilih. Pemilihan tersimpan lokal.", 10.5f))
+        content.addView(box, margin(0, 0, 0, 8))
+    }
     private fun render(intent: Intent) {
         val state = intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP"
         val balance = intent.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0)
@@ -157,6 +199,8 @@ class MainActivity : Activity() {
             if (error.isNotBlank()) "\nERROR: " + error else ""
         content.removeAllViews()
         content.addView(status, margin(0, 0, 0, 8))
+        addSection("PASAR")
+        addMarketSection(intent)
         addSection("POSISI AKTIF")
         val rows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty().lines().filter { it.isNotBlank() }
         if (rows.isEmpty()) {
@@ -180,6 +224,7 @@ class MainActivity : Activity() {
                         "\nEntry : Rp " + number.format(p[2].toDoubleOrNull() ?: 0.0) + " per 1 coin" +
                         "\nSL Modal awal : " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) "Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) else "OFF") +
                         "\nTP modal awal : Rp " + number.format((p[1].toDoubleOrNull() ?: 0.0) + (PositionTradeConfigStore.snapshot()["*"]?.manualNetProfitTargetIdr ?: 0.0)) +
+                        "\nTarget TP : +" + String.format(Locale.US, "%.2f%%", ((PositionTradeConfigStore.snapshot()["*"]?.manualNetProfitTargetIdr ?: 0.0) / (p[1].toDoubleOrNull() ?: 1.0)) * 100.0) + " dari modal acuan" +
                         "\nTP SL sett : SL " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) number.format((PositionTradeConfigStore.snapshot()["*"]?.stopLossPercent ?: 0.0)) + "%" else "OFF") + " · TP Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0) +
                         "\nPnL bersih : Rp " + number.format(unrealizedPnl) +
                         "\nPnL kotor : Rp " + number.format(gross) +
