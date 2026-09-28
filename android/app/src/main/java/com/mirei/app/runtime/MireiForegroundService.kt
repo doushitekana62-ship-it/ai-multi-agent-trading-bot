@@ -129,6 +129,7 @@ class MireiForegroundService : Service() {
         }
         when (intent?.action) {
             ACTION_STATUS -> publishHealth()
+            ACTION_SELECT_MARKET -> selectMarket(intent.getStringExtra(EXTRA_SELECTED_MARKET).orEmpty())
             ACTION_START -> startRuntime(intent)
             ACTION_RESUME -> resumeRuntime()
             ACTION_HOLD -> holdRuntime()
@@ -141,6 +142,14 @@ class MireiForegroundService : Service() {
         return START_STICKY
     }
 
+    private fun selectMarket(selected: String) {
+        if (selected !in SUPPORTED_MARKETS) return
+        symbol = selected
+        exchangeId = TradingUniverse.bySymbol(selected)?.providerId ?: DEFAULT_EXCHANGE
+        prefs.edit().putString(KEY_SELECTED_MARKET, selected).apply()
+        audit("MARKET_SELECTED", "symbol=$selected|exchange=$exchangeId")
+        publishHealth()
+    }
     private fun startRuntime(intent: Intent) {
         if (!isRiskConfigured()) {
             audit("START_REJECTED", "sl_tp_setup_required")
@@ -382,8 +391,10 @@ class MireiForegroundService : Service() {
         runStartedAtEpochMs = saved.runStartedAtEpochMs
         runStoppedAtEpochMs = saved.runStoppedAtEpochMs
         sessionOpeningCapitalIdr = saved.sessionOpeningCapitalIdr
-        symbol = saved.symbol.ifBlank { DEFAULT_SYMBOL }
-        exchangeId = saved.exchangeId.ifBlank { TradingUniverse.bySymbol(symbol)?.providerId ?: DEFAULT_EXCHANGE }
+        symbol = prefs.getString(KEY_SELECTED_MARKET, null)?.takeIf { it in SUPPORTED_MARKETS }
+            ?: saved.symbol.ifBlank { DEFAULT_SYMBOL }
+        exchangeId = TradingUniverse.bySymbol(symbol)?.providerId
+            ?: saved.exchangeId.ifBlank { DEFAULT_EXCHANGE }
         managedSymbols = saved.managedSymbols.ifEmpty { listOf(symbol) }.take(config.maxOpenPositions)
     }
 
@@ -473,6 +484,7 @@ class MireiForegroundService : Service() {
             setPackage(packageName)
             putExtra(EXTRA_STATE, state.name)
             putExtra(EXTRA_SYMBOL, status.marketSymbol)
+            putExtra(EXTRA_SELECTED_MARKET, symbol)
             putExtra(EXTRA_EXCHANGE, exchangeId)
             putExtra(EXTRA_PRICE, status.marketPrice)
             putExtra(EXTRA_EQUITY, status.equityIdr)
@@ -590,6 +602,7 @@ class MireiForegroundService : Service() {
         const val ACTION_APPLY_RISK = "com.mirei.app.action.APPLY_RISK"
         const val ACTION_RESET_SESSION = "com.mirei.app.action.RESET_SESSION"
         const val ACTION_STATUS = "com.mirei.app.action.STATUS"
+        const val ACTION_SELECT_MARKET = "com.mirei.app.action.SELECT_MARKET"
 
         const val EXTRA_STATE = "state"
         const val EXTRA_SYMBOL = "symbol"
@@ -611,6 +624,7 @@ class MireiForegroundService : Service() {
         const val EXTRA_CLOSED_TRADES = "closed_trades"
         const val EXTRA_TOTAL_REENTRIES = "total_reentries"
         const val EXTRA_SELECTED_SYMBOLS = "selected_symbols"
+        const val EXTRA_SELECTED_MARKET = "selected_market"
 
         const val DEFAULT_SYMBOL = "BTC/IDR"
         const val DEFAULT_EXCHANGE = "indodax"
@@ -623,5 +637,6 @@ class MireiForegroundService : Service() {
         private const val PREFS_NAME = "mirei_settings"
         private const val KEY_TOTAL_CAPITAL = "total_capital"
         private const val KEY_BACKGROUND_RUN_DESIRED = "background_run_desired"
+        private const val KEY_SELECTED_MARKET = "selected_market"
     }
 }
