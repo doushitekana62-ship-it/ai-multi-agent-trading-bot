@@ -53,7 +53,7 @@ class MireiForegroundService : Service() {
         PositionTradeConfigStore.reload(this)
         config = loadConfig()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_HIGH)
         )
         workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
         worker = Handler(workerThread.looper)
