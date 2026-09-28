@@ -112,16 +112,20 @@ class MireiForegroundService : Service() {
                 val recoveryStatus = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
                 val hasRecoveryCycle = recoveryStatus.mireiCycles.values.any { it.state == com.mirei.app.core.MireiCycleState.REENTRY_WAIT }
                 if (runtime.paperEngine().positionCount() > 0 || hasRecoveryCycle) {
-                    state = MireiState.RUNNING
-                    setBackgroundRunDesired(true)
-                    runStartedAtEpochMs = System.currentTimeMillis()
-                    runStoppedAtEpochMs = 0L
-                    persistSession()
-                    publishHealth()
-                    worker.removeCallbacks(runtimeLoop)
-                    worker.post(runtimeLoop)
-                }
-            }
+                    if (!internetAvailable) {
+                        state = MireiState.HOLD_OFFLINE
+                        publishHealth()
+                    } else {
+                        state = MireiState.RUNNING
+                        setBackgroundRunDesired(true)
+                        runStartedAtEpochMs = System.currentTimeMillis()
+                        runStoppedAtEpochMs = 0L
+                        persistSession()
+                        publishHealth()
+                        worker.removeCallbacks(runtimeLoop)
+                        worker.post(runtimeLoop)
+                    }
+                }            }
         }
         when (intent?.action) {
             ACTION_STATUS -> publishHealth()
