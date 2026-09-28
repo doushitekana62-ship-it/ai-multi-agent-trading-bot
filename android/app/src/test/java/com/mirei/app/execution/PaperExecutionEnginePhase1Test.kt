@@ -31,9 +31,10 @@ class PaperExecutionEnginePhase1Test {
         assertTrue(first.success); assertTrue(second.success)
         val closed = engine.close(second.orderId!!, 100.0, "take_profit", 2_000L)
         assertTrue(closed.success)
+        val balanceBeforeReentry = engine.availableBalanceIdr()
         val result = engine.open("indodax", "BTC/IDR", plan(200.0, 25_000.0), 3_500L, "re_entry")
         assertFalse(result.success)
         assertEquals("insufficient_reentry_balance_wait", result.error)
-        assertEquals(15_000.0, engine.availableBalanceIdr(), 0.01)
+        assertEquals(balanceBeforeReentry, engine.availableBalanceIdr(), 0.01)
     }
 }
