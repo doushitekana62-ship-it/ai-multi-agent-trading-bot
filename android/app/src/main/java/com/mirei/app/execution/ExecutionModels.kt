@@ -23,20 +23,14 @@ class PaperExecutionEngine(
     private val positions = linkedMapOf<String, PaperPosition>()
     private val limitOrders = linkedMapOf<String, PaperLimitOrder>()
     private val lastClosedAtBySymbol = linkedMapOf<String, Long>()
-    private val lastClosedEntryPriceBySymbol = linkedMapOf<String, Double>()
     private var positionSequence = 0L
 
     init { require(feePercent >= 0.0); require(slippagePercent >= 0.0) }
     private fun costsFor(symbol: String): ExecutionCostProfile = if (useInstrumentCosts) TradingUniverse.bySymbol(symbol)?.executionCosts ?: ExecutionCostProfile(feePercent, feePercent, 0.0, slippagePercent) else ExecutionCostProfile(feePercent, feePercent, 0.0, slippagePercent)
-    private fun reentryBlocked(symbol: String, nowMs: Long, entryReason: String, entryPrice: Double): String? {
+    private fun reentryBlocked(symbol: String, nowMs: Long, entryReason: String): String? {
         if (entryReason !in setOf("re_entry", "human_verified_re_entry", "tp_compound_reentry", "sl_re_entry")) return null
         val closedAt = lastClosedAtBySymbol[symbol]
         if (closedAt != null && nowMs - closedAt < REENTRY_COOLDOWN_MS) return "reentry_cooldown_hold"
-        val anchor = lastClosedEntryPriceBySymbol[symbol]
-        if (anchor != null && anchor > 0.0) {
-            val deviation = kotlin.math.abs(entryPrice - anchor) / anchor * 100.0
-            if (deviation > config.reentryPriceTolerancePercent) return "reentry_price_tolerance_hold"
-        }
         return null
     }
 
@@ -74,12 +68,20 @@ class PaperExecutionEngine(
     fun open(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, entryReason: String = "entry_filled"): ExecutionResult = openInternal(exchangeId, symbol, plan, nowMs, 0.0, entryReason)
     private fun openInternal(exchangeId: String, symbol: String, plan: EntryPlan, nowMs: Long, reservedIdr: Double, entryReason: String): ExecutionResult {
         if (!plan.allowed || plan.stakeIdr <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "entry_plan_not_allowed")
-        val reentryBlock = reentryBlocked(symbol, nowMs, entryReason, plan.entryPrice)
+        val reentryBlock = reentryBlocked(symbol, nowMs, entryReason)
         if (reentryBlock != null) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, reason = reentryBlock, error = reentryBlock)
         if (positions.size >= config.maxOpenPositions) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "paper_position_limit")
         if (reservedIdr > 0.0 && reservedIdr + 1e-9 < plan.stakeIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "invalid_limit_reservation")
-        val costs = costsFor(symbol); val allowPartialReentry = entryReason in setOf("re_entry", "human_verified_re_entry", "tp_compound_reentry", "sl_re_entry")
-        val effectiveStake = when { reservedIdr > 0.0 -> plan.stakeIdr; allowPartialReentry -> minOf(plan.stakeIdr, availableBalanceIdr); plan.stakeIdr <= availableBalanceIdr + 1e-9 -> plan.stakeIdr; else -> return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance") }
+        val costs = costsFor(symbol)
+        val isReentry = entryReason in setOf("re_entry", "human_verified_re_entry", "tp_compound_reentry", "sl_re_entry")
+        if (isReentry && availableBalanceIdr + 1e-9 < plan.stakeIdr && reservedIdr <= 0.0) {
+            return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_reentry_balance_wait")
+        }
+        val effectiveStake = when {
+            reservedIdr > 0.0 -> plan.stakeIdr
+            plan.stakeIdr <= availableBalanceIdr + 1e-9 -> plan.stakeIdr
+            else -> return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
+        }
         if (effectiveStake <= 0.0) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "insufficient_paper_balance")
         if (effectiveStake + 1e-9 < costs.minimumOrderIdr) return ExecutionResult(false, remainingBalanceIdr = availableBalanceIdr, error = "minimum_order_not_met")
         val entryFee = effectiveStake * costs.buyFeePercent / (100.0 + costs.buyFeePercent); val entryNotional = effectiveStake - entryFee; val required = effectiveStake; val before = availableBalanceIdr
