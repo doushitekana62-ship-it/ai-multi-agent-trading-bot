@@ -35,6 +35,7 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity : Activity() {
+    companion object { private const val REQUEST_NOTIFICATIONS = 7001 }
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
     private var activeSymbols: List<String> = emptyList()
@@ -49,6 +50,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PositionTradeConfigStore.reload(this)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        }
         buildDashboard()
     }
 
@@ -71,7 +75,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(30, 70, 82))
         }
         shell.addView(text("MIREI", 28f, true))
-        shell.addView(text("Paper trading · satu dashboard · SL/TP manual", 13f))
+        shell.addView(text(if (BuildConfig.MIREI_MODE == "PAPER") "Paper trading · satu dashboard · SL/TP manual" else "Live mode · broker execution terkunci", 13f))
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }

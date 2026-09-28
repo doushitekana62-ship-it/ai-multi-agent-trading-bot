@@ -129,8 +129,17 @@ class MireiDecisionEngine(initialConfig: TradingConfig) {
         if (!snapshot.dataFresh) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "market_data_stale_reentry_wait", cycleId, sequence, cycleCapitalIdr)
         if (snapshot.price <= 0.0) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "invalid_market_price_reentry_wait", cycleId, sequence, cycleCapitalIdr)
         if (cycleCapitalIdr <= 0.0) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "reentry_capital_unavailable", cycleId, sequence, cycleCapitalIdr)
-        if (availableBalanceIdr <= 0.0) return MireiDecision(MireiDecisionAction.REENTRY_WAIT, snapshot.symbol, "reentry_balance_unavailable", cycleId, sequence, cycleCapitalIdr)
-        val stake = cycleCapitalIdr.coerceAtMost(availableBalanceIdr)
+        if (availableBalanceIdr + 1e-9 < cycleCapitalIdr) {
+            return MireiDecision(
+                MireiDecisionAction.REENTRY_WAIT,
+                snapshot.symbol,
+                "reentry_balance_insufficient_wait",
+                cycleId,
+                sequence,
+                cycleCapitalIdr
+            )
+        }
+        val stake = cycleCapitalIdr
         val plan = buildEntryPlan(snapshot, cycleCapitalIdr, stake)
         return if (plan.allowed) {
             MireiDecision(MireiDecisionAction.REENTRY_BUY, snapshot.symbol, "mirei_reentry_ready", cycleId, sequence, cycleCapitalIdr)

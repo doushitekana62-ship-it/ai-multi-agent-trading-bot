@@ -4,24 +4,30 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.mirei.app.BuildConfig
 import com.mirei.app.execution.PaperPosition
 
 class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("""CREATE TABLE trades (id TEXT PRIMARY KEY, exchange_id TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, status TEXT NOT NULL, entry_price REAL, exit_price REAL, stake_idr REAL NOT NULL, fee_idr REAL NOT NULL DEFAULT 0, pnl_idr REAL NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, closed_at INTEGER, exit_reason TEXT, entry_reason TEXT NOT NULL DEFAULT 'entry_filled')""")
-        db.execSQL("""CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, event_type TEXT NOT NULL, details TEXT NOT NULL)""")
+        db.execSQL("""CREATE TABLE trades (id TEXT PRIMARY KEY, mode TEXT NOT NULL, exchange_id TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, status TEXT NOT NULL, entry_price REAL, exit_price REAL, stake_idr REAL NOT NULL, fee_idr REAL NOT NULL DEFAULT 0, pnl_idr REAL NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, closed_at INTEGER, exit_reason TEXT, entry_reason TEXT NOT NULL DEFAULT 'entry_filled')""")
+        db.execSQL("""CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT NOT NULL, created_at INTEGER NOT NULL, event_type TEXT NOT NULL, details TEXT NOT NULL)""")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) db.execSQL("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
         if (oldVersion < 3) db.execSQL("ALTER TABLE trades ADD COLUMN entry_reason TEXT NOT NULL DEFAULT 'entry_filled'")
         if (oldVersion < 4) db.execSQL("DROP TABLE IF EXISTS suggestions")
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'PAPER'")
+            db.execSQL("ALTER TABLE audit_log ADD COLUMN mode TEXT NOT NULL DEFAULT 'PAPER'")
+        }
     }
 
     fun recordTradeOpened(position: PaperPosition, entryFeeIdr: Double) {
         require(entryFeeIdr >= 0.0)
         writableDatabase.insertOrThrow("trades", null, ContentValues().apply {
             put("id", position.id)
+            put("mode", BuildConfig.MIREI_MODE)
             put("exchange_id", position.exchangeId)
             put("symbol", position.symbol)
             put("side", when (position.entryReason) { "initial_holding" -> "INITIAL_HOLDING"; "re_entry", "sl_re_entry" -> "RE_ENTRY"; else -> "BUY" })
@@ -74,6 +80,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     }
 
     fun recordAudit(eventType: String, details: String, nowMs: Long = System.currentTimeMillis()) = writableDatabase.insertOrThrow("audit_log", null, ContentValues().apply {
+        put("mode", BuildConfig.MIREI_MODE)
         put("created_at", nowMs)
         put("event_type", eventType)
         put("details", details)
@@ -81,8 +88,9 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
 
     fun recentTrades(limit: Int = 30): List<TradeRow> {
         val rows = mutableListOf<TradeRow>()
-        readableDatabase.rawQuery("SELECT id, exchange_id, symbol, side, status, entry_price, exit_price, stake_idr, fee_idr, pnl_idr, opened_at, closed_at, exit_reason, entry_reason FROM trades ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?", arrayOf(limit.coerceIn(1, 200).toString())).use { cursor ->
+        readableDatabase.rawQuery("SELECT id, mode, exchange_id, symbol, side, status, entry_price, exit_price, stake_idr, fee_idr, pnl_idr, opened_at, closed_at, exit_reason, entry_reason FROM trades ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?", arrayOf(limit.coerceIn(1, 200).toString())).use { cursor ->
             val id = cursor.getColumnIndexOrThrow("id")
+            val mode = cursor.getColumnIndexOrThrow("mode")
             val exchangeId = cursor.getColumnIndexOrThrow("exchange_id")
             val symbol = cursor.getColumnIndexOrThrow("symbol")
             val side = cursor.getColumnIndexOrThrow("side")
@@ -99,7 +107,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
             while (cursor.moveToNext()) rows += TradeRow(
                 cursor.getString(id), cursor.getString(exchangeId), cursor.getString(symbol), cursor.getString(side), cursor.getString(status),
                 cursor.getDoubleOrNull(entryPrice), cursor.getDoubleOrNull(exitPrice), cursor.getDouble(stake), cursor.getDouble(fee), cursor.getDouble(pnl),
-                cursor.getLong(opened), cursor.getLongOrNull(closed), cursor.getStringOrNull(reason), cursor.getString(entryReason),
+                cursor.getLong(opened), cursor.getLongOrNull(closed), cursor.getStringOrNull(reason), cursor.getString(entryReason), cursor.getString(mode),
             )
         }
         return rows
@@ -133,8 +141,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     fun clearHistory() {
         writableDatabase.beginTransaction()
         try {
-            writableDatabase.delete("trades", "status = ?", arrayOf("CLOSED"))
-            writableDatabase.delete("suggestions", null, null)
+            writableDatabase.delete("trades", "status = ? AND mode = ?", arrayOf("CLOSED", BuildConfig.MIREI_MODE))
             writableDatabase.delete("audit_log", null, null)
             writableDatabase.setTransactionSuccessful()
         } finally {
@@ -147,8 +154,8 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     private fun android.database.Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
 
     companion object {
-        private const val DB_NAME = "mirei.db"
-        private const val DB_VERSION = 4
+        private val DB_NAME = "mirei_${BuildConfig.MIREI_MODE.lowercase()}.db"
+        private const val DB_VERSION = 5
     }
 }
 
@@ -167,6 +174,7 @@ data class TradeRow(
     val closedAtEpochMs: Long?,
     val exitReason: String?,
     val entryReason: String = "entry_filled",
+    val mode: String = "PAPER",
 )
 
 data class PerformanceMetrics(

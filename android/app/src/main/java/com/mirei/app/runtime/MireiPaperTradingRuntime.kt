@@ -104,6 +104,11 @@ class MireiPaperTradingRuntime(
     private var sessionOpeningCapitalIdr = 0.0
     private val lastMarkPriceBySymbol = linkedMapOf<String, Double>()
     private val tickDecisions = mutableListOf<MireiDecision>()
+    private var beforeExecutionPersist: (() -> Unit)? = null
+
+    fun setBeforeExecutionPersist(callback: () -> Unit) {
+        beforeExecutionPersist = callback
+    }
 
     fun applyRiskConfig(newConfig: TradingConfig) {
         require(newConfig.totalCapitalIdr == config.totalCapitalIdr) { "paper_capital_immutable_while_running" }
@@ -204,6 +209,9 @@ class MireiPaperTradingRuntime(
         cycles.values.filter { it.state == MireiCycleState.REENTRY_WAIT }.forEach { cycle ->
             pendingReentries[cycle.symbol] = PendingReentry(cycle.cycleId, cycle.initialCapitalIdr, cycle.initialBuyPrice, null, cycle.sequence)
         }
+        // REENTRY_PENDING is intentionally not auto-replayed after process death.
+        // The persisted state prevents an ambiguous duplicate order; reconciliation must
+        // establish whether the prior order reached the broker before another buy is allowed.
         lastExecution = null
         tickExecutions = mutableListOf()
         lastError = null
@@ -290,19 +298,37 @@ class MireiPaperTradingRuntime(
             lastError = "close_all_exchange_unavailable"
             return status(environment)
         }
+        val failures = mutableListOf<String>()
         engine.positions().toList().forEach { position ->
-            val snapshot = marketData.snapshot(position.symbol)
-            if (snapshot == null || !snapshot.dataFresh) return@forEach
+            val snapshot = runCatching { marketData.snapshot(position.symbol) }.getOrNull()
+            if (snapshot == null) {
+                failures += "${position.symbol}:market_data_unavailable"
+                return@forEach
+            }
+            if (!snapshot.dataFresh) {
+                failures += "${position.symbol}:market_data_stale"
+                return@forEach
+            }
             val result = engine.close(position.id, snapshot.price, reason, nowMs)
             if (result.success) {
                 tickExecutions += result
                 lastExecution = result
                 dailyPnlIdr += result.pnlIdr
-                if (result.pnlIdr < 0.0) consecutiveLosses++
-                else consecutiveLosses = 0
+                if (result.pnlIdr < 0.0) consecutiveLosses++ else consecutiveLosses = 0
                 pendingReentries.remove(position.symbol)
+                cycles[position.symbol]?.let { cycle ->
+                    cycles[position.symbol] = cycle.copy(
+                        state = MireiCycleState.CLOSED,
+                        lastDecision = MireiDecisionAction.HOLD,
+                        lastDecisionReason = "cycle_closed_by_close_all",
+                        lastTransitionAtEpochMs = nowMs,
+                    )
+                }
+            } else {
+                failures += "${position.symbol}:${result.error ?: result.reason ?: "close_failed"}"
             }
         }
+        lastError = failures.takeIf { it.isNotEmpty() }?.joinToString("|")?.let { "close_all_failed:$it" }
         return status(environment)
     }
 
@@ -418,6 +444,7 @@ class MireiPaperTradingRuntime(
             lastTransitionAtEpochMs = nowMs
         )
         val positionExchange = TradingUniverse.bySymbol(managedSymbol)?.providerId ?: exchangeId
+        beforeExecutionPersist?.invoke()
         val result = engine.open(positionExchange, managedSymbol, plan, nowMs, "re_entry")
         lastExecution = result
         if (result.success) {

@@ -11,6 +11,7 @@ import android.net.Network
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import com.mirei.app.BuildConfig
 import com.mirei.app.core.Exchange
 import com.mirei.app.core.MireiState
 import com.mirei.app.core.PositionTradeConfigStore
@@ -53,7 +54,7 @@ class MireiForegroundService : Service() {
         PositionTradeConfigStore.reload(this)
         config = loadConfig()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_HIGH)
         )
         workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
         worker = Handler(workerThread.looper)
@@ -77,11 +78,25 @@ class MireiForegroundService : Service() {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 internetAvailable = true
-                publishHealth()
+                if (state == MireiState.HOLD_OFFLINE && sessionStarted) {
+                    worker.post {
+                        state = MireiState.RUNNING
+                        setBackgroundRunDesired(true)
+                        runStartedAtEpochMs = System.currentTimeMillis()
+                        runStoppedAtEpochMs = 0L
+                        persistSession()
+                        audit("NETWORK_RECOVERED", "auto_resume")
+                        publishHealth()
+                        worker.removeCallbacks(runtimeLoop)
+                        worker.post(runtimeLoop)
+                    }
+                } else {
+                    publishHealth()
+                }
             }
             override fun onLost(network: Network) {
                 internetAvailable = false
-                if (state == MireiState.RUNNING) state = MireiState.HOLD
+                if (state == MireiState.RUNNING) state = MireiState.HOLD_OFFLINE
                 publishHealth()
             }
         }
@@ -97,16 +112,20 @@ class MireiForegroundService : Service() {
                 val recoveryStatus = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
                 val hasRecoveryCycle = recoveryStatus.mireiCycles.values.any { it.state == com.mirei.app.core.MireiCycleState.REENTRY_WAIT }
                 if (runtime.paperEngine().positionCount() > 0 || hasRecoveryCycle) {
-                    state = MireiState.RUNNING
-                    setBackgroundRunDesired(true)
-                    runStartedAtEpochMs = System.currentTimeMillis()
-                    runStoppedAtEpochMs = 0L
-                    persistSession()
-                    publishHealth()
-                    worker.removeCallbacks(runtimeLoop)
-                    worker.post(runtimeLoop)
-                }
-            }
+                    if (!internetAvailable) {
+                        state = MireiState.HOLD_OFFLINE
+                        publishHealth()
+                    } else {
+                        state = MireiState.RUNNING
+                        setBackgroundRunDesired(true)
+                        runStartedAtEpochMs = System.currentTimeMillis()
+                        runStoppedAtEpochMs = 0L
+                        persistSession()
+                        publishHealth()
+                        worker.removeCallbacks(runtimeLoop)
+                        worker.post(runtimeLoop)
+                    }
+                }            }
         }
         when (intent?.action) {
             ACTION_STATUS -> publishHealth()
@@ -153,7 +172,7 @@ class MireiForegroundService : Service() {
                 return
             }
             if (!internetAvailable) {
-                state = MireiState.HOLD
+                state = MireiState.HOLD_OFFLINE
                 publishHealth()
                 return
             }
@@ -351,9 +370,12 @@ class MireiForegroundService : Service() {
     }
 
     private fun createRuntime() {
+        check(BuildConfig.MIREI_MODE == "PAPER") {
+            "live_app_execution_locked_until_live_broker_contract_is_complete"
+        }
         runtime = MireiPaperTradingRuntime(config, marketData, TradeLedgerFactory.create(this), symbol, exchangeId, managedSymbols)
+        runtime.setBeforeExecutionPersist { persistSession() }
     }
-
     private fun restoreSessionMetadata(saved: PaperSessionSnapshot) {
         sessionStarted = true
         sessionCreatedAtEpochMs = saved.sessionCreatedAtEpochMs
@@ -488,6 +510,7 @@ class MireiForegroundService : Service() {
             !status.lastError.isNullOrBlank() -> "HOLD · ${status.lastError}"
             state == MireiState.RUNNING -> "RUNNING · HOLD sampai SL/TP"
             state == MireiState.HOLD -> "HOLD"
+            state == MireiState.HOLD_OFFLINE -> "HOLD · OFFLINE · auto-resume saat internet kembali"
             else -> "STOP"
         }
         publish(message)
@@ -515,6 +538,7 @@ class MireiForegroundService : Service() {
     private fun stateLabel(): String = when (state) {
         MireiState.RUNNING -> "BERJALAN"
         MireiState.HOLD -> "HOLD"
+        MireiState.HOLD_OFFLINE -> "HOLD · OFFLINE"
         MireiState.STOP -> "BERHENTI"
         else -> state.name
     }

@@ -17,7 +17,6 @@ data class TradingConfig(
     val positionSizeIdr: Double = 50_000.0,
     val maxOpenPositions: Int = 10,
     val baseStopLossPercent: Double = 0.0,
-    val reentryPriceTolerancePercent: Double = 0.35,
     val riskReferenceMode: RiskReferenceMode = RiskReferenceMode.ENTRY_PRICE,
     val manualStopLossPercent: Double = baseStopLossPercent,
     val manualNetProfitTargetIdr: Double = 30.0,
@@ -29,7 +28,6 @@ data class TradingConfig(
         require(maxOpenPositions in 1..10)
         require(manualStopLossPercent >= 0.0)
         require(manualNetProfitTargetIdr > 0.0)
-        require(reentryPriceTolerancePercent >= 0.0)
     }
 
     fun profileFor(symbol: String): PositionTradeConfig? = positionProfiles[symbol] ?: PositionTradeConfigStore.get(symbol)
