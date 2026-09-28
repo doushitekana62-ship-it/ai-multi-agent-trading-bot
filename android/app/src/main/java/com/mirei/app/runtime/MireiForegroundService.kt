@@ -11,6 +11,7 @@ import android.net.Network
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import com.mirei.app.BuildConfig
 import com.mirei.app.core.Exchange
 import com.mirei.app.core.MireiState
 import com.mirei.app.core.PositionTradeConfigStore
@@ -365,10 +366,12 @@ class MireiForegroundService : Service() {
     }
 
     private fun createRuntime() {
+        check(BuildConfig.MIREI_MODE == "PAPER") {
+            "live_app_execution_locked_until_live_broker_contract_is_complete"
+        }
         runtime = MireiPaperTradingRuntime(config, marketData, TradeLedgerFactory.create(this), symbol, exchangeId, managedSymbols)
         runtime.setBeforeExecutionPersist { persistSession() }
     }
-
     private fun restoreSessionMetadata(saved: PaperSessionSnapshot) {
         sessionStarted = true
         sessionCreatedAtEpochMs = saved.sessionCreatedAtEpochMs
