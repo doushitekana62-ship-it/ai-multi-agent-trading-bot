@@ -209,7 +209,7 @@ class PaperSessionStore(context: Context) {
     fun clearSession() = prefs.edit().remove(KEY_STATE).commit()
 
     companion object {
-        private const val PREFS = "mirei_session_" + BuildConfig.MIREI_MODE.lowercase()
+        private val PREFS = "mirei_session_" + BuildConfig.MIREI_MODE.lowercase()
         private const val KEY_STATE = "state"
     }
 }
