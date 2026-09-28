@@ -38,10 +38,10 @@ jobs:
         with:
           gradle-version: '8.7'
       - name: Test and build debug APK
-        run: gradle :app:testDebugUnitTest :app:assembleDebug --no-daemon
+        run: gradle :app:testPaperDebugUnitTest :app:assemblePaperDebug --no-daemon
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: mirei-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: mirei-paper-debug-apk
+          path: android/app/build/outputs/apk/paper/debug/app-paper-debug.apk
           retention-days: 3
