@@ -105,9 +105,9 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
             val reason = cursor.getColumnIndexOrThrow("exit_reason")
             val entryReason = cursor.getColumnIndexOrThrow("entry_reason")
             while (cursor.moveToNext()) rows += TradeRow(
-                cursor.getString(id), cursor.getString(mode), cursor.getString(exchangeId), cursor.getString(symbol), cursor.getString(side), cursor.getString(status),
+                cursor.getString(id), cursor.getString(exchangeId), cursor.getString(symbol), cursor.getString(side), cursor.getString(status),
                 cursor.getDoubleOrNull(entryPrice), cursor.getDoubleOrNull(exitPrice), cursor.getDouble(stake), cursor.getDouble(fee), cursor.getDouble(pnl),
-                cursor.getLong(opened), cursor.getLongOrNull(closed), cursor.getStringOrNull(reason), cursor.getString(entryReason),
+                cursor.getLong(opened), cursor.getLongOrNull(closed), cursor.getStringOrNull(reason), cursor.getString(entryReason), cursor.getString(mode),
             )
         }
         return rows
@@ -161,7 +161,6 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
 
 data class TradeRow(
     val id: String,
-    val mode: String = "PAPER",
     val exchangeId: String,
     val symbol: String,
     val side: String,
@@ -175,6 +174,7 @@ data class TradeRow(
     val closedAtEpochMs: Long?,
     val exitReason: String?,
     val entryReason: String = "entry_filled",
+    val mode: String = "PAPER",
 )
 
 data class PerformanceMetrics(
