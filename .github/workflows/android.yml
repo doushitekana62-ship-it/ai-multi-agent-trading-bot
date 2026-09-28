@@ -37,8 +37,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Test and build debug APK
+      - name: Test and build paper debug APK
         run: gradle :app:testPaperDebugUnitTest :app:assemblePaperDebug --no-daemon
+      - name: Fail if no unit-test reports were produced
+        run: |
+          count=$(find app/build/test-results/testPaperDebugUnitTest -name 'TEST-*.xml' -type f | wc -l)
+          test "$count" -gt 0
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
