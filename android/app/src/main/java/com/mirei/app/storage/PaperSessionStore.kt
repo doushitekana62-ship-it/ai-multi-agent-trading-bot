@@ -1,6 +1,7 @@
 package com.mirei.app.storage
 
 import android.content.Context
+import com.mirei.app.BuildConfig
 import com.mirei.app.core.MireiCycle
 import com.mirei.app.core.MireiCycleState
 import com.mirei.app.core.MireiDecisionAction
@@ -208,7 +209,7 @@ class PaperSessionStore(context: Context) {
     fun clearSession() = prefs.edit().remove(KEY_STATE).commit()
 
     companion object {
-        private const val PREFS = "mirei_paper_session"
+        private const val PREFS = "mirei_session_" + BuildConfig.MIREI_MODE.lowercase()
         private const val KEY_STATE = "state"
     }
 }
