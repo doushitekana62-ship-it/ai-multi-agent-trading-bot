@@ -209,7 +209,9 @@ class MireiPaperTradingRuntime(
         cycles.values.filter { it.state == MireiCycleState.REENTRY_WAIT }.forEach { cycle ->
             pendingReentries[cycle.symbol] = PendingReentry(cycle.cycleId, cycle.initialCapitalIdr, cycle.initialBuyPrice, null, cycle.sequence)
         }
-        // REENTRY_PENDING is intentionally not auto-replayed after process death.\n        // The persisted state prevents an ambiguous duplicate order; reconciliation must\n        // establish whether the prior order reached the broker before another buy is allowed.
+        // REENTRY_PENDING is intentionally not auto-replayed after process death.
+        // The persisted state prevents an ambiguous duplicate order; reconciliation must
+        // establish whether the prior order reached the broker before another buy is allowed.
         lastExecution = null
         tickExecutions = mutableListOf()
         lastError = null
