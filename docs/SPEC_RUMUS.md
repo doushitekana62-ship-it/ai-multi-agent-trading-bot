@@ -87,3 +87,7 @@ Paper dan Live adalah mode aplikasi berbeda.
 
 Model saat ini menggunakan buy fee, sell fee, spread, slippage, latency, dan minimum order dari `ExecutionCostProfile`.
 Komponen biaya lain tidak boleh diasumsikan sebelum sumber resmi exchange diverifikasi.
+
+## 10. Verification gate
+
+Phase 1-2 changes are accepted only after the PAPER and LIVE debug variants compile and the PAPER unit-test task produces at least one test report.
