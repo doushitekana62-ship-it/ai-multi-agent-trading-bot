@@ -138,7 +138,7 @@ class MainActivity : Activity() {
                 if (chosen == selectedMarket) return
                 selectedMarket = chosen
                 getSharedPreferences("mirei_settings", MODE_PRIVATE).edit().putString("selected_market", chosen).apply()
-                send(MireiForegroundService.ACTION_SELECT_MARKET, listOf(chosen))
+                selectMarket(chosen)
             }
         }
         box.addView(spinner, LinearLayout.LayoutParams(-1, 48))
@@ -236,7 +236,6 @@ class MainActivity : Activity() {
             }
         }
 
-        addSection("HISTORY")
         renderHistoryTable()
     }
 
@@ -252,6 +251,15 @@ class MainActivity : Activity() {
                 "  ·  Total re-entry : " + metrics.totalReentries,
             11.5f
         ))
+        addSection("AKTIVITAS TERAKHIR")
+        val audits = database.recentAudit(8)
+        audits.forEach { audit ->
+            content.addView(card(
+                formatTime(audit.createdAtEpochMs) + " · " + audit.eventType + "\n" + audit.details,
+                10.5f
+            ))
+        }
+        if (audits.isEmpty()) content.addView(card("Belum ada aktivitas runtime.", 10.5f))
         addSection("HISTORY")
         val table = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -432,6 +440,13 @@ class MainActivity : Activity() {
 
     private fun requestStatus() = send(MireiForegroundService.ACTION_STATUS)
 
+    private fun selectMarket(symbol: String) {
+        val intent = Intent(this, MireiForegroundService::class.java).apply {
+            action = MireiForegroundService.ACTION_SELECT_MARKET
+            putExtra(MireiForegroundService.EXTRA_SELECTED_MARKET, symbol)
+        }
+        runCatching { if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent) }
+    }
     private fun send(action: String, symbols: List<String> = emptyList()) {
         val intent = Intent(this, MireiForegroundService::class.java).apply {
             this.action = action
