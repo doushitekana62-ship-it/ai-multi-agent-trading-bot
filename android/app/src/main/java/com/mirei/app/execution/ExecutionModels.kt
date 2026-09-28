@@ -99,7 +99,7 @@ class PaperExecutionEngine(
         val ageMs = (nowMs - position.openedAtEpochMs).coerceAtLeast(0L); 
         val costs = costsFor(position.symbol); val before = availableBalanceIdr; val isInitial = position.entryReason == "initial_holding"; val exitMarketAdjustment = costs.spreadPercent / 2.0 + costs.slippagePercent; val executionPrice = marketPrice * (1.0 - exitMarketAdjustment / 100.0)
         val entryFee = position.stakeIdr * costs.buyFeePercent / (100.0 + costs.buyFeePercent); val entryNotional = position.stakeIdr - entryFee; val amount = entryNotional / position.entryPrice; val exitNotional = executionPrice * amount; val exitFee = exitNotional * costs.sellFeePercent / 100.0; val proceedsAfterFee = exitNotional - exitFee; val netPnl = proceedsAfterFee - position.stakeIdr
-        val executedAt = nowMs + costs.executionLatencyMs; tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, executedAt, reason); availableBalanceIdr += proceedsAfterFee; positions.remove(positionId); lastClosedAtBySymbol[position.symbol] = nowMs; lastClosedEntryPriceBySymbol[position.symbol] = position.entryPrice
+        val executedAt = nowMs + costs.executionLatencyMs; tradeLedger?.recordClosed(position, executionPrice, entryFee + exitFee, netPnl, executedAt, reason); availableBalanceIdr += proceedsAfterFee; positions.remove(positionId); lastClosedAtBySymbol[position.symbol] = nowMs
         return ExecutionResult(true, positionId, amount, executionPrice, exitFee, entryFee = entryFee, exitFee = exitFee, slippagePercent = exitMarketAdjustment, pnlIdr = netPnl, remainingBalanceIdr = availableBalanceIdr, reason = reason, balanceBeforeIdr = before)
     }
 
@@ -118,7 +118,7 @@ class PaperExecutionEngine(
         position.stakeIdr + netPnl
     }
     fun snapshotState(): PaperEngineState = PaperEngineState(availableBalanceIdr, positions.values.toList())
-    fun restoreState(state: PaperEngineState) { require(state.availableBalanceIdr >= 0.0) { "invalid_paper_balance_state" }; require(state.positions.size <= config.maxOpenPositions) { "paper_position_limit" }; positions.clear(); limitOrders.clear(); lastClosedAtBySymbol.clear(); lastClosedEntryPriceBySymbol.clear(); state.positions.forEach { position -> require(position.stakeIdr > 0.0 && position.entryPrice > 0.0); positions[position.id] = position }; availableBalanceIdr = state.availableBalanceIdr; positionSequence = state.positions.mapNotNull { it.id.substringAfterLast('-').toLongOrNull() }.maxOrNull() ?: 0L }
+    fun restoreState(state: PaperEngineState) { require(state.availableBalanceIdr >= 0.0) { "invalid_paper_balance_state" }; require(state.positions.size <= config.maxOpenPositions) { "paper_position_limit" }; positions.clear(); limitOrders.clear(); lastClosedAtBySymbol.clear(); state.positions.forEach { position -> require(position.stakeIdr > 0.0 && position.entryPrice > 0.0); positions[position.id] = position }; availableBalanceIdr = state.availableBalanceIdr; positionSequence = state.positions.mapNotNull { it.id.substringAfterLast('-').toLongOrNull() }.maxOrNull() ?: 0L }
     fun forgetPositionAfterReconciliation(positionId: String): PaperPosition? = positions.remove(positionId)
     private fun nextPositionId(prefix: String, nowMs: Long): String { positionSequence += 1; return "$prefix-$nowMs-$positionSequence" }
 }
