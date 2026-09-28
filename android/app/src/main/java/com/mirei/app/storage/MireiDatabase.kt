@@ -154,7 +154,7 @@ class MireiDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
     private fun android.database.Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
 
     companion object {
-        private const val DB_NAME = "mirei_${BuildConfig.MIREI_MODE.lowercase()}.db"
+        private val DB_NAME = "mirei_${BuildConfig.MIREI_MODE.lowercase()}.db"
         private const val DB_VERSION = 5
     }
 }
