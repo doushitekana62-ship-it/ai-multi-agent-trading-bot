@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import com.mirei.app.BuildConfig
+import com.mirei.app.BuildModePolicy
 import com.mirei.app.core.Exchange
 import com.mirei.app.core.MireiState
 import com.mirei.app.core.PositionTradeConfigStore
@@ -60,6 +61,14 @@ class MireiForegroundService : Service() {
         worker = Handler(workerThread.looper)
         marketData = MultiMarketDataSource()
 
+        // LIVE is intentionally a non-trading shell until its broker safety contract is complete.
+        // Do not restore or instantiate PAPER state from the LIVE application.
+        if (!BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+            internetAvailable = getSystemService(ConnectivityManager::class.java).activeNetwork != null
+            state = MireiState.STOP
+            return
+        }
+
         val saved = sessionStore.load()
         if (saved?.active == true) restoreSessionMetadata(saved)
         createRuntime()
@@ -107,6 +116,13 @@ class MireiForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification(stateLabel()))
+        if (!BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+            if (intent?.action != ACTION_STATUS) {
+                audit("LIVE_EXECUTION_LOCKED", "action=" + (intent?.action ?: "null"))
+            }
+            publishHealth()
+            return START_STICKY
+        }
         if (intent == null && shouldRecoverInBackground() && sessionStarted && state != MireiState.RUNNING) {
             worker.post {
                 val recoveryStatus = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
@@ -379,7 +395,7 @@ class MireiForegroundService : Service() {
     }
 
     private fun createRuntime() {
-        check(BuildConfig.MIREI_MODE == "PAPER") {
+        check(BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
             "live_app_execution_locked_until_live_broker_contract_is_complete"
         }
         runtime = MireiPaperTradingRuntime(config, marketData, TradeLedgerFactory.create(this), symbol, exchangeId, managedSymbols)
@@ -477,7 +493,23 @@ class MireiForegroundService : Service() {
         }
     }
 
-    private fun publishHealth() = publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES)))
+    private fun publishHealth() {
+        val status = if (BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+            runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+        } else {
+            PaperRuntimeStatus(
+                availableBalanceIdr = 0.0,
+                equityIdr = 0.0,
+                activePositions = emptyList(),
+                lastExecution = null,
+                dailyPnlIdr = 0.0,
+                internetAvailable = internetAvailable,
+                exchangeHealthy = false,
+                lastError = "live_execution_locked_until_broker_safety_contract_is_complete",
+            )
+        }
+        publishStatus(status)
+    }
 
     private fun publishStatus(status: PaperRuntimeStatus) {
         val intent = Intent(ACTION_STATUS).apply {
