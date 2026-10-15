@@ -1,5 +1,7 @@
 package com.mirei.app.runtime
 
+import com.mirei.app.BuildModePolicy
+
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
