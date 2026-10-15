@@ -1,6 +1,8 @@
-# Mirei — SPEC_RUMUS v1
+# Mirei — SPEC_RUMUS v1 (ATURAN AKTIF)
 
-Status: dikunci untuk Phase 1. Perubahan perilaku wajib mengubah spesifikasi dan test.
+Status: sumber kebenaran untuk seluruh perilaku trading saat ini. Perubahan perilaku wajib mengubah spesifikasi dan test.
+
+**Prioritas dokumen:** `docs/SPEC_RUMUS.md` dan implementasi/test yang konsisten dengannya adalah acuan aktif. `Mirei_Requirements_Report_v1.md` bertanggal 2026-09-08 adalah snapshot historis yang sudah digantikan; jangan mengimplementasikan fitur atau angka dari dokumen tersebut jika tidak tercantum di spesifikasi aktif ini. Konflik lama seperti maksimum 3 posisi, SL default 0,5%, agent/suggestion/Freqtrade/FastAPI, atau tidak auto-resume setelah internet pulih tidak mengubah aturan aktif.
 
 ## 1. Modal awal dan re-entry
 

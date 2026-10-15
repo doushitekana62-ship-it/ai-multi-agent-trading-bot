@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import com.mirei.app.BuildConfig
+import com.mirei.app.BuildModePolicy
 import com.mirei.app.core.Exchange
 import com.mirei.app.core.MireiState
 import com.mirei.app.core.PositionTradeConfigStore
@@ -54,12 +55,26 @@ class MireiForegroundService : Service() {
         PositionTradeConfigStore.reload(this)
         config = loadConfig()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_HIGH)
+            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Status runtime Mirei; notifikasi tidak mengganggu"
+                setShowBadge(false)
+            }
         )
         workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
         worker = Handler(workerThread.looper)
         marketData = MultiMarketDataSource()
 
+        // LIVE is intentionally a non-trading shell until its broker safety contract is complete.
+        // Do not restore or instantiate PAPER state from the LIVE application.
+        if (!BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+            internetAvailable = getSystemService(ConnectivityManager::class.java).activeNetwork != null
+            state = MireiState.STOP
+            return
+        }
+
+        // Restore the last market selection even when there is no saved active session.
+        symbol = prefs.getString(KEY_SELECTED_MARKET, null)?.takeIf { it in SUPPORTED_MARKETS } ?: DEFAULT_SYMBOL
+        exchangeId = TradingUniverse.bySymbol(symbol)?.providerId ?: DEFAULT_EXCHANGE
         val saved = sessionStore.load()
         if (saved?.active == true) restoreSessionMetadata(saved)
         createRuntime()
@@ -107,6 +122,13 @@ class MireiForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification(stateLabel()))
+        if (!BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+            if (intent?.action != ACTION_STATUS) {
+                audit("LIVE_EXECUTION_LOCKED", "action=" + (intent?.action ?: "null"))
+            }
+            publishHealth()
+            return START_STICKY
+        }
         if (intent == null && shouldRecoverInBackground() && sessionStarted && state != MireiState.RUNNING) {
             worker.post {
                 val recoveryStatus = runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
@@ -305,13 +327,19 @@ class MireiForegroundService : Service() {
     private val runtimeLoop = object : Runnable {
         override fun run() {
             if (state != MireiState.RUNNING || !sessionStarted) return
-            val now = System.currentTimeMillis()
-            val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
-            persistExecutions(status)
-            persistMireiDecisions(status)
-            persistSession()
-            publishStatus(status)
-            if (state == MireiState.RUNNING && sessionStarted) worker.postDelayed(this, TICK_MS)
+            try {
+                val now = System.currentTimeMillis()
+                val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+                persistExecutions(status)
+                persistMireiDecisions(status)
+                persistSession()
+                publishStatus(status)
+            } catch (error: Throwable) {
+                audit("RUNTIME_TICK_FAILED", error.message ?: error.javaClass.simpleName)
+                publish("RUNNING · ERROR TICK · periksa aktivitas")
+            } finally {
+                if (state == MireiState.RUNNING && sessionStarted) worker.postDelayed(this, TICK_MS)
+            }
         }
     }
 
@@ -336,10 +364,24 @@ class MireiForegroundService : Service() {
             return
         }
         worker.post {
+            val beforeResume = runtime.status(
+                RuntimeEnvironment(internetAvailable, managedSymbols.all { TradingUniverse.bySymbol(it)?.providerId in SUPPORTED_EXCHANGES })
+            )
+            val hasRecoveryCycle = beforeResume.mireiCycles.values.any {
+                it.state == com.mirei.app.core.MireiCycleState.REENTRY_WAIT
+            }
+            if (runtime.paperEngine().positionCount() <= 0 && !hasRecoveryCycle) {
+                state = MireiState.STOP
+                setBackgroundRunDesired(false)
+                audit("RESUME_REJECTED", "no_open_positions_or_reentry_cycle")
+                publishHealth()
+                return@post
+            }
             pausedSymbols = emptySet()
             runtime.resumeAll()
             if (!internetAvailable) {
                 state = MireiState.HOLD
+                setBackgroundRunDesired(false)
                 publishHealth()
                 return@post
             }
@@ -357,15 +399,29 @@ class MireiForegroundService : Service() {
 
     private fun closeAll() {
         worker.post {
-            val status = runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
-            persistExecutions(status)
-            persistMireiDecisions(status)
-            if (status.activePositions.isEmpty()) {
-                state = MireiState.STOP
-                runStoppedAtEpochMs = System.currentTimeMillis()
+            audit("CLOSE_ALL_REQUESTED", "positions_before=" + runtime.paperEngine().positionCount())
+            runCatching {
+                val status = runtime.closeAll(
+                    System.currentTimeMillis(),
+                    RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES)
+                )
+                persistExecutions(status)
+                persistMireiDecisions(status)
+                if (status.activePositions.isEmpty()) {
+                    state = MireiState.STOP
+                    setBackgroundRunDesired(false)
+                    runStoppedAtEpochMs = System.currentTimeMillis()
+                    worker.removeCallbacks(runtimeLoop)
+                    audit("CLOSE_ALL_COMPLETED", "no_open_positions")
+                } else {
+                    audit("CLOSE_ALL_INCOMPLETE", "remaining_positions=" + status.activePositions.size)
+                }
+                persistSession()
+                publishStatus(status)
+            }.onFailure { error ->
+                audit("CLOSE_ALL_FAILED", error.message ?: error.javaClass.simpleName)
+                publishHealth()
             }
-            persistSession()
-            publishStatus(status)
         }
     }
 
@@ -379,7 +435,7 @@ class MireiForegroundService : Service() {
     }
 
     private fun createRuntime() {
-        check(BuildConfig.MIREI_MODE == "PAPER") {
+        check(BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
             "live_app_execution_locked_until_live_broker_contract_is_complete"
         }
         runtime = MireiPaperTradingRuntime(config, marketData, TradeLedgerFactory.create(this), symbol, exchangeId, managedSymbols)
@@ -477,7 +533,23 @@ class MireiForegroundService : Service() {
         }
     }
 
-    private fun publishHealth() = publishStatus(runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES)))
+    private fun publishHealth() {
+        val status = if (BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+            runtime.status(RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+        } else {
+            PaperRuntimeStatus(
+                availableBalanceIdr = 0.0,
+                equityIdr = 0.0,
+                activePositions = emptyList(),
+                lastExecution = null,
+                dailyPnlIdr = 0.0,
+                internetAvailable = internetAvailable,
+                exchangeHealthy = false,
+                lastError = "live_execution_locked_until_broker_safety_contract_is_complete",
+            )
+        }
+        publishStatus(status)
+    }
 
     private fun publishStatus(status: PaperRuntimeStatus) {
         val intent = Intent(ACTION_STATUS).apply {
@@ -533,8 +605,10 @@ class MireiForegroundService : Service() {
     }
 
     private fun publish(text: String) {
-        if (text == lastNotificationKey) return
+        // Persist last visible message so reopening the app does not re-alert unchanged state.
+        if (text == lastNotificationKey || text == prefs.getString(KEY_LAST_NOTIFICATION, "")) return
         lastNotificationKey = text
+        prefs.edit().putString(KEY_LAST_NOTIFICATION, text).apply()
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
     }
 
@@ -638,5 +712,6 @@ class MireiForegroundService : Service() {
         private const val KEY_TOTAL_CAPITAL = "total_capital"
         private const val KEY_BACKGROUND_RUN_DESIRED = "background_run_desired"
         private const val KEY_SELECTED_MARKET = "selected_market"
+        private const val KEY_LAST_NOTIFICATION = "last_notification_message"
     }
 }
