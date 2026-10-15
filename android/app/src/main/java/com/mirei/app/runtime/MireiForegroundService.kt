@@ -72,6 +72,9 @@ class MireiForegroundService : Service() {
             return
         }
 
+        // Restore the last market selection even when there is no saved active session.
+        symbol = prefs.getString(KEY_SELECTED_MARKET, null)?.takeIf { it in SUPPORTED_MARKETS } ?: DEFAULT_SYMBOL
+        exchangeId = TradingUniverse.bySymbol(symbol)?.providerId ?: DEFAULT_EXCHANGE
         val saved = sessionStore.load()
         if (saved?.active == true) restoreSessionMetadata(saved)
         createRuntime()
@@ -361,10 +364,24 @@ class MireiForegroundService : Service() {
             return
         }
         worker.post {
+            val beforeResume = runtime.status(
+                RuntimeEnvironment(internetAvailable, managedSymbols.all { TradingUniverse.bySymbol(it)?.providerId in SUPPORTED_EXCHANGES })
+            )
+            val hasRecoveryCycle = beforeResume.mireiCycles.values.any {
+                it.state == com.mirei.app.core.MireiCycleState.REENTRY_WAIT
+            }
+            if (runtime.paperEngine().positionCount() <= 0 && !hasRecoveryCycle) {
+                state = MireiState.STOP
+                setBackgroundRunDesired(false)
+                audit("RESUME_REJECTED", "no_open_positions_or_reentry_cycle")
+                publishHealth()
+                return@post
+            }
             pausedSymbols = emptySet()
             runtime.resumeAll()
             if (!internetAvailable) {
                 state = MireiState.HOLD
+                setBackgroundRunDesired(false)
                 publishHealth()
                 return@post
             }
@@ -387,7 +404,10 @@ class MireiForegroundService : Service() {
             persistMireiDecisions(status)
             if (status.activePositions.isEmpty()) {
                 state = MireiState.STOP
+                setBackgroundRunDesired(false)
                 runStoppedAtEpochMs = System.currentTimeMillis()
+                worker.removeCallbacks(runtimeLoop)
+                audit("CLOSE_ALL_COMPLETED", "no_open_positions")
             }
             persistSession()
             publishStatus(status)
