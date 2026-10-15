@@ -83,8 +83,8 @@ class MainActivity : Activity() {
         if (!BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
             val lockedShell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(16, 16, 16, 16)
-                setBackgroundColor(Color.rgb(30, 70, 82))
+                setPadding(dp(18), dp(18), dp(18), dp(18))
+                setBackgroundColor(Color.rgb(8, 18, 30))
             }
             lockedShell.addView(text("MIREI", 28f, true))
             status = card("MODE LIVE · EKSEKUSI TERKUNCI", 14f)
@@ -96,34 +96,77 @@ class MainActivity : Activity() {
             setContentView(lockedShell)
             return
         }
+
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(12, 12, 12, 16)
-            setBackgroundColor(Color.rgb(30, 70, 82))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setBackgroundColor(Color.rgb(8, 18, 30))
         }
-        shell.addView(text("MIREI", 28f, true))
-        shell.addView(text(if (BuildConfig.MIREI_MODE == "PAPER") "Paper trading · satu dashboard · SL/TP manual" else "Live mode · broker execution terkunci", 13f))
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        brand.addView(text("MIREI", 27f, true))
+        brand.addView(text("PAPER TRADING  ·  SIMULASI", 10f).apply { setTextColor(Color.rgb(73, 205, 190)) })
+        header.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(text("●  PAPER", 11f, true).apply { setTextColor(Color.rgb(73, 205, 190)) })
+        shell.addView(header, margin(0, 0, 0, 12))
+
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row1.addView(button("ATUR SL/TP") { showRiskDialog() }, gridParams())
-        row1.addView(button("MULAI") { if (isRiskConfigured()) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..."; MireiStartSessionDialog.show(this@MainActivity) { status.text = "STATUS: LOADING · MIREI MENYIAPKAN..." } } else showRiskRequired() }, gridParams())
-        row1.addView(button("STOP") { showStopDialog() }, gridParams())
-        row2.addView(button("LANJUTKAN") { send(MireiForegroundService.ACTION_RESUME) }, gridParams())
-        row2.addView(button("TUTUP SEMUA") { send(MireiForegroundService.ACTION_CLOSE_ALL) }, gridParams())
+        row1.addView(button("▶  MULAI") {
+            if (isRiskConfigured()) {
+                status.text = "MENYIAPKAN SESI…"
+                MireiStartSessionDialog.show(this@MainActivity) { status.text = "MENYIAPKAN SESI…" }
+            } else showRiskRequired()
+        }, gridParams())
+        row1.addView(button("Ⅱ  STOP") { showStopDialog() }, gridParams())
+        row1.addView(button("▶  LANJUTKAN") { send(MireiForegroundService.ACTION_RESUME) }, gridParams())
+        row2.addView(button("TUTUP SEMUA") {
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Tutup semua posisi?")
+                .setMessage("Semua posisi PAPER yang terbuka akan ditutup dan hasilnya dicatat ke riwayat.")
+                .setNegativeButton("Batal", null)
+                .setPositiveButton("Tutup Semua") { _, _ -> send(MireiForegroundService.ACTION_CLOSE_ALL) }
+                .show()
+        }, gridParams())
+        row2.addView(button("ATUR SL/TP") { showRiskDialog() }, gridParams())
         row2.addView(button("RESET") { confirmReset() }, gridParams())
         controls.addView(row1)
         controls.addView(row2)
         shell.addView(controls)
 
-        content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 8, 0, 0) }
-        status = card("STOP")
-        content.addView(status, margin(0, 0, 0, 8))
-        val scroll = ScrollView(this).apply { isFillViewport = false; addView(content, ViewGroup.LayoutParams(-1, -2)) }
+        content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(10), 0, dp(12))
+        }
+        status = card("Status sedang dimuat…", 14f)
+        content.addView(status, margin(0, 0, 0, 12))
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            clipToPadding = false
+            addView(content, ViewGroup.LayoutParams(-1, -2))
+        }
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        addLinkButton(shell)
+        val link = TextView(this).apply {
+            text = "⚙  TAUTKAN EXCHANGE / API"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(224, 235, 245))
+            isClickable = true
+            isFocusable = true
+            background = rounded(Color.rgb(22, 38, 55), dp(10))
+            setPadding(0, dp(12), 0, dp(12))
+            setOnClickListener { linkExchanges() }
+        }
+        shell.addView(link, margin(0, 8, 0, 0))
         setContentView(shell)
     }
+
+    private fun rounded(color: Int, radius: Int = dp(12)): GradientDrawable =
+        GradientDrawable().apply { setColor(color); cornerRadius = radius.toFloat() }
 
     private fun addLinkButton(shell: LinearLayout) {
         shell.addView(card("TAUTKAN\nExchange : INDODAX, BYBIT, STOCKBIT, BINANCE, ETC.\nAPI KEYS : -\nStatus Broker ter taut : belum ada\nMode Live : dipersiapkan, trading live tetap terkunci sampai API pairing + adapter siap.", 11.5f))
@@ -178,89 +221,96 @@ class MainActivity : Activity() {
         content.addView(box, margin(0, 0, 0, 8))
     }
     private fun render(intent: Intent) {
-        val state = intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP"
+        val stateValue = intent.getStringExtra(MireiForegroundService.EXTRA_STATE) ?: "STOP"
         val balance = intent.getDoubleExtra(MireiForegroundService.EXTRA_BALANCE, 0.0)
         val equity = intent.getDoubleExtra(MireiForegroundService.EXTRA_EQUITY, 0.0)
-        val pnl = intent.getDoubleExtra(MireiForegroundService.EXTRA_PNL, 0.0)
-        val positions = intent.getIntExtra(MireiForegroundService.EXTRA_POSITIONS, 0)
-        val error = intent.getStringExtra(MireiForegroundService.EXTRA_ERROR).orEmpty()
         val winRate = intent.getDoubleExtra(MireiForegroundService.EXTRA_WIN_RATE, 0.0)
         val tpWins = intent.getIntExtra(MireiForegroundService.EXTRA_TP_WINS, 0)
         val closedTrades = intent.getIntExtra(MireiForegroundService.EXTRA_CLOSED_TRADES, 0)
         val totalReentries = intent.getIntExtra(MireiForegroundService.EXTRA_TOTAL_REENTRIES, 0)
         val lastTick = intent.getLongExtra(MireiForegroundService.EXTRA_LAST_TICK, 0L)
         val tickAgeSec = if (lastTick > 0L) ((System.currentTimeMillis() - lastTick).coerceAtLeast(0L) / 1000L) else -1L
-        val heartbeat = when {
-            state == "RUNNING" && tickAgeSec in 0..15 -> "AKTIF · TICK " + tickAgeSec + "d lalu"
-            state == "RUNNING" -> "RUNNING · TICK TERLAMBAT " + tickAgeSec + "d"
-            else -> state
+        val stateLabel = when {
+            stateValue == "RUNNING" && tickAgeSec in 0..15 -> "BOT BERJALAN  ·  tick ${tickAgeSec}d lalu"
+            stateValue == "RUNNING" -> "TICK TERLAMBAT  ·  ${tickAgeSec}d"
+            stateValue == "HOLD_OFFLINE" -> "MENUNGGU INTERNET"
+            stateValue == "HOLD" -> "DIJEDA"
+            else -> "BERHENTI"
+        }
+        val error = intent.getStringExtra(MireiForegroundService.EXTRA_ERROR).orEmpty()
+        val rows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty()
+            .lines().filter { it.isNotBlank() }
+        activeSymbols = rows.mapNotNull { it.split("|").firstOrNull()?.takeIf { symbol -> symbol.isNotBlank() } }
+
+        content.removeAllViews()
+        val stateColor = when (stateValue) {
+            "RUNNING" -> Color.rgb(11, 104, 84)
+            "HOLD_OFFLINE" -> Color.rgb(130, 78, 18)
+            "HOLD" -> Color.rgb(38, 65, 93)
+            else -> Color.rgb(39, 50, 66)
+        }
+        content.addView(card("●  $stateLabel\nKas tersedia     Rp ${number.format(balance)}\nEquity             Rp ${number.format(equity)}", 14f).apply {
+            setTextColor(Color.WHITE)
+            background = rounded(stateColor, dp(12))
+        }, margin(0, 0, 0, 12))
+        if (error.isNotBlank()) {
+            content.addView(card("Perlu perhatian\n$error", 12f), margin(0, 0, 0, 10))
         }
 
-        val positionRows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty().lines().filter { it.isNotBlank() }
-        activeSymbols = positionRows.mapNotNull { it.split("|").firstOrNull()?.takeIf { symbol -> symbol.isNotBlank() } }
-        val equityLines = positionRows.mapIndexed { index, row ->
-            val p = row.split("|")
-            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format((p.getOrNull(1)?.toDoubleOrNull() ?: 0.0) + (p.getOrNull(5)?.toDoubleOrNull() ?: 0.0))}"
-        }
-        val pnlLines = positionRows.mapIndexed { index, row ->
-            val p = row.split("|")
-            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(5)?.toDoubleOrNull() ?: 0.0)}"
-        }
-        val positionLines = positionRows.mapIndexed { index, row ->
-            val p = row.split("|")
-            "${index + 1}. ${p.getOrNull(0) ?: "-"}  Rp ${number.format(p.getOrNull(1)?.toDoubleOrNull() ?: 0.0)}"
-        }
-        status.text = "Status : " + heartbeat +
-            "\nKas : Rp " + number.format(balance) +
-            "\nEquity :" + if (equityLines.isEmpty()) " -" else "\n" + equityLines.joinToString("\n") +
-            "\nPnl :" + if (pnlLines.isEmpty()) " -" else "\n" + pnlLines.joinToString("\n") +
-            "\nEquity total : Rp " + number.format(equity) +
-            "\nWin Rate : " + String.format(Locale.US, "%.1f%%", winRate) + " (" + tpWins + "/" + closedTrades + " TP)" +
-            "\nCounter re-entry : " + totalReentries +
-            "\nPosisi : " + positions + "/10" +
-            if (positionLines.isNotEmpty()) "\n" + positionLines.joinToString("\n") else "" +
-            if (error.isNotBlank()) "\nERROR: " + error else ""
-        content.removeAllViews()
-        content.addView(status, margin(0, 0, 0, 8))
-        addSection("PASAR")
+        addSection("PASAR AKTIF")
         addMarketSection(intent)
-        addSection("POSISI AKTIF")
-        val rows = intent.getStringExtra(MireiForegroundService.EXTRA_POSITIONS_DETAIL).orEmpty().lines().filter { it.isNotBlank() }
+        addSection("POSISI AKTIF  ·  ${rows.size}/10")
         if (rows.isEmpty()) {
-            content.addView(card("Tidak ada posisi aktif."))
+            content.addView(card("Belum ada posisi terbuka.\nMulai sesi PAPER setelah memeriksa konfigurasi SL/TP.", 13f), margin(0, 0, 0, 10))
         } else {
             rows.forEach { row ->
                 val p = row.split('|')
                 if (p.size >= 5) {
-                    val unrealizedPnl = p.getOrNull(5)?.toDoubleOrNull() ?: 0.0
-                    val gross = p.getOrNull(6)?.toDoubleOrNull() ?: unrealizedPnl
-                    val fee = p.getOrNull(7)?.toDoubleOrNull() ?: 0.0
-                    val mark = p.getOrNull(8)?.toDoubleOrNull() ?: 0.0
+                    val symbol = p[0]
+                    val stake = p.getOrNull(1)?.toDoubleOrNull() ?: 0.0
+                    val entry = p.getOrNull(2)?.toDoubleOrNull() ?: 0.0
+                    val sl = p.getOrNull(3)?.toDoubleOrNull() ?: 0.0
+                    val tp = p.getOrNull(4)?.toDoubleOrNull() ?: 0.0
+                    val pnl = p.getOrNull(5)?.toDoubleOrNull() ?: 0.0
+                    val mark = p.getOrNull(8)?.toDoubleOrNull() ?: entry
                     val trend = p.getOrNull(9) ?: "FLAT"
-                    val reentry = p.getOrNull(10) ?: "0"
-                    val cycleState = p.getOrNull(11) ?: "HOLDING"
-                    val instrument = com.mirei.app.core.TradingUniverse.bySymbol(p[0])
-                    val tradeType = instrument?.assetClass?.label ?: "Trade"
-                    val feeRate = instrument?.executionCosts?.let { it.buyFeePercent + it.sellFeePercent } ?: 0.0
-                    val value = "Jenis trade : " + tradeType + " (" + p[0] + ")" +
-                        "\nModal awal masuk : Rp " + number.format(p[1].toDoubleOrNull() ?: 0.0) +
-                        "\nEntry : Rp " + number.format(p[2].toDoubleOrNull() ?: 0.0) + " per 1 coin" +
-                        "\nSL Modal awal : " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) "Rp " + number.format(p[3].toDoubleOrNull() ?: 0.0) else "OFF") +
-                        "\nTP modal awal : Rp " + number.format((p[1].toDoubleOrNull() ?: 0.0) + (PositionTradeConfigStore.snapshot()["*"]?.manualNetProfitTargetIdr ?: 0.0)) +
-                        "\nTarget TP : +" + String.format(Locale.US, "%.2f%%", ((PositionTradeConfigStore.snapshot()["*"]?.manualNetProfitTargetIdr ?: 0.0) / (p[1].toDoubleOrNull() ?: 1.0)) * 100.0) + " dari modal acuan" +
-                        "\nTP SL sett : SL " + (if ((p[3].toDoubleOrNull() ?: 0.0) > 0.0) number.format((PositionTradeConfigStore.snapshot()["*"]?.stopLossPercent ?: 0.0)) + "%" else "OFF") + " · TP Rp " + number.format(p[4].toDoubleOrNull() ?: 0.0) +
-                        "\nPnL bersih : Rp " + number.format(unrealizedPnl) +
-                        "\nPnL kotor : Rp " + number.format(gross) +
-                        "\nFee : " + feeRate + "% · Rp " + number.format(fee) +
-                        "\nTotal re entry : " + reentry +
-                        "\nStatus : " + trend + " · " + cycleState
-                    content.addView(card(value, 12.5f))
+                    val cycle = p.getOrNull(11) ?: "HOLDING"
+                    val pnlColor = if (pnl >= 0) Color.rgb(24, 164, 123) else Color.rgb(213, 73, 83)
+                    val position = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(14), dp(12), dp(14), dp(12))
+                        background = rounded(Color.rgb(18, 32, 47), dp(12))
+                    }
+                    val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                    top.addView(text(symbol, 15f, true), LinearLayout.LayoutParams(0, -2, 1f))
+                    top.addView(text(trend, 10f, true).apply { setTextColor(Color.rgb(73, 205, 190)) })
+                    position.addView(top)
+                    position.addView(text("Entry  Rp ${number.format(entry)}    Harga  Rp ${number.format(mark)}", 11f).apply { setTextColor(Color.rgb(180, 197, 214)) }, margin(0, 5, 0, 2))
+                    position.addView(text("Modal  Rp ${number.format(stake)}    PnL bersih  Rp ${number.format(pnl)}", 12f, true).apply { setTextColor(pnlColor) }, margin(0, 3, 0, 2))
+                    position.addView(text("SL ${if (sl > 0) "Rp " + number.format(sl) else "OFF"}   ·   TP Rp ${number.format(tp)}   ·   $cycle", 10.5f).apply { setTextColor(Color.rgb(180, 197, 214)) }, margin(0, 3, 0, 0))
+                    content.addView(position, margin(0, 0, 0, 8))
                 }
             }
         }
 
+        addSection("STATISTIK")
+        val statGrid = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        statGrid.addView(metricCard("WIN RATE TP", String.format(Locale.US, "%.1f%%", winRate), "$tpWins dari $closedTrades trade"), LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(4) })
+        statGrid.addView(metricCard("TRADE SELESAI", closedTrades.toString(), "$totalReentries re-entry"), LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(4) })
+        content.addView(statGrid, margin(0, 0, 0, 10))
+
         renderHistoryTable()
     }
+
+    private fun metricCard(label: String, value: String, caption: String): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = rounded(Color.rgb(18, 32, 47), dp(12))
+            addView(text(label, 9.5f, true).apply { setTextColor(Color.rgb(150, 174, 196)) })
+            addView(text(value, 22f, true).apply { setTextColor(Color.WHITE) }, margin(0, 5, 0, 2))
+            addView(text(caption, 10f).apply { setTextColor(Color.rgb(73, 205, 190)) })
+        }
 
     private fun renderHistoryTable() {
         val database = MireiDatabase(this)
