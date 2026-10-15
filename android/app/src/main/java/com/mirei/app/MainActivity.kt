@@ -188,10 +188,10 @@ class MainActivity : Activity() {
         selectedMarket = saved?.takeIf { it in markets } ?: intent.getStringExtra(MireiForegroundService.EXTRA_SELECTED_MARKET)?.takeIf { it in markets } ?: markets.firstOrNull().orEmpty()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(12, 10, 12, 10)
-            setBackgroundColor(Color.rgb(33, 141, 174))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = rounded(Color.rgb(18, 32, 47), dp(12))
         }
-        box.addView(text("Coin utama / market yang dipantau", 11.5f))
+        box.addView(text("COIN UTAMA  ·  MARKET YANG DIPANTAU", 10.5f, true).apply { setTextColor(Color.rgb(150, 174, 196)) })
         val spinner = Spinner(this)
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, markets)
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
@@ -216,8 +216,10 @@ class MainActivity : Activity() {
         } else {
             "Market Pulse : $selectedMarket · belum menjadi market runtime aktif"
         }
-        box.addView(text(pulse, 12f))
-        box.addView(text("Selector tetap terlihat setelah coin dipilih. Pemilihan tersimpan lokal.", 10.5f))
+        box.addView(text(pulse, 12f, true).apply {
+            setTextColor(if (runtimeSymbol == selectedMarket && price > 0.0 && fresh) Color.rgb(73, 205, 190) else Color.rgb(235, 183, 93))
+        }, margin(0, 6, 0, 2))
+        box.addView(text("Pilihan coin disimpan di perangkat. Data pasar akan ditandai segar hanya jika sumber data mengonfirmasikannya.", 10f).apply { setTextColor(Color.rgb(150, 174, 196)) })
         content.addView(box, margin(0, 0, 0, 8))
     }
     private fun render(intent: Intent) {
@@ -325,14 +327,40 @@ class MainActivity : Activity() {
             11.5f
         ))
         addSection("AKTIVITAS TERAKHIR")
-        val audits = database.recentAudit(8)
+        val audits = database.recentAudit(5)
         audits.forEach { audit ->
+            val friendly = when (audit.eventType) {
+                "TRADE_CLOSE" -> "Trade ditutup"
+                "TP_SELL" -> "Take Profit tercapai"
+                "SL_SELL" -> "Stop Loss tercapai"
+                "RE_ENTRY_BUY" -> "Re-entry dilakukan"
+                "INITIAL_BUY" -> "Posisi awal dibuat"
+                "SESSION_STOPPED" -> "Bot dihentikan"
+                "POSITIONS_RESUMED" -> "Sesi dilanjutkan"
+                "CLOSE_ALL_REQUESTED" -> "Permintaan tutup semua"
+                "CLOSE_ALL_COMPLETED" -> "Semua posisi sudah ditutup"
+                "CLOSE_ALL_INCOMPLETE" -> "Masih ada posisi terbuka"
+                "CLOSE_ALL_FAILED" -> "Gagal menutup semua posisi"
+                "RUNTIME_TICK_FAILED" -> "Runtime mengalami error"
+                "MARKET_SELECTED" -> "Coin pilihan diperbarui"
+                else -> audit.eventType.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
+            }
+            val detail = when (audit.eventType) {
+                "TRADE_CLOSE" -> audit.details.split('|').filter { it.startsWith("symbol=") || it.startsWith("pnl=") || it.startsWith("exit_reason=") }
+                    .joinToString(" · ") { it.substringAfter('=') }
+                "CLOSE_ALL_INCOMPLETE" -> audit.details.substringAfter("remaining_positions=", audit.details)
+                    .let { "Sisa posisi: $it" }
+                "CLOSE_ALL_FAILED", "RUNTIME_TICK_FAILED" -> audit.details.take(120)
+                "MARKET_SELECTED" -> audit.details.substringAfter("symbol=", audit.details).substringBefore('|')
+                else -> ""
+            }
             content.addView(card(
-                formatTime(audit.createdAtEpochMs) + " · " + audit.eventType + "\n" + audit.details,
-                10.5f
-            ))
+                formatTime(audit.createdAtEpochMs) + "  ·  " + friendly +
+                    if (detail.isNotBlank()) "\n" + detail else "",
+                11f
+            ), margin(0, 0, 0, 6))
         }
-        if (audits.isEmpty()) content.addView(card("Belum ada aktivitas runtime.", 10.5f))
+        if (audits.isEmpty()) content.addView(card("Belum ada aktivitas runtime.", 11f))
         addSection("HISTORY")
         val table = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -556,12 +584,21 @@ class MainActivity : Activity() {
 
     private fun button(label: String, action: () -> Unit): TextView = TextView(this).apply {
         text = label
-        textSize = 11f
+        textSize = 10.5f
         gravity = Gravity.CENTER
-        setTextColor(Color.rgb(35, 35, 35))
+        setTextColor(Color.WHITE)
         isClickable = true
         isFocusable = true
-        background = GradientDrawable().apply { setColor(if (label == "MULAI") Color.rgb(255, 215, 88) else Color.rgb(43, 187, 215)); cornerRadius = 12f }
+        background = GradientDrawable().apply {
+            val fill = when {
+                label.contains("MULAI") -> Color.rgb(10, 157, 116)
+                label.contains("STOP") || label.contains("TUTUP") -> Color.rgb(194, 55, 67)
+                label.contains("LANJUTKAN") -> Color.rgb(22, 137, 220)
+                else -> Color.rgb(29, 48, 68)
+            }
+            setColor(fill)
+            cornerRadius = dp(10).toFloat()
+        }
         setOnClickListener { action() }
     }
 
