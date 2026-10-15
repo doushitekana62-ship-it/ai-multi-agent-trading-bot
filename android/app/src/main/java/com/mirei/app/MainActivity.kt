@@ -286,7 +286,7 @@ class MainActivity : Activity() {
         addSection("HISTORY")
         val table = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            minimumWidth = 760
+            minimumWidth = dp(780)
         }
         table.addView(tableRow(listOf("WAKTU", "JENIS TRADE", "SIKLUS / STATUS", "ENTRY", "MODAL AWAL", "PnL"), true))
         rows.forEach { row ->
@@ -314,6 +314,7 @@ class MainActivity : Activity() {
         if (rows.isEmpty()) table.addView(text("Belum ada history.", 12f))
         content.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = true
+            isFillViewport = false
             addView(table, ViewGroup.LayoutParams(dp(880), ViewGroup.LayoutParams.WRAP_CONTENT))
         })
     }
@@ -477,7 +478,12 @@ class MainActivity : Activity() {
         }
         runCatching { if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent) }
     }
-    private fun addSection(title: String) { content.addView(text(title, 16f, true), margin(0, 10, 0, 6)) }
+    private fun addSection(title: String) {
+        content.addView(text(title, 15f, true).apply {
+            setTextColor(Color.WHITE)
+            setPadding(dp(2), dp(10), dp(2), dp(4))
+        }, margin(0, 8, 0, 4))
+    }
 
     private fun tableRow(values: List<String>, header: Boolean): View {
         val widthsDp = intArrayOf(145, 185, 155, 150, 135, 110)
@@ -509,16 +515,21 @@ class MainActivity : Activity() {
         setOnClickListener { action() }
     }
 
-    private fun card(value: String, size: Float = 14f): TextView = text(value, size).apply {
-        setPadding(12, 12, 12, 12)
-        setTextColor(Color.rgb(252, 229, 154))
-        setBackgroundColor(Color.rgb(33, 141, 174))
+    private fun card(value: String, size: Float = 13f): TextView = text(value, size).apply {
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        setTextColor(Color.rgb(28, 48, 56))
+        setLineSpacing(dp(2).toFloat(), 1.0f)
+        setBackground(GradientDrawable().apply {
+            setColor(Color.rgb(238, 245, 247))
+            cornerRadius = dp(10).toFloat()
+        })
     }
 
     private fun text(value: String, size: Float, bold: Boolean = false): TextView = TextView(this).apply {
         text = value
         textSize = size
         setTextColor(Color.WHITE)
+        setLineSpacing(dp(1).toFloat(), 1.0f)
         gravity = Gravity.START
         if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
     }
