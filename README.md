@@ -4,6 +4,10 @@ Mirei is an Android-first paper-trading runtime.
 
 The application is intentionally reduced to one decision owner: Mirei. There are no secondary analysis agents, suggestion panels, strategy modes, web dashboards, FastAPI runtime, Freqtrade runtime, or broker-specific live execution in this build.
 
+## Authoritative specification
+
+`docs/SPEC_RUMUS.md` is the source of truth for trading behavior. The historical `Mirei_Requirements_Report_v1.md` dated 2026-09-08 is superseded and must not be used to restore obsolete limits, SL/TP defaults, agent workflows, or service architecture.
+
 ## Runtime contract
 
 - Paper trading only.
@@ -55,4 +59,4 @@ Provider-specific market-data adapters remain below the paper runtime boundary.
 
 ## Security and live trading
 
-Live order execution is disabled in this build. No live API credential flow is part of the active runtime.
+Live order execution is disabled in this build. The app includes local Indodax credential storage and a read-only account-balance check, but neither enables order placement. The LIVE flavor must open into a locked status screen and must not initialize the PAPER runtime.

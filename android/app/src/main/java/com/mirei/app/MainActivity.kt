@@ -47,7 +47,14 @@ class MainActivity : Activity() {
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == MireiForegroundService.ACTION_STATUS) render(intent)
+            if (intent?.action == MireiForegroundService.ACTION_STATUS) {
+                if (BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+                    render(intent)
+                } else {
+                    status.text = "MODE LIVE · EKSEKUSI TERKUNCI\n" +
+                        intent.getStringExtra(MireiForegroundService.EXTRA_ERROR).orEmpty()
+                }
+            }
         }
     }
 
@@ -73,6 +80,22 @@ class MainActivity : Activity() {
     }
 
     private fun buildDashboard() {
+        if (!BuildModePolicy.usesPaperRuntime(BuildConfig.MIREI_MODE)) {
+            val lockedShell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(16, 16, 16, 16)
+                setBackgroundColor(Color.rgb(30, 70, 82))
+            }
+            lockedShell.addView(text("MIREI", 28f, true))
+            status = card("MODE LIVE · EKSEKUSI TERKUNCI", 14f)
+            lockedShell.addView(status, margin(0, 12, 0, 12))
+            lockedShell.addView(text(
+                "Order LIVE dinonaktifkan sampai kontrak keselamatan broker, rekonsiliasi order, dan pengelolaan posisi LIVE selesai.",
+                13f,
+            ))
+            setContentView(lockedShell)
+            return
+        }
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(12, 12, 12, 16)
