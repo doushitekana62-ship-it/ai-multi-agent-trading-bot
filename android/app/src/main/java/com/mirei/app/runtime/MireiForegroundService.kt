@@ -55,7 +55,10 @@ class MireiForegroundService : Service() {
         PositionTradeConfigStore.reload(this)
         config = loadConfig()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_HIGH)
+            NotificationChannel(CHANNEL_ID, "Mirei Runtime", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Status runtime Mirei; notifikasi tidak mengganggu"
+                setShowBadge(false)
+            }
         )
         workerThread = HandlerThread("mirei-runtime-worker").also { it.start() }
         worker = Handler(workerThread.looper)
@@ -321,13 +324,19 @@ class MireiForegroundService : Service() {
     private val runtimeLoop = object : Runnable {
         override fun run() {
             if (state != MireiState.RUNNING || !sessionStarted) return
-            val now = System.currentTimeMillis()
-            val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
-            persistExecutions(status)
-            persistMireiDecisions(status)
-            persistSession()
-            publishStatus(status)
-            if (state == MireiState.RUNNING && sessionStarted) worker.postDelayed(this, TICK_MS)
+            try {
+                val now = System.currentTimeMillis()
+                val status = runtime.tick(now, RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
+                persistExecutions(status)
+                persistMireiDecisions(status)
+                persistSession()
+                publishStatus(status)
+            } catch (error: Throwable) {
+                audit("RUNTIME_TICK_FAILED", error.message ?: error.javaClass.simpleName)
+                publish("RUNNING · ERROR TICK · periksa aktivitas")
+            } finally {
+                if (state == MireiState.RUNNING && sessionStarted) worker.postDelayed(this, TICK_MS)
+            }
         }
     }
 
@@ -565,8 +574,10 @@ class MireiForegroundService : Service() {
     }
 
     private fun publish(text: String) {
-        if (text == lastNotificationKey) return
+        // Persist last visible message so reopening the app does not re-alert unchanged state.
+        if (text == lastNotificationKey || text == prefs.getString(KEY_LAST_NOTIFICATION, "")) return
         lastNotificationKey = text
+        prefs.edit().putString(KEY_LAST_NOTIFICATION, text).apply()
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
     }
 
@@ -670,5 +681,6 @@ class MireiForegroundService : Service() {
         private const val KEY_TOTAL_CAPITAL = "total_capital"
         private const val KEY_BACKGROUND_RUN_DESIRED = "background_run_desired"
         private const val KEY_SELECTED_MARKET = "selected_market"
+        private const val KEY_LAST_NOTIFICATION = "last_notification_message"
     }
 }
