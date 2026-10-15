@@ -399,18 +399,29 @@ class MireiForegroundService : Service() {
 
     private fun closeAll() {
         worker.post {
-            val status = runtime.closeAll(System.currentTimeMillis(), RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES))
-            persistExecutions(status)
-            persistMireiDecisions(status)
-            if (status.activePositions.isEmpty()) {
-                state = MireiState.STOP
-                setBackgroundRunDesired(false)
-                runStoppedAtEpochMs = System.currentTimeMillis()
-                worker.removeCallbacks(runtimeLoop)
-                audit("CLOSE_ALL_COMPLETED", "no_open_positions")
+            audit("CLOSE_ALL_REQUESTED", "positions_before=" + runtime.paperEngine().positionCount())
+            runCatching {
+                val status = runtime.closeAll(
+                    System.currentTimeMillis(),
+                    RuntimeEnvironment(internetAvailable, exchangeId in SUPPORTED_EXCHANGES)
+                )
+                persistExecutions(status)
+                persistMireiDecisions(status)
+                if (status.activePositions.isEmpty()) {
+                    state = MireiState.STOP
+                    setBackgroundRunDesired(false)
+                    runStoppedAtEpochMs = System.currentTimeMillis()
+                    worker.removeCallbacks(runtimeLoop)
+                    audit("CLOSE_ALL_COMPLETED", "no_open_positions")
+                } else {
+                    audit("CLOSE_ALL_INCOMPLETE", "remaining_positions=" + status.activePositions.size)
+                }
+                persistSession()
+                publishStatus(status)
+            }.onFailure { error ->
+                audit("CLOSE_ALL_FAILED", error.message ?: error.javaClass.simpleName)
+                publishHealth()
             }
-            persistSession()
-            publishStatus(status)
         }
     }
 
