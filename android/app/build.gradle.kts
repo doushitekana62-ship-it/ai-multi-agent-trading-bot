@@ -53,4 +53,7 @@ kotlin {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Use a real org.json implementation in local JVM unit tests; Android's mockable
+    // android.jar stubs throw "Method ... not mocked" for JSONObject/JSONArray calls.
+    testImplementation("org.json:json:20240303")
 }
