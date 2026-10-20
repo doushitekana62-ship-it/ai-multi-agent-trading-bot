@@ -65,7 +65,7 @@ class IndodaxAccountClient(
         }
     }
 
-    private fun parseAccountSnapshot(rows: JSONArray, timestamp: Long): IndodaxAccountSnapshot {
+    internal fun parseAccountSnapshot(rows: JSONArray, timestamp: Long): IndodaxAccountSnapshot {
         val available = linkedMapOf<String, Double>()
         val held = linkedMapOf<String, Double>()
         for (index in 0 until rows.length()) {
