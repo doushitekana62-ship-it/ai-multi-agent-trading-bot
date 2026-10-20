@@ -22,6 +22,9 @@ class IndodaxAccountClient(
 ) {
     fun getInfo(): IndodaxAccountSnapshot {
         require(credentials.exchangeId == "indodax") { "unsupported_exchange:" + credentials.exchangeId }
+        require(credentials.apiKey.isNotBlank()) { "indodax_api_key_missing" }
+        require(credentials.apiSecret.isNotBlank()) { "indodax_api_secret_missing" }
+        require(timeoutMs in 1_000..30_000) { "invalid_indodax_timeout" }
 
         val timestamp = System.currentTimeMillis()
         val body = "method=getInfo&timestamp=" + timestamp + "&recvWindow=5000"
@@ -46,21 +49,36 @@ class IndodaxAccountClient(
                 throw IllegalStateException(root.optString("error", "indodax_api_error"))
             }
             val result = root.optJSONObject("return") ?: throw IllegalStateException("indodax_missing_return")
-            val balance = result.optJSONObject("balance") ?: JSONObject()
-            val hold = result.optJSONObject("balance_hold") ?: JSONObject()
+            val balance = result.optJSONObject("balance") ?: throw IllegalStateException("indodax_missing_balance")
+            val hold = result.optJSONObject("balance_hold") ?: throw IllegalStateException("indodax_missing_balance_hold")
             val balances = linkedMapOf<String, Double>()
             balance.keys().forEach { symbol ->
-                balances[symbol.lowercase()] = balance.optString(symbol).toDoubleOrNull() ?: balance.optDouble(symbol, 0.0)
+                balances[symbol.lowercase()] = readAmount(balance, symbol)
             }
+            val idrAvailable = readAmount(balance, "idr")
+            val idrHold = readAmount(hold, "idr")
             IndodaxAccountSnapshot(
-                idrAvailable = balance.optString("idr").toDoubleOrNull() ?: balance.optDouble("idr", 0.0),
-                idrHold = hold.optString("idr").toDoubleOrNull() ?: hold.optDouble("idr", 0.0),
+                idrAvailable = idrAvailable,
+                idrHold = idrHold,
                 balances = balances,
                 serverTimeMs = result.optLong("server_time", timestamp),
             )
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun readAmount(source: JSONObject, field: String): Double {
+        if (!source.has(field) || source.isNull(field)) {
+            throw IllegalStateException("indodax_missing_balance_field:" + field)
+        }
+        val raw = source.optString(field, "").trim()
+        val amount = raw.toDoubleOrNull()
+            ?: throw IllegalStateException("indodax_invalid_balance_field:" + field)
+        if (!amount.isFinite() || amount < 0.0) {
+            throw IllegalStateException("indodax_invalid_balance_field:" + field)
+        }
+        return amount
     }
 
     private fun hmacSha512(secret: String, body: String): String {
