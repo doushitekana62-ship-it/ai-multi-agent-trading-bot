@@ -360,14 +360,16 @@ class MainActivity : Activity() {
             setSingleLine(true)
             inputType = 0x00000081
         }
-        box.addView(text("INDODAX · credential hanya disimpan lokal di Android.", 12f))
+        box.addView(text("INDODAX · tahap ini hanya membaca saldo. Gunakan API Key dengan izin Reading / View Only.", 12f))
+        box.addView(text("Jangan aktifkan Spot Trading atau Withdraw untuk tahap uji ini. Tes baca kas tidak mengirim order.", 11f))
         box.addView(key)
         box.addView(secret)
         box.addView(text(
             if (existing != null) "Status: credential lokal tersimpan." else "Status: belum terhubung.",
             12f
         ))
-        box.addView(text("Tidak ada API key/secret/ENV yang ditanam di repository.", 11f))
+        box.addView(text("Credential disimpan terenkripsi secara lokal di Android. Jangan kirim API Secret ke chat atau log.", 11f))
+        box.addView(text("Eksekusi LIVE Mirei masih terkunci; fitur ini tidak dapat membeli atau menjual aset.", 11f))
         val dialog = AlertDialog.Builder(this)
             .setTitle("TAUTKAN INDODAX")
             .setView(box)

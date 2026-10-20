@@ -1,6 +1,7 @@
 package com.mirei.app.exchange
 
 import com.mirei.app.security.ExchangeCredentials
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -16,57 +17,98 @@ data class IndodaxAccountSnapshot(
     val serverTimeMs: Long,
 )
 
+/**
+ * Read-only INDODAX Trade API V2 account client.
+ *
+ * This client intentionally exposes no order methods. Do not add order execution here.
+ */
 class IndodaxAccountClient(
     private val credentials: ExchangeCredentials,
     private val timeoutMs: Int = 10_000,
 ) {
     fun getInfo(): IndodaxAccountSnapshot {
         require(credentials.exchangeId == "indodax") { "unsupported_exchange:" + credentials.exchangeId }
+        require(credentials.apiKey.isNotBlank()) { "indodax_api_key_missing" }
+        require(credentials.apiSecret.isNotBlank()) { "indodax_api_secret_missing" }
+        require(timeoutMs in 1_000..30_000) { "invalid_indodax_timeout" }
 
         val timestamp = System.currentTimeMillis()
-        val body = "method=getInfo&timestamp=" + timestamp + "&recvWindow=5000"
-        val signature = hmacSha512(credentials.apiSecret, body)
-
-        val connection = (URL("https://indodax.com/tapi").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
+        val query = "timestamp=$timestamp&recvWindow=5000"
+        val signature = hmacSha512(credentials.apiSecret, query)
+        val connection = (URL("$BASE_URL/api/v2/account?$query").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
             connectTimeout = timeoutMs
             readTimeout = timeoutMs
-            doOutput = true
-            setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-            setRequestProperty("Key", credentials.apiKey)
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("X-APIKEY", credentials.apiKey)
             setRequestProperty("Sign", signature)
         }
 
         return try {
-            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+            val responseCode = connection.responseCode
+            val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                ?: throw IllegalStateException("indodax_http_error:$responseCode")
             val responseText = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
             val root = JSONObject(responseText)
-            if (root.optInt("success", 0) != 1) {
-                throw IllegalStateException(root.optString("error", "indodax_api_error"))
+            if (responseCode !in 200..299) {
+                val code = root.optInt("code", responseCode)
+                throw IllegalStateException("indodax_api_error:$code")
             }
-            val result = root.optJSONObject("return") ?: throw IllegalStateException("indodax_missing_return")
-            val balance = result.optJSONObject("balance") ?: JSONObject()
-            val hold = result.optJSONObject("balance_hold") ?: JSONObject()
-            val balances = linkedMapOf<String, Double>()
-            balance.keys().forEach { symbol ->
-                balances[symbol.lowercase()] = balance.optString(symbol).toDoubleOrNull() ?: balance.optDouble(symbol, 0.0)
+            if (root.has("code") && root.optInt("code", 0) != 0) {
+                throw IllegalStateException("indodax_api_error:" + root.optInt("code"))
             }
-            IndodaxAccountSnapshot(
-                idrAvailable = balance.optString("idr").toDoubleOrNull() ?: balance.optDouble("idr", 0.0),
-                idrHold = hold.optString("idr").toDoubleOrNull() ?: hold.optDouble("idr", 0.0),
-                balances = balances,
-                serverTimeMs = result.optLong("server_time", timestamp),
-            )
+            val balanceRows = root.optJSONArray("balances")
+                ?: throw IllegalStateException("indodax_missing_balances")
+            parseAccountSnapshot(balanceRows, timestamp)
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun hmacSha512(secret: String, body: String): String {
+    internal fun parseAccountSnapshot(rows: JSONArray, timestamp: Long): IndodaxAccountSnapshot {
+        val available = linkedMapOf<String, Double>()
+        val held = linkedMapOf<String, Double>()
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: throw IllegalStateException("indodax_invalid_balance_row")
+            val asset = row.optString("asset", "").trim().lowercase()
+            if (asset.isBlank() || available.containsKey(asset)) {
+                throw IllegalStateException("indodax_invalid_or_duplicate_asset")
+            }
+            available[asset] = readAmount(row, "free")
+            held[asset] = readAmount(row, "locked")
+        }
+        val idrAvailable = available["idr"] ?: throw IllegalStateException("indodax_missing_balance_field:idr")
+        val idrHold = held["idr"] ?: throw IllegalStateException("indodax_missing_locked_field:idr")
+        return IndodaxAccountSnapshot(
+            idrAvailable = idrAvailable,
+            idrHold = idrHold,
+            balances = available,
+            // V2 account response does not expose server time; this is the local request timestamp.
+            serverTimeMs = timestamp,
+        )
+    }
+
+    private fun readAmount(source: JSONObject, field: String): Double {
+        if (!source.has(field) || source.isNull(field)) {
+            throw IllegalStateException("indodax_missing_balance_field:$field")
+        }
+        val raw = source.optString(field, "").trim()
+        val amount = raw.toDoubleOrNull()
+            ?: throw IllegalStateException("indodax_invalid_balance_field:$field")
+        if (!amount.isFinite() || amount < 0.0) {
+            throw IllegalStateException("indodax_invalid_balance_field:$field")
+        }
+        return amount
+    }
+
+    private fun hmacSha512(secret: String, value: String): String {
         val mac = Mac.getInstance("HmacSHA512")
         mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA512"))
-        return mac.doFinal(body.toByteArray(Charsets.UTF_8))
+        return mac.doFinal(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    private companion object {
+        const val BASE_URL = "https://tapi.indodax.com"
     }
 }
