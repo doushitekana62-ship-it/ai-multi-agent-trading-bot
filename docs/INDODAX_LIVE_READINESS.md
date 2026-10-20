@@ -8,14 +8,14 @@ Status: **Stage 1 only — read-only account connectivity. LIVE order execution 
 - `LocalExchangeCredentialStore` encrypts the API key and secret using Android Keystore + AES-GCM and stores ciphertext in app-private preferences.
 - `LiveBroker.executionEnabled` is false and every broker operation fails closed. `LiveBrokerSafetyTest` asserts this lock.
 - `MireiForegroundService` remains the PAPER runtime. No LIVE execution path is wired to the strategy engine.
-- The current private-account client uses the legacy `https://indodax.com/tapi` `getInfo` request. Before adding order/history support, review Indodax Trade API V2 and its current endpoint/signing contract. Do not reuse legacy request code for V2 by assumption.
+- This branch migrates account reads to the documented Trade API V2 `GET https://tapi.indodax.com/api/v2/account` endpoint, signs the query string with HMAC-SHA512, and reads available (`free`) plus locked balances. The account response does not provide exchange server time, so the snapshot timestamp is the local request timestamp.
 - The account screen must not treat malformed or missing IDR balance fields as zero. This branch makes balance parsing fail closed instead.
 
 ## Stages
 
 ### Stage 1 — read-only (this branch)
 - Use an Indodax API key with **Reading / View Only** permission.
-- Validate credentials, request success, required balance fields, numeric format, finite values, and non-negative balances.
+- Use the documented TAPI V2 account endpoint and signing contract; validate credentials, request success, required balance fields, numeric format, finite values, non-negative balances, and duplicate/missing asset rows.
 - Never log API key, secret, request signature, or full credential payload.
 - Report connection success only after a valid account snapshot is returned.
 - No order creation/cancellation, withdrawal, or automatic trading.
@@ -49,7 +49,7 @@ Before order support, design and test:
 - [ ] Read-only API test succeeds with a View Only key.
 - [ ] Missing/malformed balances fail closed; errors do not misreport a zero balance.
 - [ ] Credentials never appear in logs, UI errors, crash reports, or repository history.
-- [ ] V2 API contract is reviewed and integration tests cover signed requests and exchange error responses.
+- [ ] TAPI V2 API contract is reviewed and integration tests cover signed requests, account response parsing, and exchange error responses.
 - [ ] Order idempotency and timeout reconciliation are tested, including process restart.
 - [ ] Partial fills, rejected orders, cancellation races, and stale prices are handled.
 - [ ] Fees and realized PnL reconcile with Indodax trade history.
